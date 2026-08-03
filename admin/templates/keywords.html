@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Keywords{% endblock %}
+{% block content %}
+<h1>Keywords</h1>
+{% if message %}<div class="msg ok">{{ message }}</div>{% endif %}
+{% if error %}<div class="msg err">{{ error }}</div>{% endif %}
+
+<p class="muted">Include-патерни пропускають айтем до класифікатора; exclude —
+відсікають до нього (exclude виграє). Regex, case-insensitive, з таймаутом
+{{ '' }}— патерн, що не компілюється або зависає, автоматично карантиниться.</p>
+
+<div class="wrap"><table>
+  <tr><th>ID</th><th>Kind</th><th>Pattern</th><th>State</th><th></th></tr>
+  {% for k in keywords %}
+  <tr>
+    <td>{{ k.id }}</td>
+    <td><span class="badge {{ 'b-on' if k.kind == 'include' else 'b-funding' }}">{{ k.kind }}</span></td>
+    <td><code>{{ k.pattern }}</code>
+        {% if not k.valid %}<br><span class="badge b-quarantine">invalid: {{ k.invalid_reason }}</span>{% endif %}</td>
+    <td>{% if k.enabled %}<span class="badge b-on">on</span>{% else %}<span class="badge b-off">off</span>{% endif %}</td>
+    <td><form class="inline" method="post" action="/keywords/{{ k.id }}/toggle">
+        <button class="small">{{ 'disable' if k.enabled else 'enable' }}</button></form></td>
+  </tr>
+  {% endfor %}
+</table></div>
+
+<h2>Add keyword</h2>
+<form method="post" action="/keywords/add">
+<div class="grid-form">
+  <label>Pattern</label><input name="pattern" required placeholder="\y(hackathon)\y">
+  <label>Kind</label>
+  <select name="kind"><option value="include">include</option><option value="exclude">exclude</option></select>
+  <span></span><button type="submit">Add</button>
+</div>
+</form>
+{% endblock %}

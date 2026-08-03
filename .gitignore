@@ -1,0 +1,23 @@
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Internal design docs and working notes — not published with the code.
+docs/
+.claude/
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# n8n exports: workflows are version history and belong in git; credentials,
+# even encrypted, do not.
+n8n/credentials.json
+n8n/*.credentials.json
+
+*.sql.gz
+*.log

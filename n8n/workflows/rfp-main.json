@@ -1,0 +1,694 @@
+{
+  "name": "rfp-main",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rfp-item",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "wh-1",
+      "name": "Webhook (rfp-item)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1400,
+        0
+      ],
+      "webhookId": "rfp-item"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.headers['x-webhook-secret'] }}",
+              "rightValue": "={{ $env.RFP_WEBHOOK_SECRET }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-secret",
+      "name": "Secret valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        0
+      ],
+      "notes": "A4: unsigned POSTs stop here. FALSE branch is wired to nothing on purpose."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flatten the webhook envelope: everything downstream reads item fields directly.\nconst item = $input.first().json.body;\nif (!item || !item.item_uid) { throw new Error('payload missing item_uid'); }\nreturn [{ json: item }];"
+      },
+      "id": "code-unwrap",
+      "name": "Unwrap payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1000,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT status FROM seen_items WHERE item_uid = $1",
+        "options": {
+          "queryReplacement": "={{ $json.item_uid }}"
+        }
+      },
+      "id": "pg-idem",
+      "name": "Already done? (local check)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -800,
+        -20
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "rfp-app-db (n8n role)",
+          "id": "rfpPgCredential1"
+        }
+      },
+      "notes": "Cheap first gate. The authoritative idempotency check is the Pipedrive search below — TODO wire GET /v1/itemSearch by item_uid custom field, and the fingerprint match → Note branch (A6)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "done",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-notdone",
+      "name": "Not yet delivered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -600,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-haiku-4-5',\n  max_tokens: 400,\n  system: [{ type: 'text', text: $('Unwrap payload').first().json.__classifier_system_prompt || 'TODO: paste the versioned classifier prompt here — MUST be padded ≥4096 tokens with few-shot examples (A9)', cache_control: { type: 'ephemeral', ttl: '1h' } }],\n  messages: [{ role: 'user', content: 'Classify this item:\\n\\nTITLE: ' + $('Unwrap payload').first().json.title + '\\nECOSYSTEM: ' + $('Unwrap payload').first().json.ecosystem + '\\nLANE: ' + $('Unwrap payload').first().json.lane + '\\nBODY:\\n' + ($('Unwrap payload').first().json.body || '').slice(0, 6000) }]\n}) }}",
+        "options": {}
+      },
+      "id": "http-classify",
+      "name": "Claude Haiku classify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -400,
+        -20
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "anthropic-api-key (x-api-key)"
+        }
+      },
+      "notes": "TODO: add structured output per current API docs ({is_rfp, confidence, category, canonical_project, canonical_title, reason}); verify cache hits via usage.cache_read_input_tokens (A9). Log verdict + prompt version to items_log."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT (SELECT value::float FROM settings WHERE key='confidence_threshold') AS threshold, (SELECT value::float FROM settings WHERE key='review_band_low') AS band_low",
+        "options": {}
+      },
+      "id": "pg-thresholds",
+      "name": "Load thresholds",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -200,
+        -20
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "rfp-app-db (n8n role)",
+          "id": "rfpPgCredential1"
+        }
+      },
+      "notes": "Read per item so the admin UI / form changes apply without redeploy (A8)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": "={{ $json.threshold }}",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-threshold",
+      "name": "Auto-deliver?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -20
+      ],
+      "notes": "TRUE → enrich & deliver. FALSE → TODO IF confidence ≥ band_low → Slack review channel (A8); else drop (mark done as 'noise')."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-sonnet-5',\n  max_tokens: 300,\n  messages: [{ role: 'user', content: 'Write a 2-sentence sales lead description for this opportunity. State deadline/budget ONLY if literally present in the text, otherwise say \\'not stated\\'.\\n\\n' + $('Unwrap payload').first().json.title + '\\n' + ($('Unwrap payload').first().json.body || '').slice(0, 6000) }]\n}) }}",
+        "options": {}
+      },
+      "id": "http-enrich",
+      "name": "Claude Sonnet enrich",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        200,
+        -120
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "anthropic-api-key (x-api-key)"
+        }
+      },
+      "notes": "No hallucinated deadlines in front of sales (A8): regex-corroborate deadline/budget downstream."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO org_registry (normalized_name, pipedrive_org_id, display_name) VALUES (lower($1), -1, $1) ON CONFLICT (normalized_name) DO UPDATE SET normalized_name = org_registry.normalized_name RETURNING pipedrive_org_id",
+        "options": {
+          "queryReplacement": "={{ $('Unwrap payload').first().json.ecosystem }}"
+        }
+      },
+      "id": "pg-org",
+      "name": "org_registry lookup",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        400,
+        -120
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "rfp-app-db (n8n role)",
+          "id": "rfpPgCredential1"
+        }
+      },
+      "notes": "Race-safe org identity (A7). pipedrive_org_id = -1 → next node creates the org via **API v2** (v1 orgs sunset 2026-07-31) with the RFP-bot marker field, then UPDATE org_registry with the real id."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pipedrive.com/api/v2/organizations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "queryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ name: $('Unwrap payload').first().json.ecosystem }) }}",
+        "options": {}
+      },
+      "id": "http-org-v2",
+      "name": "Pipedrive org upsert (v2!)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        600,
+        -120
+      ],
+      "credentials": {
+        "queryAuth": {
+          "name": "pipedrive-api-token"
+        }
+      },
+      "notes": "TODO: run only when registry returned -1; add marker field; write real id back to org_registry. Leads must never attach to unmarked (human) orgs (A7)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pipedrive.com/v1/leads",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "queryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  title: '[' + ($('Unwrap payload').first().json.lane === 'funding' ? 'FUNDING' : 'RFP') + '] ' + $('Unwrap payload').first().json.ecosystem + ' — ' + $('Unwrap payload').first().json.title,\n  organization_id: $('org_registry lookup').first().json.pipedrive_org_id\n}) }}",
+        "options": {}
+      },
+      "id": "http-lead",
+      "name": "Create lead (v1)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        -120
+      ],
+      "credentials": {
+        "queryAuth": {
+          "name": "pipedrive-api-token"
+        }
+      },
+      "notes": "TODO after Pipedrive setup: label_ids [RFP|GRANT|FUNDING], custom fields Ecosystem / Source Link / Source API / Confidence / Item UID (hash keys from /v1/dealFields). Leads/Notes stay v1 — no v2 exists."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pipedrive.com/v1/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "queryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  lead_id: $('Create lead (v1)').first().json.data.id,\n  content: 'Source: <a href=\"' + $('Unwrap payload').first().json.url + '\">' + $('Unwrap payload').first().json.url + '</a><br><br>' + ($('Unwrap payload').first().json.body || '').slice(0, 1500)\n}) }}",
+        "options": {}
+      },
+      "id": "http-note",
+      "name": "Attach note (v1)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        -120
+      ],
+      "credentials": {
+        "queryAuth": {
+          "name": "pipedrive-api-token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#rfp-alerts"
+        },
+        "text": "={{ '🆕 ' + $('Create lead (v1)').first().json.data.title + ' → Pipedrive Leads Inbox' }}",
+        "otherOptions": {}
+      },
+      "id": "slack-alert",
+      "name": "Slack alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        -120
+      ],
+      "credentials": {
+        "slackApi": {
+          "name": "slack-bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE seen_items SET status = 'done', delivered_at = now() WHERE item_uid = $1",
+        "options": {
+          "queryReplacement": "={{ $('Unwrap payload').first().json.item_uid }}"
+        }
+      },
+      "id": "pg-done",
+      "name": "FINAL: mark done (A1)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1400,
+        -120
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "rfp-app-db (n8n role)",
+          "id": "rfpPgCredential1"
+        }
+      },
+      "notes": "THE final node. Runs only after the lead exists. Until it runs, the worker re-sends the item — that is the at-least-once design, not a bug. Never move this earlier."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://kbmcp:8000/brief",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.RFP_KB_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  ecosystem: $('Unwrap payload').first().json.ecosystem,\n  title: $('Unwrap payload').first().json.title,\n  body: ($('Unwrap payload').first().json.body || '').slice(0, 3000),\n  item_uid: $('Unwrap payload').first().json.item_uid\n}) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "http-brief",
+      "name": "KB briefing pack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        -120
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Runs AFTER mark-done on purpose: the brief is an enhancement, never a delivery dependency. onError=continue — a KB outage must not fail the workflow. Ecosystems without an archived forum return {error} and the next IF skips the note."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.brief_md }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-brief",
+      "name": "Brief generated?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pipedrive.com/v1/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "queryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  lead_id: $('Create lead (v1)').first().json.data.id,\n  content: '<b>KB Briefing Pack</b> (tier: ' + $('KB briefing pack').first().json.tier + ')<br><br>' + $('KB briefing pack').first().json.brief_md.replace(/\\n/g, '<br>')\n}) }}",
+        "options": {}
+      },
+      "id": "http-brief-note",
+      "name": "Attach brief note (v1)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        -120
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "queryAuth": {
+          "name": "pipedrive-api-token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook (rfp-item)": {
+      "main": [
+        [
+          {
+            "node": "Secret valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Secret valid?": {
+      "main": [
+        [
+          {
+            "node": "Unwrap payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Unwrap payload": {
+      "main": [
+        [
+          {
+            "node": "Already done? (local check)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already done? (local check)": {
+      "main": [
+        [
+          {
+            "node": "Not yet delivered?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not yet delivered?": {
+      "main": [
+        [
+          {
+            "node": "Claude Haiku classify",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Claude Haiku classify": {
+      "main": [
+        [
+          {
+            "node": "Load thresholds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load thresholds": {
+      "main": [
+        [
+          {
+            "node": "Auto-deliver?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-deliver?": {
+      "main": [
+        [
+          {
+            "node": "Claude Sonnet enrich",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Claude Sonnet enrich": {
+      "main": [
+        [
+          {
+            "node": "org_registry lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "org_registry lookup": {
+      "main": [
+        [
+          {
+            "node": "Pipedrive org upsert (v2!)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pipedrive org upsert (v2!)": {
+      "main": [
+        [
+          {
+            "node": "Create lead (v1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create lead (v1)": {
+      "main": [
+        [
+          {
+            "node": "Attach note (v1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach note (v1)": {
+      "main": [
+        [
+          {
+            "node": "Slack alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack alert": {
+      "main": [
+        [
+          {
+            "node": "FINAL: mark done (A1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FINAL: mark done (A1)": {
+      "main": [
+        [
+          {
+            "node": "KB briefing pack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KB briefing pack": {
+      "main": [
+        [
+          {
+            "node": "Brief generated?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Brief generated?": {
+      "main": [
+        [
+          {
+            "node": "Attach brief note (v1)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "active": false,
+  "id": "QVAngICIpUDBuHzV"
+}

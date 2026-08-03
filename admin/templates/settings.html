@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+{% if message %}<div class="msg ok">{{ message }}</div>{% endif %}
+
+<form method="post" action="/settings/save">
+<div class="wrap"><table>
+  <tr><th>Key</th><th>Value</th><th>Updated</th></tr>
+  {% for s in settings %}
+  <tr>
+    <td><code>{{ s.key }}</code></td>
+    <td><input name="{{ s.key }}" value="{{ s.value }}" style="width: 100%"></td>
+    <td class="muted">{{ s.updated_at.strftime('%Y-%m-%d %H:%M') }} · {{ s.updated_by }}</td>
+  </tr>
+  {% endfor %}
+</table></div>
+<p><button type="submit">Save all</button></p>
+</form>
+<p class="muted">Ці значення читаються воркером і n8n на кожному рані —
+редеплой не потрібен. <code>confidence_threshold</code> / <code>review_band_low</code>
+— подвійний поріг (A8).</p>
+{% endblock %}

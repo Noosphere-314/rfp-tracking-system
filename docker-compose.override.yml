@@ -1,0 +1,29 @@
+# Local development overrides — auto-loaded by plain `docker compose up`.
+# Production must run `docker compose -f docker-compose.yml --profile prod up -d`
+# so this file is skipped (see docs/Deployment-Plan.md Stage 1).
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:54329:5432"   # psql access for debugging
+
+  n8n:
+    # Local Docker 20.10.12 cannot unpack the zstd layers of n8n:latest
+    # ("invalid tar header"); this older gzip-layered tag works. Prod (fresh
+    # Docker on Hetzner) stays on the base file's `latest`.
+    image: n8nio/n8n:1.45.1
+    environment:
+      N8N_HOST: localhost
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_EDITOR_BASE_URL: http://localhost:5678/
+      N8N_SECURE_COOKIE: "false"
+
+  worker:
+    environment:
+      # Point deliveries at the mock pipeline in the admin service: the full
+      # deliver→confirm loop runs with no Pipedrive, no Claude, no n8n.
+      N8N_WEBHOOK_URL: http://admin:8000/mock/webhook
+
+  admin:
+    environment:
+      MOCK_N8N: "true"

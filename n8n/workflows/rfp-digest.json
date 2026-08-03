@@ -1,0 +1,104 @@
+{
+  "name": "rfp-digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-1",
+      "name": "Daily 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  (SELECT count(*) FROM worker_runs WHERE started_at > now() - interval '24 hours' AND mode = 'run') AS runs_24h,\n  (SELECT coalesce(sum(sources_checked),0) FROM worker_runs WHERE started_at > now() - interval '24 hours') AS sources_checked,\n  (SELECT coalesce(sum(sources_failed),0) FROM worker_runs WHERE started_at > now() - interval '24 hours') AS sources_failed,\n  (SELECT coalesce(sum(items_new),0) FROM worker_runs WHERE started_at > now() - interval '24 hours') AS items_new,\n  (SELECT count(*) FROM seen_items WHERE status = 'done' AND delivered_at > now() - interval '24 hours') AS leads_24h,\n  (SELECT count(*) FROM seen_items WHERE status = 'pending') AS pending_now,\n  (SELECT count(*) FROM seen_items WHERE status = 'dead') AS dead_total,\n  (SELECT count(*) FROM seen_items WHERE status = 'done' AND delivered_at > now() - interval '7 days') AS leads_7d,\n  (SELECT value::int FROM settings WHERE key = 'lead_floor_7d') AS lead_floor",
+        "options": {}
+      },
+      "id": "pg-digest",
+      "name": "Collect 24h stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "rfp-app-db (n8n role)",
+          "id": "rfpPgCredential1"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#rfp-digest"
+        },
+        "text": "={{ '📊 *RFP tracker — daily digest*\\n' +\n'Runs (24h): ' + $json.runs_24h + ' · sources checked: ' + $json.sources_checked + ($json.sources_failed > 0 ? ' (⚠️ ' + $json.sources_failed + ' failed)' : '') + '\\n' +\n'New items: ' + $json.items_new + ' · leads delivered: ' + $json.leads_24h + '\\n' +\n'Pending now: ' + $json.pending_now + ' · dead total: ' + $json.dead_total +\n($json.leads_7d < $json.lead_floor ? '\\n🚨 *Lead floor breach*: ' + $json.leads_7d + ' leads in 7d (floor ' + $json.lead_floor + ') — щось зламалось вище по трубі (A3)' : '') }}",
+        "otherOptions": {}
+      },
+      "id": "slack-digest",
+      "name": "Slack digest",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        0
+      ],
+      "credentials": {
+        "slackApi": {
+          "name": "slack-bot"
+        }
+      },
+      "notes": "The CEO-visible health signal (Stage 3.6) + the lead-floor heartbeat (A3): quiet pipelines look identical to broken ones without this."
+    }
+  ],
+  "connections": {
+    "Daily 09:00": {
+      "main": [
+        [
+          {
+            "node": "Collect 24h stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect 24h stats": {
+      "main": [
+        [
+          {
+            "node": "Slack digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "active": false
+}

@@ -1,0 +1,51 @@
+{
+	email {$ACME_EMAIL}
+	# The admin API is not needed and should not listen.
+	admin off
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	log {
+		output stdout
+		format console
+	}
+
+	# Security boundary (System-Design.md §9). Everything not matched below
+	# returns 404 — in particular the n8n editor, /rest/*, and /signin, which
+	# stay reachable only over Tailscale on 127.0.0.1:5678.
+
+	# Ingestion webhooks. Auth is the shared secret header checked inside the
+	# n8n workflow itself; Caddy only has to not block it.
+	handle /webhook/* {
+		reverse_proxy n8n:5678
+	}
+	handle /webhook-test/* {
+		reverse_proxy n8n:5678
+	}
+
+	# Admin forms for non-engineers. Basic auth here, not in n8n: the Form
+	# Trigger's own auth has verified open bugs (A4).
+	handle /form/* {
+		basic_auth {
+			{$ADMIN_FORM_USER} {$ADMIN_FORM_PASSWORD_HASH}
+		}
+		reverse_proxy n8n:5678
+	}
+	# Form assets are served from these paths; same protection.
+	handle /form-waiting-room/* {
+		basic_auth {
+			{$ADMIN_FORM_USER} {$ADMIN_FORM_PASSWORD_HASH}
+		}
+		reverse_proxy n8n:5678
+	}
+
+	# Phase 5 — knowledge-base MCP server (bearer auth inside FastMCP).
+	# handle /mcp/* {
+	# 	reverse_proxy mcp:8000
+	# }
+
+	handle {
+		respond "Not found" 404
+	}
+}

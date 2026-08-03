@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard {% if mock_n8n %}<span class="badge b-funding">MOCK n8n mode</span>{% endif %}</h1>
+
+<div class="cards">
+  {% for status in ['pending', 'done', 'dead', 'seeded', 'filtered'] %}
+  <div class="card">
+    <div class="num">{{ status_counts.get(status, 0) }}</div>
+    <div class="lbl"><span class="badge b-{{ status }}">{{ status }}</span></div>
+  </div>
+  {% endfor %}
+</div>
+
+<h2>Source health</h2>
+<div class="wrap"><table>
+  <tr><th>Source</th><th>Type</th><th>Lane</th><th>State</th>
+      <th>Items 7d</th><th>Last item</th><th>Fails</th></tr>
+  {% for s in source_health %}
+  <tr>
+    <td>{{ s.name }} <span class="muted">· {{ s.ecosystem }}</span></td>
+    <td>{{ s.type }}</td>
+    <td><span class="badge b-{{ s.lane }}">{{ s.lane }}</span></td>
+    <td>
+      {% if s.quarantined %}<span class="badge b-quarantine">quarantined</span>
+      {% elif s.enabled %}<span class="badge b-on">on</span>
+      {% else %}<span class="badge b-off">off</span>{% endif %}
+    </td>
+    <td>{{ s.items_7d }}</td>
+    <td class="muted">{{ s.last_item_at.strftime('%Y-%m-%d %H:%M') if s.last_item_at else '—' }}</td>
+    <td>{% if s.consecutive_failures %}<span class="badge b-dead">{{ s.consecutive_failures }}</span>{% else %}0{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table></div>
+
+<h2>Recent runs</h2>
+<div class="wrap"><table>
+  <tr><th>Started</th><th>Mode</th><th>Sources</th><th>Seen</th><th>New</th>
+      <th>Filtered</th><th>Delivered</th><th>Dead</th></tr>
+  {% for r in last_runs %}
+  <tr>
+    <td>{{ r.started_at.strftime('%Y-%m-%d %H:%M') }}</td>
+    <td>{{ r.mode }}</td>
+    <td>{{ r.sources_checked }}{% if r.sources_failed %} <span class="badge b-dead">-{{ r.sources_failed }}</span>{% endif %}</td>
+    <td>{{ r.items_seen }}</td><td>{{ r.items_new }}</td>
+    <td>{{ r.items_filtered }}</td><td>{{ r.items_delivered }}</td>
+    <td>{{ r.items_dead }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8" class="muted">No runs yet — start the worker.</td></tr>
+  {% endfor %}
+</table></div>
+
+<h2>Pending / dead items</h2>
+<div class="wrap"><table>
+  <tr><th>Status</th><th>Title</th><th>Source</th><th>Attempts</th><th>First seen</th></tr>
+  {% for i in recent_pending %}
+  <tr>
+    <td><span class="badge b-{{ i.status }}">{{ i.status }}</span></td>
+    <td><a href="{{ i.url }}" target="_blank" rel="noopener">{{ i.title or i.item_uid[:16] }}</a></td>
+    <td class="muted">{{ i.source_name }}</td>
+    <td>{{ i.attempts }}</td>
+    <td class="muted">{{ i.first_seen.strftime('%Y-%m-%d %H:%M') }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">Nothing pending — the queue is clean.</td></tr>
+  {% endfor %}
+</table></div>
+{% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Sources{% endblock %}
+{% block content %}
+<h1>Sources</h1>
+{% if message %}<div class="msg ok">{{ message }}</div>{% endif %}
+{% if error %}<div class="msg err">{{ error }}</div>{% endif %}
+
+<div class="wrap"><table>
+  <tr><th>ID</th><th>Name</th><th>Type</th><th>Lane</th><th>URL</th>
+      <th>State</th><th>Last item</th><th></th></tr>
+  {% for s in sources %}
+  <tr>
+    <td>{{ s.id }}</td>
+    <td>{{ s.name }}<br><span class="muted">{{ s.ecosystem }}{% if s.category %} · {{ s.category }}{% endif %}</span></td>
+    <td>{{ s.type }}</td>
+    <td><span class="badge b-{{ s.lane }}">{{ s.lane }}</span></td>
+    <td><a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.url | replace('https://', '') | truncate(40) }}</a></td>
+    <td>
+      {% if s.quarantined %}<span class="badge b-quarantine" title="{{ s.quarantine_reason }}">quarantined</span>
+      {% elif s.enabled %}<span class="badge b-on">on</span>
+      {% else %}<span class="badge b-off">off</span>{% endif %}
+    </td>
+    <td class="muted">{{ s.last_item_at.strftime('%m-%d %H:%M') if s.last_item_at else '—' }}</td>
+    <td>
+      <form class="inline" method="post" action="/sources/{{ s.id }}/toggle">
+        <button class="small">{{ 'disable' if s.enabled else 'enable' }}</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table></div>
+
+<h2>Add source (runs a live test-fetch before saving)</h2>
+<form method="post" action="/sources/add">
+<div class="grid-form">
+  <label>Type</label>
+  <select name="type">{% for t in fetcher_types %}<option>{{ t }}</option>{% endfor %}</select>
+  <label>Name</label><input name="name" required placeholder="Celo forum">
+  <label>Ecosystem</label><input name="ecosystem" required placeholder="Celo">
+  <label>URL</label><input name="url" required placeholder="https://forum.celo.org">
+  <label>Category</label><input name="category" placeholder="grants (label, optional)">
+  <label>Lane</label>
+  <select name="lane"><option value="rfp">rfp</option><option value="funding">funding</option></select>
+  <label>Config JSON</label>
+  <textarea name="config" placeholder='{"categories": [{"slug": "grants", "id": 12}]}'>{}</textarea>
+  <span></span><button type="submit">Test-fetch &amp; save</button>
+</div>
+</form>
+<p class="muted">A source that fails its test-fetch is not saved — same guarantee
+as the n8n form. Discourse config: <code>{"categories": [{"slug": …, "id": …}]}</code>;
+rest_aggregator needs <code>items_path</code> + <code>fields</code> mapping.</p>
+{% endblock %}

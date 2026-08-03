@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Knowledge Base{% endblock %}
+{% block content %}
+<h1>Knowledge Base <span class="muted">· research mode</span></h1>
+
+<h2>Archived forums</h2>
+<div class="wrap"><table>
+  <tr><th>Forum</th><th>URL</th><th>State</th><th>Topics</th><th>Posts</th>
+      <th>Newest activity</th><th>Last update</th><th></th></tr>
+  {% for f in forums %}
+  <tr>
+    <td>{{ f.forum_slug }}</td>
+    <td><a href="{{ f.base_url }}" target="_blank" rel="noopener">{{ f.base_url | replace('https://', '') }}</a></td>
+    <td>
+      {% if not f.enabled %}<span class="badge b-off">off</span>
+      {% elif f.backfill_done %}<span class="badge b-on">archived</span>
+      {% else %}<span class="badge b-pending">backfill pending</span>{% endif %}
+      {% if f.consecutive_failures %}<span class="badge b-dead">{{ f.consecutive_failures }} fails</span>{% endif %}
+    </td>
+    <td>{{ f.topics }}</td>
+    <td>{{ f.posts }}</td>
+    <td class="muted">{{ f.newest_activity.strftime('%Y-%m-%d') if f.newest_activity else '—' }}</td>
+    <td class="muted">{{ f.last_incremental_at.strftime('%m-%d %H:%M') if f.last_incremental_at else '—' }}</td>
+    <td><form class="inline" method="post" action="/kb/forums/{{ f.id }}/toggle">
+        <button class="small">{{ 'disable' if f.enabled else 'enable' }}</button></form></td>
+  </tr>
+  {% endfor %}
+</table></div>
+
+<form method="post" action="/kb/forums/add" style="margin-top: 10px; display: flex; gap: 8px;">
+  <input name="forum_slug" required placeholder="slug (напр. lido)">
+  <input name="base_url" required placeholder="https://research.lido.fi" style="min-width: 280px;">
+  <button type="submit">Register forum</button>
+</form>
+<p class="muted">Реєстрація лише додає форум у чергу. Сам архів запускається
+командою <code>docker compose run --rm worker kb-backfill</code> (нічна
+робота), далі <code>kb-update</code> тримає його свіжим.</p>
+
+<h2>Search the archive (FTS sanity check)</h2>
+<form method="get" action="/kb" style="display: flex; gap: 8px; margin-bottom: 14px;">
+  <input name="q" value="{{ q }}" placeholder='напр. "developer tooling" grant' style="flex: 1;">
+  <select name="forum">
+    <option value="">all forums</option>
+    {% for f in forums %}<option value="{{ f.forum_slug }}" {{ 'selected' if forum == f.forum_slug }}>{{ f.forum_slug }}</option>{% endfor %}
+  </select>
+  <button type="submit">Search</button>
+</form>
+
+{% if q %}
+<div class="wrap"><table>
+  <tr><th>Forum</th><th>Topic</th><th>Snippet</th><th>Author</th><th>Date</th></tr>
+  {% for r in results %}
+  <tr>
+    <td>{{ r.forum_slug }}</td>
+    <td><a href="{{ r.post_url }}" target="_blank" rel="noopener">{{ r.title | truncate(60) }}</a>
+        <br><span class="muted">{{ r.category_name or '' }}</span></td>
+    <td>{{ r.snippet }}</td>
+    <td class="muted">{{ r.author }}</td>
+    <td class="muted">{{ r.posted_at.strftime('%Y-%m-%d') if r.posted_at else '—' }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">Nothing found — try different phrasing (Claude
+  через MCP автоматично пробує кілька варіантів).</td></tr>
+  {% endfor %}
+</table></div>
+{% endif %}
+
+<h2>Recent MCP queries</h2>
+<div class="wrap"><table>
+  <tr><th>When</th><th>Tool</th><th>Query</th><th>Forum</th><th>Hits</th></tr>
+  {% for query in recent_queries %}
+  <tr>
+    <td class="muted">{{ query.asked_at.strftime('%m-%d %H:%M') }}</td>
+    <td>{{ query.tool }}</td>
+    <td>{{ query.query | truncate(70) }}</td>
+    <td class="muted">{{ query.forum_slug or '—' }}</td>
+    <td>{{ query.hits }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">No MCP queries yet — підключи сервер до Claude
+  (див. User-Guide) і постав перше питання.</td></tr>
+  {% endfor %}
+</table></div>
+{% endblock %}

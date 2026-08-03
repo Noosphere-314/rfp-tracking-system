@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Items{% endblock %}
+{% block content %}
+<h1>Items</h1>
+
+<form method="get" action="/items" style="margin-bottom: 16px; display: flex; gap: 8px;">
+  <select name="status">
+    <option value="">any status</option>
+    {% for st in ['pending', 'done', 'dead', 'seeded', 'filtered'] %}
+    <option value="{{ st }}" {{ 'selected' if status == st }}>{{ st }}</option>
+    {% endfor %}
+  </select>
+  <select name="source_id">
+    <option value="0">any source</option>
+    {% for s in source_options %}
+    <option value="{{ s.id }}" {{ 'selected' if source_id == s.id }}>{{ s.name }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+
+<div class="wrap"><table>
+  <tr><th>Status</th><th>Title</th><th>Source</th><th>Attempts</th>
+      <th>First seen</th><th>Delivered</th><th></th></tr>
+  {% for i in items %}
+  <tr>
+    <td><span class="badge b-{{ i.status }}">{{ i.status }}</span></td>
+    <td><a href="{{ i.url }}" target="_blank" rel="noopener">{{ i.title or i.item_uid[:16] }}</a></td>
+    <td class="muted">{{ i.source_name }}</td>
+    <td>{{ i.attempts }}</td>
+    <td class="muted">{{ i.first_seen.strftime('%Y-%m-%d %H:%M') }}</td>
+    <td class="muted">{{ i.delivered_at.strftime('%Y-%m-%d %H:%M') if i.delivered_at else '—' }}</td>
+    <td><form class="inline" method="post" action="/items/{{ i.item_uid }}/brief">
+        <button class="small" title="Generate KB briefing pack">brief</button></form></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">No items match.</td></tr>
+  {% endfor %}
+</table></div>
+
+<p style="margin-top: 12px;">
+  {% if page > 0 %}<a href="/items?status={{ status }}&source_id={{ source_id }}&page={{ page - 1 }}">← newer</a>{% endif %}
+  {% if items | length == 50 %} <a href="/items?status={{ status }}&source_id={{ source_id }}&page={{ page + 1 }}">older →</a>{% endif %}
+</p>
+{% endblock %}

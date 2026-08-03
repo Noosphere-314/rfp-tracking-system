@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Runs{% endblock %}
+{% block content %}
+<h1>Worker runs</h1>
+<div class="wrap"><table>
+  <tr><th>ID</th><th>Started</th><th>Finished</th><th>Mode</th><th>Sources</th>
+      <th>Seen</th><th>New</th><th>Filtered</th><th>Delivered</th><th>Dead</th><th>Failures</th></tr>
+  {% for r in runs %}
+  <tr>
+    <td>{{ r.id }}</td>
+    <td>{{ r.started_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+    <td class="muted">{{ r.finished_at.strftime('%H:%M:%S') if r.finished_at else 'running…' }}</td>
+    <td>{{ r.mode }}</td>
+    <td>{{ r.sources_checked }}{% if r.sources_failed %} <span class="badge b-dead">-{{ r.sources_failed }}</span>{% endif %}</td>
+    <td>{{ r.items_seen }}</td><td>{{ r.items_new }}</td><td>{{ r.items_filtered }}</td>
+    <td>{{ r.items_delivered }}</td><td>{{ r.items_dead }}</td>
+    <td class="muted">{% for f in r.detail.get('failures', []) %}{{ f }}<br>{% endfor %}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="11" class="muted">No runs recorded yet.</td></tr>
+  {% endfor %}
+</table></div>
+{% endblock %}

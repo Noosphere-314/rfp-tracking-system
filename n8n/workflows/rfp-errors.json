@@ -1,0 +1,63 @@
+{
+  "name": "rfp-errors",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "err-1",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#rfp-alerts"
+        },
+        "text": "={{ '🚨 n8n workflow failed: *' + $json.workflow.name + '*\\nNode: ' + ($json.execution.lastNodeExecuted || '?') + '\\nError: ' + ($json.execution.error.message || 'unknown') + '\\nExecution: ' + $json.execution.url }}",
+        "otherOptions": {}
+      },
+      "id": "err-slack",
+      "name": "Slack: pipeline failure",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "slackApi": {
+          "name": "slack-bot"
+        }
+      },
+      "notes": "A3: any failure in any workflow lands in Slack. Items involved stay 'pending' in seen_items and are re-sent by the worker — nothing is lost by a crash here."
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Slack: pipeline failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "active": false
+}

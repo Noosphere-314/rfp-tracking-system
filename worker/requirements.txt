@@ -1,0 +1,6 @@
+psycopg[binary]==3.2.3
+httpx==0.28.1
+feedparser==6.0.11
+# `regex`, not `re`: it supports a match timeout, which is the ReDoS guard for
+# team-editable keyword patterns (A4).
+regex==2024.11.6

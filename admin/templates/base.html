@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}RFP Tracker{% endblock %} · Admin</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #1a2129; --border: #2b3540; --text: #d9e1e8;
+    --muted: #8a99a8; --accent: #4da3ff; --ok: #3fb96b; --warn: #e0a63d;
+    --bad: #e05d5d; --seed: #7d8ca0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--text); }
+  nav { display: flex; gap: 4px; align-items: center; padding: 10px 20px;
+        background: var(--panel); border-bottom: 1px solid var(--border);
+        position: sticky; top: 0; }
+  nav .brand { font-weight: 700; margin-right: 16px; color: var(--accent); }
+  nav a { color: var(--muted); text-decoration: none; padding: 6px 12px; border-radius: 6px; }
+  nav a:hover, nav a.active { color: var(--text); background: var(--border); }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .05em; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+          border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border);
+           vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  tr:last-child td { border-bottom: none; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+          padding: 14px 18px; min-width: 130px; }
+  .card .num { font-size: 26px; font-weight: 700; }
+  .card .lbl { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+  .b-pending { background: #3d3313; color: var(--warn); }
+  .b-done { background: #14331f; color: var(--ok); }
+  .b-dead { background: #3a1717; color: var(--bad); }
+  .b-seeded, .b-filtered { background: #232b34; color: var(--seed); }
+  .b-on { background: #14331f; color: var(--ok); }
+  .b-off { background: #232b34; color: var(--seed); }
+  .b-quarantine { background: #3a1717; color: var(--bad); }
+  .b-rfp { background: #16283d; color: var(--accent); }
+  .b-funding { background: #33213d; color: #c08fe8; }
+  form.inline { display: inline; }
+  button, input, select, textarea {
+    font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+  button { cursor: pointer; background: var(--border); }
+  button:hover { border-color: var(--accent); }
+  button.small { padding: 2px 10px; font-size: 12px; }
+  .msg { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
+  .msg.ok { background: #14331f; color: var(--ok); }
+  .msg.err { background: #3a1717; color: var(--bad); }
+  .muted { color: var(--muted); }
+  .grid-form { display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px;
+               max-width: 720px; background: var(--panel); padding: 16px;
+               border: 1px solid var(--border); border-radius: 8px; }
+  .grid-form textarea { font-family: ui-monospace, monospace; min-height: 90px; }
+  a { color: var(--accent); }
+  .wrap { overflow-x: auto; }
+  code { background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="brand">RFP Tracker</span>
+  <a href="/">Dashboard</a>
+  <a href="/sources">Sources</a>
+  <a href="/keywords">Keywords</a>
+  <a href="/settings">Settings</a>
+  <a href="/items">Items</a>
+  <a href="/runs">Runs</a>
+  <a href="/kb">KB</a>
+</nav>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

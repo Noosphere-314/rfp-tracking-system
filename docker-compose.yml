@@ -1,0 +1,146 @@
+# Project name comes from the directory (top-level `name:` needs Compose ≥2.3,
+# and the local machine runs 2.2.3).
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      N8N_DB_USER: ${N8N_DB_USER}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    # Not published: only reachable on the compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  n8n:
+    # Pinned, not `latest`: upgrades happen deliberately (change tag → pull →
+    # up). 2.x needs Postgres (we have it) and enables task runners by default
+    # (already on below). NB: images ≥ ~1.5x use zstd layers — Docker engine
+    # must be reasonably fresh (local 20.10.12 cannot unpack them; the dev
+    # override pins 1.45.1 until Docker Desktop is updated).
+    image: n8nio/n8n:2.32.7
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_SCHEMA: n8n
+      DB_POSTGRESDB_USER: ${N8N_DB_USER}
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
+      N8N_HOST: ${DOMAIN}
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://${DOMAIN}/
+      N8N_EDITOR_BASE_URL: https://${DOMAIN}/
+      GENERIC_TIMEZONE: ${TZ:-Europe/Kyiv}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_PAYLOAD_SIZE_MAX: "16"
+      # The rfp-main workflow's first IF node compares the incoming
+      # X-Webhook-Secret header against this (A4).
+      RFP_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET}
+      # Bearer for the KB briefing endpoint (rfp-main post-done nodes).
+      RFP_KB_TOKEN: ${KB_MCP_TOKEN:-}
+      # n8n 2.x blocks $env access from nodes by default; the secret check
+      # above needs it. Scoped alternative if this ever feels too wide:
+      # webhook-node Header Auth credential instead of the IF node.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n:/backup
+    ports:
+      # A4: the editor is NOT public. Loopback only — reach it over Tailscale
+      # or an SSH tunnel. Caddy exposes /webhook/* and /form/* publicly.
+      - "127.0.0.1:5678:5678"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # Prod-only: local dev runs without TLS/domain (docker-compose.override.yml).
+    # On the server: docker compose -f docker-compose.yml --profile prod up -d
+    profiles: ["prod"]
+    depends_on:
+      - n8n
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      ADMIN_FORM_USER: ${ADMIN_FORM_USER}
+      ADMIN_FORM_PASSWORD_HASH: ${ADMIN_FORM_PASSWORD_HASH}
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+
+  worker:
+    build: ./worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://n8n:5678/webhook/rfp-item}
+    command: ["loop"]
+    volumes:
+      - ./migrations:/app/migrations:ro
+
+  kbmcp:
+    build:
+      context: .
+      dockerfile: mcp/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      KB_MCP_TOKEN: ${KB_MCP_TOKEN:-}
+      USER_AGENT: ${USER_AGENT:-}
+      # Briefing packs: unset key = deterministic tier only (still useful).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      # Local Claude Code connects here. On the VPS this must instead be routed
+      # through Caddy on a public path (Anthropic infra has to reach it) with
+      # the bearer token REQUIRED — see KB-Module-Design §11.
+      - "127.0.0.1:8765:8000"
+
+  admin:
+    build:
+      context: .
+      dockerfile: admin/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET}
+      MOCK_N8N: ${MOCK_N8N:-false}
+      KBMCP_URL: http://kbmcp:8000
+      KB_MCP_TOKEN: ${KB_MCP_TOKEN:-}
+    ports:
+      # Engineers only — same access model as the n8n editor: loopback binding,
+      # reach it over Tailscale/SSH. Never routed through Caddy.
+      - "127.0.0.1:8080:8000"
+
+volumes:
+  postgres_data:
+  n8n_data:
+  caddy_data:
+  caddy_config:

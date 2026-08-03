@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Brief #{{ brief.id }}{% endblock %}
+{% block content %}
+<h1>Briefing pack <span class="muted">· {{ brief.ecosystem }}</span></h1>
+<p class="muted">
+  {{ brief.created_at.strftime('%Y-%m-%d %H:%M') }} ·
+  tier <span class="badge {{ 'b-on' if brief.tier == 'llm' else 'b-off' }}">{{ brief.tier }}</span>
+  {% if brief.model %} · {{ brief.model }}{% endif %}
+  {% if brief.tokens_in %} · {{ brief.tokens_in }}→{{ brief.tokens_out }} tok{% endif %}
+  {% if brief.item_uid %} · item <code>{{ brief.item_uid[:16] }}…</code>{% endif %}
+</p>
+
+<div style="background: var(--panel); border: 1px solid var(--border);
+            border-radius: 8px; padding: 20px; white-space: pre-wrap;
+            font-size: 14px; line-height: 1.65;">{{ brief.brief_md }}</div>
+
+<p style="margin-top: 14px;"><a href="/items">← back to items</a></p>
+{% endblock %}
