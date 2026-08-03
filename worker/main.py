@@ -46,7 +46,11 @@ def cmd_migrate(_args: argparse.Namespace) -> int:
 def cmd_run(_args: argparse.Namespace) -> int:
     config.validate()
     with connect() as conn:
-        pipeline.run_with_monitoring(conn)
+        try:
+            pipeline.run_with_monitoring(conn)
+        except pipeline.RunAlreadyInProgress as exc:
+            print(f"skipped: {exc}")
+            return 2
     return 0
 
 

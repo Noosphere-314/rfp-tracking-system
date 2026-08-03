@@ -91,6 +91,7 @@ def retry_pending(conn: psycopg.Connection) -> tuple[int, int]:
     rows = conn.execute(
         """
         SELECT s.item_uid, s.attempts, s.title,
+               EXTRACT(EPOCH FROM (now() - s.first_seen)) / 86400 AS age_days,
                (SELECT payload FROM items_log l
                  WHERE l.item_uid = s.item_uid AND l.event = 'fetched'
                  ORDER BY l.id DESC LIMIT 1) AS payload
@@ -118,14 +119,22 @@ def retry_pending(conn: psycopg.Connection) -> tuple[int, int]:
             continue
 
         if not row["payload"]:
-            # No stored payload means the row predates the log or the log was
-            # pruned. It cannot be rebuilt here, so retiring it is honest.
+            # A missing payload is only terminal once the log entry could
+            # legitimately have been pruned. Before that, treat it as transient
+            # and leave the item pending: killing a live lead because its
+            # payload was not visible yet is far worse than one wasted cycle.
+            if row["age_days"] is not None and row["age_days"] < config.items_log_retention_days:
+                log.warning(
+                    "no payload for %s (age %.1fd) — leaving pending",
+                    row["item_uid"], row["age_days"],
+                )
+                continue
             conn.execute(
                 "UPDATE seen_items SET status = 'dead' WHERE item_uid = %s",
                 (row["item_uid"],),
             )
             conn.commit()
-            dead.append(f"{row['item_uid']} (no stored payload)")
+            dead.append(f"{row['item_uid']} (payload aged out of items_log)")
             continue
 
         try:

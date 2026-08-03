@@ -227,8 +227,38 @@ def _prune_items_log(conn: psycopg.Connection) -> None:
     conn.commit()
 
 
+# Any 64-bit constant; identifies "the pipeline run" lock across all workers.
+RUN_LOCK_KEY = 8_274_119_004_512_337
+
+
+class RunAlreadyInProgress(RuntimeError):
+    """Another worker process is mid-run against this database."""
+
+
 def run_once(conn: psycopg.Connection, *, seed: bool = False) -> dict[str, Any]:
-    """One full pass over every enabled source."""
+    """One full pass over every enabled source.
+
+    Guarded by a Postgres advisory lock: two concurrent runs corrupt state.
+    A run that is fetching has not yet committed its payload to items_log, so a
+    second run entering retry_pending at that moment sees a pending item with no
+    payload and dead-letters a perfectly live lead. Observed in practice when a
+    manual `worker run` overlapped the loop container.
+    """
+    got_lock = conn.execute(
+        "SELECT pg_try_advisory_lock(%s) AS locked", (RUN_LOCK_KEY,)
+    ).fetchone()["locked"]
+    if not got_lock:
+        raise RunAlreadyInProgress(
+            "another worker run is in progress; refusing to run concurrently"
+        )
+    try:
+        return _run_once_locked(conn, seed=seed)
+    finally:
+        conn.execute("SELECT pg_advisory_unlock(%s)", (RUN_LOCK_KEY,))
+        conn.commit()
+
+
+def _run_once_locked(conn: psycopg.Connection, *, seed: bool = False) -> dict[str, Any]:
     mode = "seed" if seed else "run"
     run_id = conn.execute(
         "INSERT INTO worker_runs (mode) VALUES (%s) RETURNING id", (mode,)
@@ -326,6 +356,11 @@ def run_with_monitoring(conn: psycopg.Connection, *, seed: bool = False) -> dict
     ping_healthchecks("/start")
     try:
         totals = run_once(conn, seed=seed)
+    except RunAlreadyInProgress:
+        # Not a failure: another process holds the lock. Skipping is the correct
+        # outcome, and alerting on it would train the team to ignore alerts.
+        log.warning("run skipped — another worker run is in progress")
+        raise
     except Exception as exc:  # noqa: BLE001 — the run must report before it dies
         ping_healthchecks("/fail")
         alert(f"worker run crashed: {type(exc).__name__} — {exc}", level="error")
