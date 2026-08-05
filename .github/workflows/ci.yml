@@ -1,0 +1,152 @@
+name: CI
+
+# What this catches, in order of how often it actually bites:
+#   1. A migration that does not apply to a clean database — this one stops a
+#      deploy dead, and it is invisible locally once your DB is already migrated.
+#   2. A broken Dockerfile or requirements pin — the image builds on your laptop
+#      from cache and fails on the server.
+#   3. A syntax error in Python that no local run happened to import.
+#   4. A malformed n8n workflow export — n8n rejects it silently at import time.
+#
+# Deliberately NOT here: deployment. A push to main must not restart production;
+# migrations are irreversible and a bad source config surfaces hours later.
+# Deploy is an explicit command on the box — scripts/deploy.sh.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  migrations:
+    name: Migrations apply to a clean database
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: rfp
+          POSTGRES_USER: rfp
+          POSTGRES_PASSWORD: ci-not-a-secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rfp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install worker dependencies
+        run: pip install -r worker/requirements.txt
+
+      - name: Apply every migration
+        env:
+          DATABASE_URL: postgresql://rfp:ci-not-a-secret@localhost:5432/rfp
+        run: python -m worker.main migrate
+
+      - name: Re-apply — migrations must be idempotent
+        env:
+          DATABASE_URL: postgresql://rfp:ci-not-a-secret@localhost:5432/rfp
+        run: |
+          out=$(python -m worker.main migrate)
+          echo "$out"
+          # A second run must be a no-op. If it applies anything, filename
+          # bookkeeping is broken and a redeploy would double-run DDL.
+          echo "$out" | grep -q "none pending"
+
+      - name: Seed config landed
+        env:
+          PGPASSWORD: ci-not-a-secret
+        run: |
+          psql -h localhost -U rfp -d rfp -tAc \
+            "SELECT count(*) FROM sources" | grep -qv '^0$'
+          psql -h localhost -U rfp -d rfp -tAc \
+            "SELECT count(*) FROM keywords" | grep -qv '^0$'
+
+      - name: Keyword patterns compile
+        env:
+          PGPASSWORD: ci-not-a-secret
+        run: |
+          # A bad regex in seed config quarantines the source at runtime and
+          # silently stops lead flow — cheaper to catch here.
+          pip install regex
+          psql -h localhost -U rfp -d rfp -tAc "SELECT pattern FROM keywords" \
+            | python3 -c "
+          import sys, regex
+          bad = []
+          for line in sys.stdin:
+              p = line.strip()
+              if not p:
+                  continue
+              try:
+                  regex.compile(p, regex.IGNORECASE)
+              except Exception as exc:
+                  bad.append(f'{p!r}: {exc}')
+          if bad:
+              print('uncompilable keyword patterns:'); [print(' ', b) for b in bad]
+              sys.exit(1)
+          print('all keyword patterns compile')
+          "
+
+  static:
+    name: Python compiles, workflows are valid JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Byte-compile every module
+        run: python -m compileall -q worker admin mcp
+
+      - name: n8n workflow exports are valid JSON
+        run: |
+          for f in n8n/workflows/*.json; do
+            python3 -c "
+          import json, sys
+          wf = json.load(open('$f'))
+          # n8n's importer needs these keys; a hand-edited export loses them
+          # and fails with a NOT NULL violation that names no file.
+          for key in ('name', 'nodes', 'connections'):
+              if key not in wf:
+                  sys.exit(f'$f: missing top-level {key!r}')
+          if 'active' not in wf:
+              sys.exit('$f: missing top-level \"active\" — import will fail')
+          print(f'$f: {len(wf[\"nodes\"])} nodes')
+          "
+          done
+
+  images:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [worker, admin, mcp]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.service }}
+        run: docker build -t rfp-${{ matrix.service }}:ci ./${{ matrix.service }}
+
+  compose:
+    name: Compose files parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Production config is valid without the dev override
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml --profile prod config >/dev/null
+          echo "production compose OK"
+      - name: Dev config is valid
+        run: docker compose config >/dev/null

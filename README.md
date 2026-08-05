@@ -70,7 +70,9 @@ silently break the other's guarantees.
 ## Requirements
 
 - Docker Engine 24+ with Compose v2 (older engines cannot unpack recent images)
-- ~4 GB RAM, ~20 GB disk
+- **8 GB RAM**, ~20 GB disk. 4 GB runs the pipeline alone, but n8n takes roughly a
+  gigabyte on its own and the knowledge base adds GIN indexes on top — two archived
+  forums already occupy 249 MB. On Hetzner that means CX32, not CX22.
 - Outbound HTTPS
 
 No API keys are required to run the pipeline against live sources. Keys unlock
