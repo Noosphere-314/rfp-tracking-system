@@ -38,10 +38,12 @@ services:
       DB_POSTGRESDB_SCHEMA: n8n
       DB_POSTGRESDB_USER: ${N8N_DB_USER}
       DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
-      N8N_HOST: ${DOMAIN}
+      # Editor on its own subdomain (n8n login + 2FA); webhooks and forms stay
+      # on the main domain so their URLs survive the split.
+      N8N_HOST: n8n.${DOMAIN}
       N8N_PROTOCOL: https
       WEBHOOK_URL: https://${DOMAIN}/
-      N8N_EDITOR_BASE_URL: https://${DOMAIN}/
+      N8N_EDITOR_BASE_URL: https://n8n.${DOMAIN}/
       GENERIC_TIMEZONE: ${TZ:-Europe/Kyiv}
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
       N8N_DIAGNOSTICS_ENABLED: "false"
@@ -72,6 +74,7 @@ services:
     profiles: ["prod"]
     depends_on:
       - n8n
+      - admin
     environment:
       DOMAIN: ${DOMAIN}
       ACME_EMAIL: ${ACME_EMAIL}

@@ -11,9 +11,9 @@
 		format console
 	}
 
-	# Security boundary (System-Design.md §9). Everything not matched below
-	# returns 404 — in particular the n8n editor, /rest/*, and /signin, which
-	# stay reachable only over Tailscale on 127.0.0.1:5678.
+	# Security boundary (System-Design.md §9). The main domain serves the
+	# team-facing surfaces only: webhooks, forms, and the dashboard. The n8n
+	# editor lives on its own subdomain below — never on these paths.
 
 	# Ingestion webhooks. Auth is the shared secret header checked inside the
 	# n8n workflow itself; Caddy only has to not block it.
@@ -45,7 +45,26 @@
 	# 	reverse_proxy mcp:8000
 	# }
 
+	# Dashboard for the team (sales included) — read leads, manage sources,
+	# browse the KB. The admin app has no auth of its own, so this basic_auth
+	# IS its security boundary; same credentials as the forms above.
 	handle {
-		respond "Not found" 404
+		basic_auth {
+			{$ADMIN_FORM_USER} {$ADMIN_FORM_PASSWORD_HASH}
+		}
+		reverse_proxy admin:8000
 	}
+}
+
+# n8n editor — engineers only, protected by n8n's own login + TOTP 2FA
+# (Settings → Personal). The System-Design §9 invariant still holds: NO n8n
+# accounts for non-engineers — CE has no RBAC, any login can exfiltrate every
+# stored credential (Pipedrive, Anthropic, Slack) through a scratch workflow.
+n8n.{$DOMAIN} {
+	encode zstd gzip
+	log {
+		output stdout
+		format console
+	}
+	reverse_proxy n8n:5678
 }
