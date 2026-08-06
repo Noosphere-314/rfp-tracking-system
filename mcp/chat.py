@@ -269,21 +269,54 @@ def _load_history(storage_key: str, before_id: int) -> list[dict]:
 # ── Stub tier — deterministic keyword search ────────────────────────
 
 
-def _stub_query(message: str) -> str:
-    words = [
+# Перший рядок КОЖНОЇ stub-відповіді. Знайдено на живих людях 2026-08-07:
+# Микола спитав бота «Ти уже працюєш?», отримав п'ять випадкових форумних
+# лінків і зробив висновок «зламано». Футер дрібним шрифтом не рятує —
+# режим треба називати ДО результатів, а не після.
+_STUB_HEADER = (
+    "🔎 Keyword mode — the AI tier is not enabled yet (no Anthropic key). "
+    "I match the words of your message against the forum archive:"
+)
+
+_STUB_EXAMPLES = (
+    "dev tooling grants Optimism · RetroPGF round results · "
+    "security audit funding Arbitrum"
+)
+
+
+def _stub_terms(message: str) -> list[str]:
+    return [
         w for w in re.findall(r"[^\W\d_]+", message.lower())
         if len(w) >= 3 and w not in _STOPWORDS_STUB
     ]
+
+
+def _stub_query(message: str) -> str:
+    words = _stub_terms(message)
     return " OR ".join(dict.fromkeys(words[:8])) or message[:60]
 
 
 def _stub_reply(message: str) -> str:
+    # Архів англомовний (body_tsv = to_tsvector('english', …)): запит без
+    # жодного латинського слова не «знайде мало» — він знайде ВИПАДКОВЕ.
+    # Краще чесно попросити ключові слова, ніж показувати сміття, яке
+    # виглядає як поломка.
+    if not any(re.fullmatch(r"[a-z]+", w) for w in _stub_terms(message)):
+        return (
+            "🔎 Keyword mode — the AI tier is not enabled yet (no Anthropic "
+            "key), so I can only match English keywords against the forum "
+            "archive; I don't understand free-form questions yet.\n\n"
+            f"Try keywords like: {_STUB_EXAMPLES}\n\n"
+            "Once the AI tier is on, you can ask naturally in any language."
+        )
+
     query = _stub_query(message)
     result = kbtools.search_impl(query, limit=5)
     hits = result.get("post_hits") or []
 
     if not hits:
         return (
+            f"{_STUB_HEADER}\n\n"
             "No matches in the archive for these keywords. Try rephrasing "
             "with different forum vocabulary (e.g. RetroPGF, mission, ARFC, "
             "service provider) or asking about a specific forum.\n\n"
@@ -291,7 +324,7 @@ def _stub_reply(message: str) -> str:
             "answers._"
         )
 
-    lines = ["Keyword-tier matches from the archive:", ""]
+    lines = [_STUB_HEADER, ""]
     for i, hit in enumerate(hits, start=1):
         lines.append(f"{i}. {hit['title']} — {hit['post_url']}")
         if hit.get("snippet"):

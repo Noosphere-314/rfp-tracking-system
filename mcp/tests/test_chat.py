@@ -289,6 +289,24 @@ def test_stub_reply_formats_top_hits(monkeypatch):
     assert "1. Grants RFP — https://x/1" in reply
     assert "«RFP» snippet" in reply
     assert "Keyword tier" in reply
+    # Режим називається ПЕРШИМ рядком, до результатів (живий урок 2026-08-07:
+    # футер дрібним шрифтом ніхто не читає — «Ти уже працюєш?» → 5 випадкових
+    # лінків → «зламано»).
+    assert reply.startswith("🔎 Keyword mode")
+
+
+def test_stub_reply_without_latin_keywords_explains_instead_of_searching(monkeypatch):
+    """Питання без жодного латинського слова (архів англомовний!) не має
+    йти в пошук — випадкові збіги виглядають як поломка. Чесне пояснення
+    режиму + приклади запитів, і НУЛЬ звернень до search_impl."""
+    def _boom(*a, **kw):
+        raise AssertionError("search_impl не мав викликатися")
+
+    monkeypatch.setattr(kbtools, "search_impl", _boom)
+    reply = chat._stub_reply("Ти уже працюєш?")
+    assert "Keyword mode" in reply
+    assert "any language" in reply  # обіцянка агентного рівня
+    assert "Optimism" in reply      # приклади ключових слів
 
 
 # ── Daily budget exceeded ────────────────────────────────────────────
