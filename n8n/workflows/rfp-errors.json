@@ -59,6 +59,27 @@
           "name": "Telegram account"
         }
       }
+    },
+    {
+      "parameters": {
+        "chatId": "-1004424509619",
+        "text": "={{ '🚨 n8n workflow failed: ' + $json.workflow.name + '\\nNode: ' + ($json.execution.lastNodeExecuted || '?') + '\\nError: ' + ($json.execution.error.message || 'unknown') + '\\nExecution: ' + $json.execution.url }}",
+        "additionalFields": {}
+      },
+      "id": "tg-fail-group-v1",
+      "name": "Telegram: збій (група)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        420,
+        160
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "BknL5zHv5PjAaBh1",
+          "name": "Telegram account"
+        }
+      }
     }
   ],
   "connections": {
@@ -75,7 +96,13 @@
     },
     "Telegram: pipeline failure": {
       "main": [
-        []
+        [
+          {
+            "node": "Telegram: збій (група)",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Slack: pipeline failure": {
