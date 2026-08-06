@@ -35,7 +35,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 from psycopg.rows import dict_row
 
-from admin import auth
+from admin import auth, i18n
 from worker import fetchers
 from worker.fetchers.base import Source
 from worker.http import HttpClient, SourceBlocked
@@ -67,7 +67,7 @@ app = FastAPI(
 )
 templates = Jinja2Templates(
     directory=Path(__file__).parent / "templates",
-    context_processors=[auth.template_context],
+    context_processors=[auth.template_context, i18n.template_context],
 )
 # /assets/, а не /static/: каддівський catch-all віддає адміну все, що не
 # /webhook/*, /form/*, /form-waiting-room/*. Якщо HTML n8n-форми колись
@@ -209,7 +209,7 @@ async def csrf_error_handler(request: Request, exc: auth.CsrfError):
 
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, reason: str = "", next: str = "/"):
+def login_page(request: Request, reason: str = "", next: str = "/", who: str = ""):
     return templates.TemplateResponse(
         request,
         "login.html",
@@ -218,6 +218,8 @@ def login_page(request: Request, reason: str = "", next: str = "/"):
             "reason_text": auth.REASONS.get(reason, ""),
             "next": auth.safe_next(next),
             "idle_minutes": auth.IDLE_SECONDS // 60,
+            "team": auth.TEAM,
+            "who": who,
         },
     )
 
@@ -229,12 +231,15 @@ async def login_submit(
     next: str = Form("/"),
     who: str = Form(""),
 ):
-    """`who` — необов'язковий підпис «хто ти» (варіант C з розділу 7, п.5).
+    """`who` — обов'язковий вибір зі списку команди (варіант C з розділу 7, п.5).
 
     Це журнал змін, а не автентифікація: пароль спільний, тож система не може
     знати, хто саме увійшов. Але коли хтось змінює поріг класифікатора,
-    `settings.updated_by` має відповідати на «хто це зробив» бодай на рівні
-    добровільного підпису — інакше колонка назавжди лишається 'admin-ui'.
+    `settings.updated_by` має відповідати на «хто це зробив» — інакше колонка
+    назавжди лишається 'admin-ui'.
+
+    Пароль перевіряється ПЕРШИМ, ще до `who`: інакше форма підказувала б
+    сторонньому, що пароль підійшов, і перетворювала б підбір на двокроковий.
     """
     target = auth.safe_next(next)
     ok, blocked_for = await auth.verify_password(password)
@@ -247,7 +252,14 @@ async def login_submit(
         return RedirectResponse(f"/login?{urlencode(params)}", status_code=303)
 
     signature = auth.clean_who(who)
-    log.info("вхід у дашборд%s", f" ({signature})" if signature else " (без підпису)")
+    if not signature:
+        # `required` у HTML обходиться голим POST — справжня перевірка тут.
+        params = {"reason": "who"}
+        if target != "/":
+            params["next"] = target
+        return RedirectResponse(f"/login?{urlencode(params)}", status_code=303)
+
+    log.info("вхід у дашборд: %s", signature)
     response = RedirectResponse(target, status_code=303)
     auth.issue(response, request, who=signature)
     return response
@@ -269,6 +281,27 @@ def logout_all(request: Request):
     log.info("усі сесії завершено, session_epoch=%s", epoch)
     response = RedirectResponse("/login?reason=bye", status_code=303)
     auth.clear(response, request)
+    return response
+
+
+@app.post("/lang", dependencies=[Depends(auth.csrf_guard)])
+def switch_lang(request: Request, lang: str = Form(...), next: str = Form("/")):
+    """Перемикач мови в кабінеті. Дефолт — англійська; UA лише за явним вибором.
+
+    Мова живе в окремій cookie, а не в сесії: це преференція перегляду, а не
+    частина автентифікації, і перевидавати підписаний сесійний cookie заради
+    косметики не варто.
+    """
+    response = RedirectResponse(auth.safe_next(next), status_code=303)
+    response.set_cookie(
+        i18n.LANG_COOKIE,
+        i18n.normalize(lang),
+        max_age=365 * 24 * 3600,
+        path="/",
+        httponly=False,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+    )
     return response
 
 
@@ -455,7 +488,7 @@ def add_source(
     }
     if type not in fetchers.FETCHERS:
         return _render_sources(
-            request, error=f"Невідомий тип джерела: {type}",
+            request, error=f"Unknown source type: {type}",
             form=submitted, status_code=400,
         )
     try:
@@ -464,7 +497,7 @@ def add_source(
             raise ValueError("конфіг має бути JSON-об'єктом {…}")
     except ValueError as exc:
         return _render_sources(
-            request, error=f"Некоректний JSON у конфізі: {exc}",
+            request, error=f"Invalid JSON in config: {exc}",
             form=submitted, status_code=400,
         )
 
@@ -476,7 +509,7 @@ def add_source(
     count, error = _test_fetch(candidate)
     if error:
         return _render_sources(
-            request, error=f"Тест-фетч не пройшов: {error}",
+            request, error=f"Test fetch failed: {error}",
             form=submitted, status_code=400,
         )
 
@@ -496,7 +529,7 @@ def add_source(
         )
         conn.commit()
     return RedirectResponse(
-        f"/sources?message=Збережено — тест-фетч повернув елементів: {count}",
+        f"/sources?message=Saved — test fetch returned {count} item(s)",
         status_code=303,
     )
 
@@ -534,7 +567,7 @@ def add_keyword(request: Request, pattern: str = Form(...), kind: str = Form(...
         regex.compile(pattern, regex.IGNORECASE)
     except regex.error as exc:
         return RedirectResponse(
-            f"/keywords?error=Патерн не компілюється: {exc}", status_code=303
+            f"/keywords?error=Pattern does not compile: {exc}", status_code=303
         )
 
     with db() as conn:
@@ -544,7 +577,7 @@ def add_keyword(request: Request, pattern: str = Form(...), kind: str = Form(...
             (pattern, kind, auth.actor(request)),
         )
         conn.commit()
-    return RedirectResponse("/keywords?message=Збережено", status_code=303)
+    return RedirectResponse("/keywords?message=Saved", status_code=303)
 
 
 @mutations.post("/keywords/{keyword_id}/toggle")
@@ -564,68 +597,67 @@ def toggle_keyword(keyword_id: int):
 # жодного натяку на причину.
 HIDDEN_SETTINGS = {"session_epoch"}
 
+# Англійська — дефолт (живе тут), українська — ключем у i18n.UK: той самий
+# принцип, що і в шаблонах, EN видно при читанні коду.
 SETTING_GROUPS = [
-    ("classify", "Класифікація"),
-    ("volume", "Обсяг і контроль"),
-    ("channels", "Канали"),
-    ("leads", "Ліди"),
-    ("other", "Інше"),
+    ("classify", "Classification"),
+    ("volume", "Volume and limits"),
+    ("channels", "Channels"),
+    ("leads", "Leads"),
+    ("other", "Other"),
 ]
 
 # Підказки навмисно чесні (розділ 7.12): кілька ключів зараз не читає ніхто,
 # і підказка, що описує неіснуючу поведінку, гірша за її відсутність.
 SETTING_META = {
     "confidence_threshold": {
-        "group": "classify", "label": "Поріг автоліда", "type": "float",
-        "hint": "0…1. Вище порога — лід створюється автоматично. Читає n8n (rfp-main).",
+        "group": "classify", "label": "Auto-lead threshold", "type": "float",
+        "hint": "0…1. Above the threshold a lead is created automatically. Read by n8n (rfp-main).",
     },
     "review_band_low": {
-        "group": "classify", "label": "Нижня межа review-смуги", "type": "float",
-        "hint": "0…1, не більше за поріг автоліда. Між ними — у канал на перегляд.",
+        "group": "classify", "label": "Review band, lower bound", "type": "float",
+        "hint": "0…1, not above the auto-lead threshold. Anything in between goes to the review channel.",
     },
     "classifier_prompt_version": {
-        "group": "classify", "label": "Версія промпта", "type": "text",
-        "hint": "Поки не використовується: класифікатор у STUB-режимі пише "
-                "prompt_version='stub-no-llm' самостійно.",
+        "group": "classify", "label": "Prompt version", "type": "text",
+        "hint": "Not in use yet: in STUB mode the classifier writes prompt_version itself.",
     },
     "max_leads_per_run": {
-        "group": "volume", "label": "Максимум лідів за прогін", "type": "int",
+        "group": "volume", "label": "Max leads per run", "type": "int",
         "min": 1, "max": 500,
-        "hint": "1…500. Поки не використовується — жоден компонент цього ключа не читає.",
+        "hint": "1…500. Not in use yet — no component reads this key.",
     },
     "lead_floor_7d": {
-        "group": "volume", "label": "Мінімум лідів за 7 днів", "type": "int",
+        "group": "volume", "label": "Minimum leads per 7 days", "type": "int",
         "min": 0, "max": 100,
-        "hint": "0…100. Менше — алерт «щось зламалося вгорі» (читає n8n rfp-digest).",
+        "hint": "0…100. Fewer than that raises an alert (read by n8n rfp-digest).",
     },
     "source_dark_days": {
-        "group": "volume", "label": "Днів мовчання джерела до алерту", "type": "int",
+        "group": "volume", "label": "Days of source silence before an alert", "type": "int",
         "min": 1, "max": 365,
-        "hint": "1…365. Читає воркер на кожному прогоні — нечислове значення "
-                "зупиняє прогін посеред циклу.",
+        "hint": "1…365. Read by the worker on every run — a non-numeric value stops the run mid-cycle.",
     },
     "alert_channel": {
-        "group": "channels", "label": "Канал алертів", "type": "channel",
-        "hint": "Починається з #. Поки не використовується: Slack-ноди вимкнені, "
-                "сповіщення йдуть у Telegram.",
+        "group": "channels", "label": "Alerts channel", "type": "channel",
+        "hint": "Starts with #. Not in use yet: Slack nodes are disabled, notifications go to Telegram.",
     },
     "review_channel": {
-        "group": "channels", "label": "Канал перегляду", "type": "channel",
-        "hint": "Починається з #. Поки не використовується (Slack-ноди вимкнені).",
+        "group": "channels", "label": "Review channel", "type": "channel",
+        "hint": "Starts with #. Not in use yet (Slack nodes are disabled).",
     },
     "digest_channel": {
-        "group": "channels", "label": "Канал дайджесту", "type": "channel",
-        "hint": "Починається з #. Поки не використовується (Slack-ноди вимкнені).",
+        "group": "channels", "label": "Digest channel", "type": "channel",
+        "hint": "Starts with #. Not in use yet (Slack nodes are disabled).",
     },
     "lead_title_template": {
-        "group": "leads", "label": "Шаблон заголовка ліда", "type": "text",
-        "hint": "Плейсхолдери {label}, {ecosystem}, {title}. Поки не використовується.",
+        "group": "leads", "label": "Lead title template", "type": "text",
+        "hint": "Placeholders {label}, {ecosystem}, {title}. Not in use yet.",
     },
 }
 
 
 def validate_setting(key: str, value: str) -> tuple[bool, str]:
-    """→ (ок, текст помилки українською).
+    """→ (ок, текст помилки англійською: це системна діагностика).
 
     Без цієї перевірки `0.7.` у `confidence_threshold` тихо ламає класифікацію
     на наступному прогоні, а «14 днів» у `source_dark_days` кидає ValueError
@@ -641,22 +673,22 @@ def validate_setting(key: str, value: str) -> tuple[bool, str]:
         try:
             number = float(value)
         except ValueError:
-            return False, f"«{label}»: потрібне число від 0 до 1, а не «{value}»"
+            return False, f"{label}: expected a number between 0 and 1, got “{value}”"
         if not 0.0 <= number <= 1.0:
-            return False, f"«{label}»: число має бути в межах 0…1"
+            return False, f"{label}: the number must be within 0…1"
     elif kind == "int":
         try:
             number = int(value)
         except ValueError:
-            return False, f"«{label}»: потрібне ціле число, а не «{value}»"
+            return False, f"{label}: expected a whole number, got “{value}”"
         low, high = meta.get("min", 0), meta.get("max", 10**9)
         if not low <= number <= high:
-            return False, f"«{label}»: число має бути в межах {low}…{high}"
+            return False, f"{label}: the number must be within {low}…{high}"
     elif kind == "channel":
         if not value.startswith("#"):
-            return False, f"«{label}»: назва каналу має починатися з #"
+            return False, f"{label}: the channel name must start with #"
     if not value:
-        return False, f"«{label}»: порожнє значення"
+        return False, f"{label}: empty value"
     return True, ""
 
 
@@ -678,6 +710,10 @@ def _render_settings(
     with db() as conn:
         rows = conn.execute("SELECT * FROM settings ORDER BY key").fetchall()
 
+    # Мітки й підказки перекладаються тут, а не в шаблоні: вони приходять із
+    # SETTING_META (англійська там і живе), а українська — ключем у i18n.UK.
+    tr = i18n.translator(i18n.lang_of(request))
+
     values, grouped = {}, {}
     for row in rows:
         if row["key"] in HIDDEN_SETTINGS:
@@ -688,8 +724,8 @@ def _render_settings(
         meta = SETTING_META.get(row["key"], {})
         # Ключ, якого нема в мапі, лишається видимим звичайним текстовим полем:
         # нова міграція не має робити налаштування невидимим.
-        item["label"] = meta.get("label", row["key"])
-        item["hint"] = meta.get("hint", "")
+        item["label"] = tr(f"set.{row['key']}.label", meta.get("label", row["key"]))
+        item["hint"] = tr(f"set.{row['key']}.hint", meta.get("hint", "")) if meta.get("hint") else ""
         item["kind"] = meta.get("type", "text")
         values[row["key"]] = item["value"]
         grouped.setdefault(meta.get("group", "other"), []).append(item)
@@ -702,7 +738,7 @@ def _render_settings(
         {
             "nav": "settings",
             "groups": [
-                (gid, label, grouped[gid])
+                (gid, tr(f"setg.{gid}", label), grouped[gid])
                 for gid, label in SETTING_GROUPS
                 if gid in grouped
             ],
@@ -757,9 +793,9 @@ async def save_settings(request: Request):
                 if float(low) > float(high):
                     return _render_settings(
                         request,
-                        error="Нижня межа review-смуги не може бути більшою за "
-                              "поріг автоліда — інакше review-смуга порожня, а "
-                              "частина знахідок зникає мовчки",
+                        error="The review band lower bound cannot exceed the auto-lead "
+                              "threshold — the band would be empty and some "
+                              "findings would vanish silently",
                         overrides=submitted,
                         status_code=400,
                     )
@@ -777,7 +813,7 @@ async def save_settings(request: Request):
                 (value, actor, key, value),
             )
         conn.commit()
-    return RedirectResponse("/settings?message=Збережено", status_code=303)
+    return RedirectResponse("/settings?message=Saved", status_code=303)
 
 
 # ── Items & runs ───────────────────────────────────────────────────

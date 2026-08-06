@@ -145,6 +145,7 @@ services:
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
       SESSION_SECRET: ${SESSION_SECRET}
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
+      DASHBOARD_USERS: ${DASHBOARD_USERS:-}
       # Пункт меню «n8n». Плоске значення в .env — вкладену інтерполяцію
       # ${N8N_URL:-https://n8n.${DOMAIN}} компоуз 2.2.3 псує мовчки.
       N8N_URL: ${N8N_URL}

@@ -3,24 +3,27 @@
     власний рендерер із підтримкою [текст](url) був би XSS-поверхнею
     (`[клац](javascript:…)`). Тіло лишається як є, під autoescape, з
     `white-space: pre-wrap` через .prose--raw. Це рішення специфікації, а не
-    недоробка: рендер Markdown — окремий крок з окремим рев'ю. -#}
-{% block title %}Бріф #{{ brief.id }}{% endblock %}
-{% block h1 %}Бріф #{{ brief.id }}{% endblock %}
+    недоробка: рендер Markdown — окремий крок з окремим рев'ю.
+
+    Двомовність: англійський текст — другим аргументом t(), українська зі
+    словника. Тіло бріфа, назва екосистеми, модель і item_uid — дані. -#}
+{% block title %}{{ t("pg.brief.h1", "Brief") }} #{{ brief.id }}{% endblock %}
+{% block h1 %}{{ t("pg.brief.h1", "Brief") }} #{{ brief.id }}{% endblock %}
 {% block sub %}{{ brief.title }}{% endblock %}
 
 {% block controls %}
 <div class="toolbar">
-  <nav class="breadcrumbs" aria-label="Хлібні крихти">
-    <a href="/items">Знахідки</a>
+  <nav class="breadcrumbs" aria-label="{{ t('nav.breadcrumbs', 'Breadcrumbs') }}">
+    <a href="/items">{{ t("nav.items", "Findings") }}</a>
     <span aria-hidden="true">›</span>
-    <a href="/briefs">Бріфи</a>
+    <a href="/briefs">{{ t("nav.briefs", "Briefs") }}</a>
     <span aria-hidden="true">›</span>
-    <span>Бріф #{{ brief.id }}</span>
+    <span>{{ t("pg.brief.h1", "Brief") }} #{{ brief.id }}</span>
   </nav>
   <span class="toolbar__spacer"></span>
   {#- Сенс бріфа — вставити його в Telegram/CRM, тому копіювання і є головна
       дія сторінки. Обробник у app.js (data-copy → селектор джерела). -#}
-  <button class="btn btn--primary" type="button" data-copy="#brief-body">Копіювати</button>
+  <button class="btn btn--primary" type="button" data-copy="#brief-body">{{ t("act.copy", "Copy") }}</button>
 </div>
 {% endblock %}
 
@@ -31,7 +34,7 @@
     <span class="badge {{ 'b-on' if brief.tier == 'llm' else 'b-neutral' }}">{{ TIER_UA.get(brief.tier, brief.tier) }}</span>
     {% if brief.model %}<span class="badge b-info">{{ brief.model }}</span>{% endif %}
     {% if brief.tokens_in %}
-    <span class="badge">{{ brief.tokens_in }}→{{ brief.tokens_out }} токенів</span>
+    <span class="badge">{{ brief.tokens_in }}→{{ brief.tokens_out }} {{ t("f.tokens", "tokens") }}</span>
     {% endif %}
     <span class="toolbar__spacer"></span>
     <span class="muted">{{ brief.created_at.strftime('%Y-%m-%d %H:%M') if brief.created_at else '—' }}</span>
@@ -41,7 +44,7 @@
   </div>
   {% if brief.item_uid %}
   <div class="panel__foot">
-    Знахідка: <code>{{ brief.item_uid[:24] }}…</code>
+    {{ t("f.item", "Finding") }}: <code>{{ brief.item_uid[:24] }}…</code>
   </div>
   {% endif %}
 </article>

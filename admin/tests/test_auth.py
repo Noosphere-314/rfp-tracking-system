@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 # Env — ДО імпорту admin.app: auth.py читає його на імпорті і навмисно падає,
@@ -38,21 +39,11 @@ from admin import auth  # noqa: E402
 
 SAME_ORIGIN = {"Sec-Fetch-Site": "same-origin"}
 
-# Легасі-маршрути, чиї форми ще не мають прихованого поля csrf: партіал
-# `_csrf.html` з'являється разом із новим base.html (крок 2), а поля в формах —
-# на кроці 3. Крок 3 зобов'язаний СПОРОЖНИТИ цей список і повісити
-# `Depends(csrf_guard)` на роутер (розділ 1.9). Новий POST-маршрут сюди
-# додати не можна — тест на це і розрахований.
-CSRF_LEGACY = {
-    "/sources/add",
-    "/sources/{source_id}/toggle",
-    "/keywords/add",
-    "/keywords/{keyword_id}/toggle",
-    "/settings/save",
-    "/kb/forums/add",
-    "/kb/forums/{forum_id}/toggle",
-    "/items/{item_uid}/brief",
-}
+# Крок 3 завершено — список СПОРОЖНЕНО, як і вимагала специфікація: усі
+# мутуючі маршрути тепер на роутері `mutations` з `Depends(csrf_guard)`, а
+# форми інклюдять `_csrf.html`. Порожній набір означає, що будь-який новий
+# POST без захисту завалить тест нижче.
+CSRF_LEGACY: set[str] = set()
 # Ці двоє не мають і не повинні мати CSRF-токен: /login видається до сесії
 # (токен виводиться з cookie, якої ще нема), /mock/webhook — публічний
 # машинний вхід із власним секретом у заголовку.
@@ -66,11 +57,17 @@ def client():
         yield c
 
 
+WHO = auth.TEAM[0]  # будь-хто зі списку команди; підпис обов'язковий
+
+
 def _login(client) -> None:
     response = client.post(
-        "/login", data={"password": PASSWORD, "next": "/"}, follow_redirects=False
+        "/login",
+        data={"password": PASSWORD, "next": "/", "who": WHO},
+        follow_redirects=False,
     )
     assert response.status_code == 303
+    assert _reason(response) == "", "логін мав пройти, а не повернутись на форму"
 
 
 def _reason(response) -> str:
@@ -122,11 +119,11 @@ def test_every_post_route_is_csrf_covered():
             unprotected.append(route.path)
     assert not unprotected, f"POST без csrf_guard: {unprotected}"
 
-    # Легасі-список не має пережити крок 3, але поки він є — усі його шляхи
-    # мусять існувати, інакше він тихо перетворюється на дірку для друкарської
-    # помилки в новому маршруті.
+    # Захист від «тест зелений, бо перевіряти не було чого»: якби роутер
+    # мутацій знову забули підключити (це вже траплялося — форми віддавали
+    # 404), список POST-маршрутів схлопнувся б до /login і /mock/webhook.
     existing = {r.path for r in _routes("POST")}
-    assert CSRF_LEGACY <= existing, CSRF_LEGACY - existing
+    assert {"/sources/add", "/settings/save", "/logout"} <= existing, existing
 
 
 # ── 3. Пароль ──────────────────────────────────────────────────────
@@ -135,7 +132,7 @@ def test_every_post_route_is_csrf_covered():
 def test_login_accepts_the_password_and_rejects_a_wrong_one(client):
     response = client.post(
         "/login",
-        data={"password": PASSWORD, "next": "/items?status=pending"},
+        data={"password": PASSWORD, "next": "/items?status=pending", "who": WHO},
         follow_redirects=False,
     )
     assert response.status_code == 303
@@ -147,11 +144,34 @@ def test_login_accepts_the_password_and_rejects_a_wrong_one(client):
     auth.reset_throttle()
     client.cookies.clear()
     response = client.post(
-        "/login", data={"password": PASSWORD + "x"}, follow_redirects=False
+        "/login", data={"password": PASSWORD + "x", "who": WHO}, follow_redirects=False
     )
     assert response.status_code == 303
     assert response.headers["location"].startswith("/login")
     assert _reason(response) == "bad"
+
+
+def test_signature_is_required_and_must_come_from_the_team_list(client):
+    """`required` у HTML обходиться голим POST, тож перевірка — на сервері.
+
+    Друга половина тесту важливіша за першу: якби довільний рядок приймався,
+    вибір зі списку був би косметикою, і та сама людина знову підписувалася б
+    по-різному.
+    """
+    for payload in ({"password": PASSWORD}, {"password": PASSWORD, "who": "хтось"}):
+        auth.reset_throttle()
+        client.cookies.clear()
+        response = client.post("/login", data=payload, follow_redirects=False)
+        assert response.status_code == 303
+        assert _reason(response) == "who", payload
+        assert auth.COOKIE_BASE not in response.cookies
+
+    # А підпис зі списку доїжджає до колонок added_by/updated_by.
+    auth.reset_throttle()
+    client.cookies.clear()
+    _login(client)
+    request = SimpleNamespace(cookies={auth.COOKIE_BASE: client.cookies[auth.COOKIE_BASE]})
+    assert auth.actor(request) == f"admin-ui:{WHO}"
 
 
 # ── 4. Ідл-таймаут ─────────────────────────────────────────────────
@@ -234,3 +254,22 @@ def test_safe_next_rejects_backslash_and_absolute_targets():
     assert auth.safe_next("https://evil.com") == "/"
     assert auth.safe_next("/items?status=done\r\nSet-Cookie: x=1") == "/"
     assert auth.safe_next("/items?status=done") == "/items?status=done"
+
+
+# ── 8. Порожній env не має спустошувати список команди ─────────────
+
+
+def test_empty_dashboard_users_env_falls_back_to_defaults(monkeypatch):
+    """compose передає `DASHBOARD_USERS=${DASHBOARD_USERS:-}` — тобто змінна
+    ІСНУЄ і порожня. `os.environ.get(key, default)` повернув би "", TEAM став би
+    пустим і логін відхиляв би всіх. Перевірено наживо; тест фіксує поведінку."""
+    import importlib
+
+    monkeypatch.setenv("DASHBOARD_USERS", "")
+    reloaded = importlib.reload(auth)
+    try:
+        assert reloaded.TEAM, "порожній env не має давати порожній список команди"
+        assert reloaded.clean_who(reloaded.TEAM[0]) == reloaded.TEAM[0]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(auth)

@@ -28,7 +28,7 @@ import hmac
 import logging
 import os
 import time
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, unquote, urlencode, urlparse
 
 import psycopg
 from fastapi import Form, Request
@@ -72,17 +72,18 @@ PUBLIC_PREFIX = ("/assets/",)
 NO_REISSUE = {"/logout", "/logout/all"}
 
 # Причини на сторінці логіну (`?reason=`).
+# ЗАВЖДИ англійською: усі ці повідомлення показуються на екрані логіну, який
+# двомовності не має (перемикач EN/UA живе вже в кабінеті). Мова тут не залежить
+# від cookie ще й тому, що частина причин виникає САМЕ ТОДІ, коли сесії немає —
+# отже й преференцій користувача читати нізвідки.
 REASONS = {
-    "expired": "Сесію завершено через 30 хвилин без активності",
-    "bad": "Невірний пароль",
-    "csrf": "Запит прийшов із чужої сторінки — увійди ще раз",
-    "bye": "Ви вийшли",
-    "throttled": "Забагато невдалих спроб — зачекай кілька секунд",
+    "expired": f"Session ended after {IDLE_SECONDS // 60} minutes of inactivity",
+    "bad": "Wrong password",
+    "csrf": "That request came from another page — please sign in again",
+    "bye": "You have signed out",
+    "throttled": "Too many failed attempts — wait a few seconds",
+    "who": "Select who you are — otherwise changes cannot be attributed",
 }
-if IDLE_SECONDS != 1800:
-    REASONS["expired"] = (
-        f"Сесію завершено через {IDLE_SECONDS // 60} хв без активності"
-    )
 
 
 # ── Епоха відкликання ──────────────────────────────────────────────
@@ -178,17 +179,42 @@ def read_cookie(request: Request) -> str:
     return request.cookies.get(COOKIE_HOST) or request.cookies.get(COOKIE_BASE) or ""
 
 
-def clean_who(raw: str) -> str:
-    """Санітизація підпису «хто ти» з форми логіну.
+# Хто саме входить — список із env, щоб змінити склад команди можна було без
+# деплою (`DASHBOARD_USERS=Микола,Олег,Сейлз`). Вибір зі списку, а не вільний
+# текст: інакше та сама людина стає то «Микола», то «микола», то «M.», і
+# колонка updated_by знову перестає відповідати на питання «хто це зробив».
+# Підрозділи компанії (woof.software/team), а не імена: імена змінюються з
+# кожним наймом, а підрозділ у журналі змін відповідає на потрібне питання —
+# «хто з якого боку компанії правив налаштування». ЗАВЖДИ англійською: список
+# показується на екрані логіну, який двомовності не має.
+#
+# `or`, а не другий аргумент get(): compose передає DASHBOARD_USERS=${...:-},
+# тобто змінна ІСНУЄ і порожня, і get(key, default) повернув би "" — список
+# став би пустим, а логін відхиляв би геть усіх (перевірено наживо).
+TEAM = [
+    name.strip()
+    for name in (
+        os.environ.get("DASHBOARD_USERS")
+        or "Executive,Growth,Development,Management"
+    ).split(",")
+    if name.strip()
+]
 
-    Це журнал змін, а не автентифікація: значення ніхто не перевіряє, і воно
-    приходить від користувача. Тому — жорсткі межі: 24 символи, без роздільника
-    payload (`|`), без керуючих символів, які могли б поїхати в лог-рядок.
+
+def clean_who(raw: str) -> str:
+    """Нормалізація підпису «хто ти» з форми логіну.
+
+    Приймається ЛИШЕ значення зі списку TEAM: `required` у HTML обходиться
+    голим POST, тож єдина справжня перевірка — тут, на сервері. Порожній рядок
+    означає «не з нашого списку» і логін відхиляється.
+
+    Обрізання і фільтрація друкованих символів лишаються другим шаром — на
+    випадок, якщо в DASHBOARD_USERS колись потрапить сміття з env.
     """
-    cleaned = "".join(
+    candidate = "".join(
         ch for ch in (raw or "").strip()[:24] if ch.isprintable() and ch != "|"
-    )
-    return cleaned.strip()
+    ).strip()
+    return candidate if candidate in TEAM else ""
 
 
 def session_who(request: Request) -> str:
@@ -206,7 +232,9 @@ def session_who(request: Request) -> str:
     except (BadSignature, SignatureExpired):
         return ""
     _, _, who = payload.partition("|")
-    return who
+    # Підпис зберігається percent-encoded (див. issue): у cookie можна класти
+    # лише latin-1, а список команди — кирилицею.
+    return unquote(who)
 
 
 def actor(request: Request) -> str:
@@ -231,7 +259,10 @@ def issue(response: Response, request: Request, who: str | None = None) -> None:
     name = COOKIE_HOST if secure else COOKIE_BASE
     if who is None:
         who = session_who(request)
-    payload = f"{_EPOCH}|{who}" if who else str(_EPOCH)
+    # quote() обов'язковий: HTTP-заголовки кодуються latin-1, а «Микола» в
+    # Set-Cookie дає UnicodeEncodeError уже в Starlette — тобто 500 на самому
+    # логіні. Кодується лише підпис, епоха лишається читабельною.
+    payload = f"{_EPOCH}|{quote(who, safe='')}" if who else str(_EPOCH)
     response.set_cookie(
         name,
         signer.sign(payload.encode()).decode(),

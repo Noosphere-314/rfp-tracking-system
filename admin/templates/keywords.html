@@ -7,22 +7,25 @@
     Контекст маршруту: invalid / include / exclude (уже розділені в
     keywords_page), message, error. Змінної `keywords` більше немає.
 
-    Нуль інлайнових стилів — CSP `style-src 'self'` блокує і атрибут style. -#}
+    Нуль інлайнових стилів — CSP `style-src 'self'` блокує і атрибут style.
 
-{% block title %}Ключові слова{% endblock %}
-{% block h1 %}Ключові слова{% endblock %}
-{% block sub %}Regex без урахування регістру; exclude має пріоритет — збіг там відкидає знахідку ще до класифікатора{% endblock %}
+    Двомовність (admin/i18n.py): англійська живе прямо в розмітці другим
+    аргументом t(), українська приходить зі словника за ключем. -#}
+
+{% block title %}{{ t("pg.keywords.h1", "Keywords") }}{% endblock %}
+{% block h1 %}{{ t("pg.keywords.h1", "Keywords") }}{% endblock %}
+{% block sub %}{{ t("pg.keywords.sub", "The regexes that decide which findings reach the classifier at all") }}{% endblock %}
 
 {% block controls %}
 <form class="toolbar" method="post" action="/keywords/add">
   {% include "_csrf.html" %}
   <label class="field">
-    <span class="field__label">Патерн</span>
+    <span class="field__label">{{ t("f.pattern", "Pattern") }}</span>
     <input class="input mono" name="pattern" required placeholder="\y(hackathon|grants?)\y">
   </label>
 
   <label class="field">
-    <span class="field__label">Дія</span>
+    <span class="field__label">{{ t("f.kind", "Kind") }}</span>
     {#- Значення лишаються англійськими (інваріант локалізації): їх розуміє
         воркер і CHECK-констрейнт keywords_kind_check. Українська — у підписі
         через KIND_UA. -#}
@@ -33,18 +36,18 @@
     </select>
   </label>
 
-  <button class="btn btn--primary" type="submit">Додати</button>
+  <button class="btn btn--primary" type="submit">{{ t("act.add", "Add") }}</button>
   <span class="toolbar__spacer"></span>
-  <span class="field__hint">Патерн компілюється під час збереження — той, що не компілюється, не приймається</span>
+  <span class="field__hint">{{ t("pg.keywords.compile_hint", "The pattern is compiled on save — one that does not compile is rejected") }}</span>
 </form>
 
 <div class="toolbar">
   <div class="chips">
     {% if invalid %}
-    <a class="chip" href="#invalid">Невалідні · <span class="num">{{ invalid | length }}</span></a>
+    <a class="chip" href="#invalid">{{ t("pg.keywords.broken", "Not compiling") }} · <span class="num">{{ invalid | length }}</span></a>
     {% endif %}
-    <a class="chip" href="#include">Пропускають далі · <span class="num">{{ include | length }}</span></a>
-    <a class="chip" href="#exclude">Відсікають · <span class="num">{{ exclude | length }}</span></a>
+    <a class="chip" href="#include">{{ t("pg.keywords.include", "Let through") }} · <span class="num">{{ include | length }}</span></a>
+    <a class="chip" href="#exclude">{{ t("pg.keywords.exclude", "Cut off") }} · <span class="num">{{ exclude | length }}</span></a>
   </div>
 </div>
 {% endblock %}
@@ -55,17 +58,17 @@
 {% if invalid %}
 <section class="panel" id="invalid">
   <div class="panel__head">
-    <h2>Невалідні патерни</h2>
+    <h2>{{ t("pg.keywords.invalid_h", "Broken patterns") }}</h2>
     <span class="badge b-bad">{{ invalid | length }}</span>
     <span class="toolbar__spacer"></span>
-    <span class="muted">не застосовуються на прогонах</span>
+    <span class="muted">{{ t("pg.keywords.invalid_note", "not applied on runs") }}</span>
   </div>
   <div class="tablewrap">
     <table class="table--dense">
       <thead>
         <tr>
-          <th>ID</th><th>Патерн</th><th>Дія</th><th>Причина</th><th>Стан</th>
-          <th><span class="visually-hidden">Керування</span></th>
+          <th>ID</th><th>{{ t("f.pattern", "Pattern") }}</th><th>{{ t("f.kind", "Kind") }}</th><th>{{ t("f.reason", "Reason") }}</th><th>{{ t("f.state", "State") }}</th>
+          <th><span class="visually-hidden">{{ t("app.controls", "Controls") }}</span></th>
         </tr>
       </thead>
       <tbody>
@@ -74,15 +77,15 @@
           <td class="num">{{ k.id }}</td>
           <td><code>{{ k.pattern }}</code></td>
           <td class="cell--nowrap">{{ KIND_UA.get(k.kind, k.kind) }}</td>
-          <td class="field__hint field__hint--bad">{{ k.invalid_reason or 'причину не записано' }}</td>
+          <td class="field__hint field__hint--bad">{{ k.invalid_reason or t("msg.no_reason", "reason not recorded") }}</td>
           <td>
-            {% if k.enabled %}<span class="badge b-on">увімкнено</span>
-            {% else %}<span class="badge b-off">вимкнено</span>{% endif %}
+            {% if k.enabled %}<span class="badge b-on">{{ t("st.on", "enabled") }}</span>
+            {% else %}<span class="badge b-off">{{ t("st.off", "disabled") }}</span>{% endif %}
           </td>
           <td>
             <form class="inline" method="post" action="/keywords/{{ k.id }}/toggle">
               {% include "_csrf.html" %}
-              <button class="btn btn--sm" type="submit">{{ 'Вимкнути' if k.enabled else 'Увімкнути' }}</button>
+              <button class="btn btn--sm" type="submit">{{ t("act.turn_off", "Disable") if k.enabled else t("act.turn_on", "Enable") }}</button>
             </form>
           </td>
         </tr>
@@ -90,7 +93,7 @@
       </tbody>
     </table>
   </div>
-  <div class="panel__foot">Редагувати патерн тут не можна: вимкни невалідний і додай виправлений через форму вгорі.</div>
+  <div class="panel__foot">{{ t("pg.keywords.invalid_foot", "Patterns cannot be edited here: disable the broken one and add a fixed one through the form above.") }}</div>
 </section>
 {% endif %}
 
@@ -98,11 +101,11 @@
     партіала з csrf усередині нього поводиться менш очевидно. -#}
 <div class="panels panels--2">
   {% for sect_id, title, foot, rows in [
-       ('include', 'Пропускають далі',
-        'Знахідка йде до класифікатора, лише якщо збігся хоча б один із цих патернів.',
+       ('include', t("pg.keywords.include", "Let through"),
+        t("pg.keywords.include_foot", "A finding goes to the classifier only if it matched at least one of these patterns."),
         include),
-       ('exclude', 'Відсікають',
-        'Збіг тут відкидає знахідку ще до класифікатора — exclude виграє в include.',
+       ('exclude', t("pg.keywords.exclude", "Cut off"),
+        t("pg.keywords.exclude_foot", "A match here drops the finding before the classifier — exclude beats include."),
         exclude)] %}
   <section class="panel" id="{{ sect_id }}">
     <div class="panel__head">
@@ -117,8 +120,8 @@
       <table class="table--dense">
         <thead>
           <tr>
-            <th>ID</th><th>Патерн</th><th>Стан</th>
-            <th><span class="visually-hidden">Керування</span></th>
+            <th>ID</th><th>{{ t("f.pattern", "Pattern") }}</th><th>{{ t("f.state", "State") }}</th>
+            <th><span class="visually-hidden">{{ t("app.controls", "Controls") }}</span></th>
           </tr>
         </thead>
         <tbody>
@@ -127,13 +130,13 @@
             <td class="num">{{ k.id }}</td>
             <td><code>{{ k.pattern }}</code></td>
             <td>
-              {% if k.enabled %}<span class="badge b-on">увімкнено</span>
-              {% else %}<span class="badge b-off">вимкнено</span>{% endif %}
+              {% if k.enabled %}<span class="badge b-on">{{ t("st.on", "enabled") }}</span>
+              {% else %}<span class="badge b-off">{{ t("st.off", "disabled") }}</span>{% endif %}
             </td>
             <td>
               <form class="inline" method="post" action="/keywords/{{ k.id }}/toggle">
                 {% include "_csrf.html" %}
-                <button class="btn btn--sm" type="submit">{{ 'Вимкнути' if k.enabled else 'Увімкнути' }}</button>
+                <button class="btn btn--sm" type="submit">{{ t("act.turn_off", "Disable") if k.enabled else t("act.turn_on", "Enable") }}</button>
               </form>
             </td>
           </tr>
@@ -144,11 +147,11 @@
     {% else %}
     <div class="empty">
       {% if sect_id == 'include' %}
-      <p class="empty__title">Патернів пропуску немає</p>
-      <p class="empty__hint">Поки список порожній, до класифікатора не проходить нічого — додай хоча б один патерн вище.</p>
+      <p class="empty__title">{{ t("pg.keywords.include_empty", "No include patterns") }}</p>
+      <p class="empty__hint">{{ t("pg.keywords.include_empty_hint", "While this list is empty nothing reaches the classifier — add at least one pattern above.") }}</p>
       {% else %}
-      <p class="empty__title">Патернів відсіву немає</p>
-      <p class="empty__hint">Нічого не відкидається наперед — усе, що пройшло include, іде до класифікатора.</p>
+      <p class="empty__title">{{ t("pg.keywords.exclude_empty", "No exclude patterns") }}</p>
+      <p class="empty__hint">{{ t("pg.keywords.exclude_empty_hint", "Nothing is dropped up front — everything that passed include goes to the classifier.") }}</p>
       {% endif %}
     </div>
     {% endif %}

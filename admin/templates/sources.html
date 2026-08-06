@@ -9,85 +9,90 @@
     Клієнтські фільтри — розмітка, яку читає app.js (розділ 3.11, п.7):
     [data-filter-target] — CSS-селектор таблиці, [data-filter-count] — селектор
     лічильника показаних рядків. Бекенд не змінюється: sources_page приймає
-    лише message/error. -#}
+    лише message/error.
 
-{% block title %}Джерела{% endblock %}
-{% block h1 %}Джерела{% endblock %}
-{% block sub %}Перед збереженням виконується живий тест-фетч: джерело, що не віддало жодного елемента, не зберігається{% endblock %}
+    Двомовність (admin/i18n.py): англійська живе прямо в розмітці другим
+    аргументом t(), українська приходить зі словника за ключем. -#}
+
+{% block title %}{{ t("pg.sources.h1", "Sources") }}{% endblock %}
+{% block h1 %}{{ t("pg.sources.h1", "Sources") }}{% endblock %}
+{% block sub %}{{ t("pg.sources.test_hint", "A live test fetch runs before saving: a source is stored only if it returned at least one item") }}{% endblock %}
 
 {% block controls %}
 <div class="toolbar">
   <label class="field">
-    <span class="field__label">Пошук</span>
+    <span class="field__label">{{ t("f.search", "Search") }}</span>
     <input class="input" type="search" name="q"
-           placeholder="назва, екосистема, тип, URL"
+           placeholder="{{ t("pg.sources.search_ph", "name, ecosystem, type, URL") }}"
            data-filter-target="#sources-table" data-filter-count="#sources-shown">
   </label>
 
   <label class="field">
-    <span class="field__label">Стан</span>
+    <span class="field__label">{{ t("f.state", "State") }}</span>
     {#- Значення — рівно той текст, що стоїть у бейджі рядка: фільтр у app.js
-        шукає підрядок у textContent рядка. «вимкнено» НЕ є підрядком
-        «увімкнено» (в-и-м проти в-і-м), тож гілки не перетинаються. -#}
+        шукає підрядок у textContent рядка. Тому й тут, і в бейджі стоїть той
+        самий виклик t(). Гілки не перетинаються в жодній з мов: «вимкнено» не
+        є підрядком «увімкнено» (в-и-м проти в-і-м), а "enabled" не є підрядком
+        "disabled". -#}
     <select name="state" data-filter-target="#sources-table" data-filter-count="#sources-shown">
-      <option value="">усі</option>
-      <option value="увімкнено">увімкнені</option>
-      <option value="вимкнено">вимкнені</option>
-      <option value="карантин">карантин</option>
+      <option value="">{{ t("st.any", "all") }}</option>
+      <option value="{{ t("st.on", "enabled") }}">{{ t("st.on", "enabled") }}</option>
+      <option value="{{ t("st.off", "disabled") }}">{{ t("st.off", "disabled") }}</option>
+      <option value="{{ t("st.quarantined", "quarantined") }}">{{ t("st.quarantined", "quarantined") }}</option>
     </select>
   </label>
 
   <span class="toolbar__spacer"></span>
-  <span class="field__hint">Фільтри клієнтські: діє той, який змінили останнім</span>
+  <span class="field__hint">{{ t("msg.filter_client", "Filters run in the browser: the one you changed last is the one in effect") }}</span>
 </div>
 
 {#- <details open> при помилці: add_source повертає відрендерену сторінку зі
     збереженими полями (а не редірект), тож форма мусить бути розкрита —
     інакше введене зникає з очей, хоч і лишається в DOM. -#}
 <details class="disclosure"{% if error %} open{% endif %}>
-  <summary>＋ Додати джерело</summary>
+  <summary>{{ t("pg.sources.add", "＋ Add source") }}</summary>
   <div class="disclosure__body">
     {#- data-busy: тест-фетч триває до 30 с, і без блокування кнопки другий
         клік запускає його вдруге. -#}
-    <form method="post" action="/sources/add" data-busy="Перевіряю джерело…">
+    <form method="post" action="/sources/add" data-busy="{{ t("pg.sources.testing", "Testing source…") }}">
       {% include "_csrf.html" %}
       <div class="form-grid">
         <label class="field">
-          <span class="field__label">Тип</span>
+          <span class="field__label">{{ t("f.type", "Type") }}</span>
           <select name="type">
-            {% for t in fetcher_types %}
-            <option value="{{ t }}"{% if form.type == t %} selected{% endif %}>{{ t }}</option>
+            {% for ft in fetcher_types %}
+            <option value="{{ ft }}"{% if form.type == ft %} selected{% endif %}>{{ ft }}</option>
             {% endfor %}
           </select>
         </label>
 
         <label class="field">
-          <span class="field__label">Назва</span>
+          <span class="field__label">{{ t("f.name", "Name") }}</span>
           <input class="input" name="name" required placeholder="Celo forum"
                  value="{{ form.name }}">
         </label>
 
         <label class="field">
-          <span class="field__label">Екосистема</span>
+          <span class="field__label">{{ t("f.ecosystem", "Ecosystem") }}</span>
           <input class="input" name="ecosystem" required placeholder="Celo"
                  value="{{ form.ecosystem }}">
         </label>
 
         <label class="field">
-          <span class="field__label">URL</span>
+          <span class="field__label">{{ t("f.url", "URL") }}</span>
           <input class="input" name="url" required placeholder="https://forum.celo.org"
                  value="{{ form.url }}">
         </label>
 
         <label class="field">
-          <span class="field__label">Категорія</span>
+          <span class="field__label">{{ t("f.category", "Category") }}</span>
           <input class="input" name="category" placeholder="grants"
                  value="{{ form.category }}">
-          <span class="field__hint">Необов'язково — мітка розділу всередині джерела</span>
+          <span class="field__hint">{{ t("pg.sources.category_hint", "Optional — the label of a section inside the source") }}</span>
         </label>
 
         <label class="field">
-          <span class="field__label">Напрям</span>
+          <span class="field__label">{{ t("f.lane", "Lane") }}</span>
           {#- Значення лишаються англійськими (інваріант локалізації): українська
               тільки в підписі через LANE_UA. -#}
           <select name="lane">
@@ -98,17 +103,17 @@
         </label>
 
         <label class="field field--wide">
-          <span class="field__label">Конфіг (JSON)</span>
+          <span class="field__label">{{ t("f.config_json", "Config (JSON)") }}</span>
           <textarea name="config" placeholder='{"categories": [{"slug": "grants", "id": 12}]}'>{{ form.config or '{}' }}</textarea>
           <span class="field__hint">discourse: <code>{"categories": [{"slug": …, "id": …}]}</code> ·
-            rest_aggregator: <code>items_path</code> і мапінг <code>fields</code></span>
+            rest_aggregator: <code>items_path</code> {{ t("pg.sources.config_join", "and") }} <code>fields</code></span>
         </label>
       </div>
 
       <div class="toolbar">
-        <span class="field__hint">Джерело, що не пройшло тест-фетч, не зберігається — та сама гарантія, що дає n8n-форма</span>
+        <span class="field__hint">{{ t("pg.sources.save_hint", "A source that fails the test fetch is not saved — the same guarantee the n8n form gives") }}</span>
         <span class="toolbar__spacer"></span>
-        <button class="btn btn--primary" type="submit">Перевірити й зберегти</button>
+        <button class="btn btn--primary" type="submit">{{ t("act.test_save", "Test and save") }}</button>
       </div>
     </form>
   </div>
@@ -118,8 +123,8 @@
 {% block data %}
 <section class="panel">
   <div class="panel__head">
-    <h2>Усі джерела</h2>
-    <span class="muted">показано <span class="num" id="sources-shown">{{ sources | length }}</span> з {{ sources | length }}</span>
+    <h2>{{ t("pg.sources.all", "All sources") }}</h2>
+    <span class="muted">{{ t("msg.shown", "shown") }} <span class="num" id="sources-shown">{{ sources | length }}</span> {{ t("msg.of", "of") }} {{ sources | length }}</span>
   </div>
 
   {% if sources %}
@@ -129,9 +134,9 @@
     <table id="sources-table">
       <thead>
         <tr>
-          <th>ID</th><th>Джерело</th><th>Тип</th><th>Напрям</th><th>URL</th>
-          <th>Стан</th><th>Остання знахідка</th>
-          <th><span class="visually-hidden">Дія</span></th>
+          <th>ID</th><th>{{ t("f.source", "Source") }}</th><th>{{ t("f.type", "Type") }}</th><th>{{ t("f.lane", "Lane") }}</th><th>{{ t("f.url", "URL") }}</th>
+          <th>{{ t("f.state", "State") }}</th><th>{{ t("f.last_item", "Last item") }}</th>
+          <th><span class="visually-hidden">{{ t("f.action", "Action") }}</span></th>
         </tr>
       </thead>
       <tbody>
@@ -149,7 +154,7 @@
           </td>
           <td>
             {% if s.quarantined %}
-              <span class="badge b-quarantine">карантин</span>
+              <span class="badge b-quarantine">{{ t("st.quarantined", "quarantined") }}</span>
               {#- Причина — інлайном під бейджем, а не в title=: карантин і є
                   головна причина, через яку сюди заходять, а тултип не видно
                   ні з клавіатури, ні з телефона. -#}
@@ -157,20 +162,20 @@
               <div class="field__hint field__hint--bad">{{ s.quarantine_reason }}</div>
               {% endif %}
             {% elif s.enabled %}
-              <span class="badge b-on">увімкнено</span>
+              <span class="badge b-on">{{ t("st.on", "enabled") }}</span>
             {% else %}
-              <span class="badge b-off">вимкнено</span>
+              <span class="badge b-off">{{ t("st.off", "disabled") }}</span>
             {% endif %}
             {% if s.consecutive_failures %}
-            <div class="field__hint field__hint--bad">невдач поспіль: {{ s.consecutive_failures }}</div>
+            <div class="field__hint field__hint--bad">{{ t("msg.fails_in_row", "consecutive failures") }}: {{ s.consecutive_failures }}</div>
             {% endif %}
           </td>
           <td class="muted cell--nowrap">{{ s.last_item_at.strftime('%d.%m %H:%M') if s.last_item_at else '—' }}</td>
           <td>
             <form class="inline" method="post" action="/sources/{{ s.id }}/toggle"
-                  {% if s.enabled %}data-confirm="Вимкнути «{{ s.name }}»? Воркер перестане опитувати це джерело."{% endif %}>
+                  {% if s.enabled %}data-confirm="{{ t("act.turn_off", "Disable") }} «{{ s.name }}»? {{ t("msg.confirm_disable_src", "The worker will stop polling this source.") }}"{% endif %}>
               {% include "_csrf.html" %}
-              <button class="btn btn--sm" type="submit">{{ 'Вимкнути' if s.enabled else 'Увімкнути' }}</button>
+              <button class="btn btn--sm" type="submit">{{ t("act.turn_off", "Disable") if s.enabled else t("act.turn_on", "Enable") }}</button>
             </form>
           </td>
         </tr>
@@ -180,11 +185,11 @@
   </div>
   {% else %}
   <div class="empty">
-    <p class="empty__title">Джерел ще немає</p>
-    <p class="empty__hint">Додай перше через «＋ Додати джерело» вгорі — перед збереженням воно пройде живий тест-фетч.</p>
+    <p class="empty__title">{{ t("msg.no_sources", "No sources yet") }}</p>
+    <p class="empty__hint">{{ t("pg.sources.empty_hint", "Add the first one with «＋ Add source» above — it runs a live test fetch before it is saved.") }}</p>
   </div>
   {% endif %}
 
-  <div class="panel__foot">Увімкнення знімає карантин: воркер спробує джерело знову на найближчому прогоні.</div>
+  <div class="panel__foot">{{ t("pg.sources.foot", "Enabling clears quarantine: the worker will try the source again on the next run.") }}</div>
 </section>
 {% endblock %}

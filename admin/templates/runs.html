@@ -6,16 +6,16 @@
     worker_runs.detail — jsonb NOT NULL DEFAULT '{}', NULL там неможливий (F8).
     Раніше список помилок висипався в клітинку через <br>; тепер він згорнутий
     у <details>, бо один зламаний прогін інакше розтягує рядок на пів екрана. -#}
-{% block title %}Історія збору{% endblock %}
-{% block h1 %}Історія збору{% endblock %}
-{% block sub %}Один рядок — один прогін воркера: скільки джерел опитано і що з них вийшло{% endblock %}
+{% block title %}{{ t("pg.runs.h1", "Run history") }}{% endblock %}
+{% block h1 %}{{ t("pg.runs.h1", "Run history") }}{% endblock %}
+{% block sub %}{{ t("pg.runs.sub", "One row per worker run: how many sources were polled and what came of them") }}{% endblock %}
 
 {% block controls %}
 <form class="toolbar" method="get" action="/runs">
   <div class="field">
-    <label class="field__label" for="f-mode">Режим</label>
+    <label class="field__label" for="f-mode">{{ t("f.mode", "Mode") }}</label>
     <select id="f-mode" name="mode">
-      <option value="">усі</option>
+      <option value="">{{ t("st.any", "all") }}</option>
       {% for m in modes %}
       <option value="{{ m.mode }}"{% if m.mode == mode %} selected{% endif %}>{{ MODE_UA.get(m.mode, m.mode) }}</option>
       {% endfor %}
@@ -23,25 +23,25 @@
   </div>
 
   <div class="field">
-    <label class="field__label" for="f-limit">Показувати</label>
+    <label class="field__label" for="f-limit">{{ t("f.show", "Show") }}</label>
     <select id="f-limit" name="limit">
-      <option value="50"{% if limit != 200 %} selected{% endif %}>50 останніх</option>
-      <option value="200"{% if limit == 200 %} selected{% endif %}>200 останніх</option>
+      <option value="50"{% if limit != 200 %} selected{% endif %}>{{ t("pg.runs.last50", "last 50") }}</option>
+      <option value="200"{% if limit == 200 %} selected{% endif %}>{{ t("pg.runs.last200", "last 200") }}</option>
     </select>
   </div>
 
-  <button class="btn">Показати</button>
+  <button class="btn">{{ t("act.filter", "Filter") }}</button>
 
   {#- Клієнтський фільтр (app.js, п.6): без name, тож у GET-запит не потрапляє
       і посилання лишається чистим. Ознака проблемного рядка — data-fail на
       клітинці помилок. -#}
   <label class="check">
     <input type="checkbox" data-filter-target="#runs-table" data-filter-only="[data-fail]"
-           data-filter-count="#runs-shown"> лише з помилками
+           data-filter-count="#runs-shown"> {{ t("pg.runs.only_errors", "errors only") }}
   </label>
 
   <span class="toolbar__spacer"></span>
-  <span class="pager">показано <span id="runs-shown" class="num">{{ runs | length }}</span></span>
+  <span class="pager">{{ t("msg.shown", "shown") }} <span id="runs-shown" class="num">{{ runs | length }}</span></span>
 </form>
 {% endblock %}
 
@@ -52,9 +52,17 @@
     <table id="runs-table" class="table--dense">
       <thead>
         <tr>
-          <th>№</th><th>Початок</th><th>Тривалість</th><th>Режим</th><th>Джерела</th>
-          <th>Знайдено</th><th>Нові</th><th>Відсіяно</th><th>Доставлено</th>
-          <th>Не доставлено</th><th>Помилки</th>
+          <th>{{ t("f.num", "#") }}</th>
+          <th>{{ t("f.started", "Started") }}</th>
+          <th>{{ t("f.duration", "Duration") }}</th>
+          <th>{{ t("f.mode", "Mode") }}</th>
+          <th>{{ t("f.sources_n", "Sources") }}</th>
+          <th>{{ t("f.seen", "Seen") }}</th>
+          <th>{{ t("f.new", "New") }}</th>
+          <th>{{ t("f.filtered", "Filtered") }}</th>
+          <th>{{ t("f.delivered", "Delivered") }}</th>
+          <th>{{ t("f.dead", "Undelivered") }}</th>
+          <th>{{ t("f.errors", "Errors") }}</th>
         </tr>
       </thead>
       <tbody>
@@ -65,10 +73,11 @@
           <td class="muted">{{ r.id }}</td>
           <td class="cell--nowrap">{{ r.started_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
           <td class="cell--nowrap">
-            {%- if r.finished_at is none %}<span class="badge b-pending">триває</span>
+            {%- if r.finished_at is none %}<span class="badge b-pending">{{ t("st.running", "running") }}</span>
             {%- elif r.duration_s is none %}<span class="muted">—</span>
-            {%- elif r.duration_s < 60 %}{{ r.duration_s }} с
-            {%- else %}{{ r.duration_s // 60 }} хв {{ r.duration_s % 60 }} с
+            {%- elif r.duration_s < 60 %}{{ r.duration_s }} {{ t("f.unit.sec", "s") }}
+            {%- elif r.duration_s < 3600 %}{{ r.duration_s // 60 }} {{ t("f.unit.min", "min") }} {{ r.duration_s % 60 }} {{ t("f.unit.sec", "s") }}
+            {%- else %}{{ r.duration_s // 3600 }} {{ t("f.unit.hour", "h") }} {{ (r.duration_s % 3600) // 60 }} {{ t("f.unit.min", "min") }}
             {%- endif %}
           </td>
           <td>{{ MODE_UA.get(r.mode, r.mode) }}</td>
@@ -81,10 +90,15 @@
           <td{% if n or r.sources_failed %} data-fail{% endif %}>
             {% if n %}
             <details>
+              {#- Гілок чотири, а не три: українська й англійська різняться на
+                  n=21, 31, … — там UA бере однину («помилка»), а EN лишається
+                  множиною («errors»). Тому випадок n == 1 відділений від решти
+                  чисел на -1, і кожна гілка має власний ключ. -#}
               <summary>{{ n }}
-                {%- if n % 10 == 1 and n % 100 != 11 %} помилка
-                {%- elif n % 10 in [2, 3, 4] and n % 100 not in [12, 13, 14] %} помилки
-                {%- else %} помилок{% endif %}
+                {%- if n == 1 %} {{ t("pg.runs.err_1", "error") }}
+                {%- elif n % 10 == 1 and n % 100 != 11 %} {{ t("pg.runs.err_x1", "errors") }}
+                {%- elif n % 10 in [2, 3, 4] and n % 100 not in [12, 13, 14] %} {{ t("pg.runs.err_x24", "errors") }}
+                {%- else %} {{ t("pg.runs.err_many", "errors") }}{% endif %}
               </summary>
               <ul>{% for f in fails %}<li class="muted">{{ f }}</li>{% endfor %}</ul>
             </details>
@@ -97,8 +111,8 @@
   </div>
   {% else %}
   <div class="empty">
-    <p class="empty__title">Запусків ще не було</p>
-    <p class="empty__hint">Історія з'явиться після першого прогону — підніми воркер:
+    <p class="empty__title">{{ t("msg.no_runs.title", "No runs yet") }}</p>
+    <p class="empty__hint">{{ t("pg.runs.empty_hint", "History appears after the first run — start the worker:") }}
       <code>docker compose up -d worker</code></p>
   </div>
   {% endif %}

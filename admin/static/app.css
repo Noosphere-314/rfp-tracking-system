@@ -465,3 +465,38 @@ form.inline,.inline{display:inline}
 @media (max-width:640px){
   .grid-form{grid-template-columns:1fr}
 }
+
+/* ── Перемикач мови (сайдбар) ───────────────────────────────────────
+   EN за замовчуванням, UA за явним вибором. Форма з двох кнопок, а не
+   <select>: два варіанти краще показати поруч, ніж ховати у випадайку. */
+.langbar {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: 8px;
+  background: var(--surface-2, #151c23);
+  border: 1px solid var(--line, #232c36);
+  border-radius: 8px;
+}
+.langbar__btn {
+  flex: 1;
+  padding: 4px 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--text-dim, #8a99a8);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.langbar__btn:hover { color: var(--text, #d9e1e8); }
+.langbar__btn.is-active {
+  color: var(--bg, #0B1014);
+  background: linear-gradient(135deg, var(--brand-1, #10B981), var(--brand-2, #06B6D4));
+}
+.langbar__btn:focus-visible {
+  outline: 2px solid var(--brand-1, #10B981);
+  outline-offset: 1px;
+}

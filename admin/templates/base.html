@@ -11,20 +11,27 @@
     `csrf` у _csrf.html приходить із context processor auth.template_context,
     тож партіал працює на будь-якій сторінці без правок хендлера.
 -#}
-{%- set nav_groups = NAV_GROUPS if NAV_GROUPS is defined else [
-      ("work", "Робота"), ("cfg", "Налаштування"), ("sys", "Система")] -%}
+{#- Двомовність (admin/i18n.py): англійська — дефолт і живе прямо в розмітці
+    другим аргументом t(); українська приходить зі словника за ключем. Логін
+    навмисно поза цим — він завжди англійською. -#}
+{%- set nav_groups = [
+      ("work", t("nav.group.work", "Work")),
+      ("cfg",  t("nav.group.cfg",  "Configuration")),
+      ("sys",  t("nav.group.sys",  "System"))] -%}
 {#- Джерело правди для навігації — NAV в app.py (розділ 2.3). Список нижче
     вмикається лише доти, доки app.py його не передає. -#}
-{%- set nav_items = NAV if NAV is defined else [
-      {"id": "dashboard", "href": "/",         "label": "Огляд",         "group": "work"},
-      {"id": "items",     "href": "/items",    "label": "Знахідки",      "group": "work"},
-      {"id": "kb",        "href": "/kb",       "label": "База знань",    "group": "work"},
-      {"id": "sources",   "href": "/sources",  "label": "Джерела",       "group": "cfg"},
-      {"id": "keywords",  "href": "/keywords", "label": "Ключові слова", "group": "cfg"},
-      {"id": "settings",  "href": "/settings", "label": "Параметри",     "group": "cfg"},
-      {"id": "runs",      "href": "/runs",     "label": "Історія збору", "group": "sys"}] -%}
+{%- set nav_labels = {
+      "dashboard": t("nav.overview",  "Overview"),
+      "items":     t("nav.items",     "Findings"),
+      "kb":        t("nav.kb",        "Knowledge base"),
+      "chat":      t("nav.chat",      "AI chat"),
+      "sources":   t("nav.sources",   "Sources"),
+      "keywords":  t("nav.keywords",  "Keywords"),
+      "settings":  t("nav.settings",  "Settings"),
+      "runs":      t("nav.runs",      "Collection log"),
+      "briefs":    t("nav.briefs",    "Briefs")} -%}
 <!doctype html>
-<html lang="uk">
+<html lang="{{ lang }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -35,7 +42,7 @@
 <meta name="theme-color" content="#0B1014">
 </head>
 <body class="app{% block body_class %}{% endblock %}">
-<a class="skip" href="#main">До вмісту</a>
+<a class="skip" href="#main">{{ t("app.skip", "Skip to content") }}</a>
 <input type="checkbox" id="nav-toggle" hidden>
 
 <aside class="sidebar">
@@ -44,34 +51,46 @@
     <span class="brand__name">RFP&nbsp;Tracker</span>
   </a>
 
-  <nav class="nav" aria-label="Основна навігація">
+  <nav class="nav" aria-label="{{ t('nav.aria', 'Main navigation') }}">
     {% for group, label in nav_groups %}
       <p class="nav__group">{{ label }}</p>
-      {% for it in nav_items if it.group == group %}
+      {% for it in NAV if it.group == group %}
         <a class="nav__item{{ ' is-active' if nav == it.id }}" href="{{ it.href }}"
-           {% if nav == it.id %}aria-current="page"{% endif %}>{{ it.label }}
-           {% if it.soon %}<span class="badge b-soon">скоро</span>{% endif %}</a>
+           {% if nav == it.id %}aria-current="page"{% endif %}>{{ nav_labels[it.id] }}
+           {% if it.soon %}<span class="badge b-soon">{{ t("nav.soon", "soon") }}</span>{% endif %}</a>
       {% endfor %}
     {% endfor %}
     {% if N8N_URL %}
-    <p class="nav__group">Зовнішнє</p>
+    <p class="nav__group">{{ t("nav.group.ext", "External") }}</p>
     <a class="nav__item nav__item--ext" href="{{ N8N_URL }}" target="_blank"
-       rel="noopener noreferrer" aria-label="n8n, відкриється у новій вкладці">
+       rel="noopener noreferrer" aria-label="{{ t('nav.n8n.aria', 'n8n, opens in a new tab') }}">
        n8n <span aria-hidden="true">↗</span></a>
     {% endif %}
   </nav>
 
   <div class="sidebar__foot">
+    {#- Перемикач мови: EN — дефолт, UA за явним вибором. Форма, а не посилання:
+        зміна преференції користувача не має відбуватися по GET, який браузер
+        може префетчити. -#}
+    <form class="langbar" method="post" action="/lang">{% include "_csrf.html" %}
+      <input type="hidden" name="next" value="{{ request.url.path }}">
+      {% for code, label in LANGS.items() %}
+      <button class="langbar__btn{{ ' is-active' if lang == code }}" type="submit"
+              name="lang" value="{{ code }}"
+              {% if lang == code %}aria-current="true"{% endif %}>{{ label }}</button>
+      {% endfor %}
+    </form>
+
     <div class="session" id="session-timer"><span class="session__dot"></span>
       <span class="session__val">--:--</span></div>
     <form method="post" action="/logout">{% include "_csrf.html" %}
-      <button class="btn btn--ghost btn--block">Вийти</button></form>
+      <button class="btn btn--ghost btn--block">{{ t("app.logout", "Sign out") }}</button></form>
   </div>
 </aside>
 
 <div class="shell">
   <header class="topbar">
-    <label class="topbar__burger" for="nav-toggle" aria-label="Меню">☰</label>
+    <label class="topbar__burger" for="nav-toggle" aria-label="{{ t('app.menu', 'Menu') }}">☰</label>
     <div class="topbar__title">
       {% if self.h1() | trim %}<h1>{% block h1 %}{% endblock %}</h1>{% endif %}
       {% if self.sub() | trim %}<p class="topbar__sub">{% block sub %}{% endblock %}</p>{% endif %}
@@ -90,14 +109,9 @@
         текстовому вузлі, тобто {% block controls %}\n{% endblock %} дав би
         порожню рамку. -#}
     {% if self.controls() | trim %}
-    <section class="controls" aria-label="Керування">{% block controls %}{% endblock %}</section>
+    <section class="controls" aria-label="{{ t('app.controls', 'Controls') }}">{% block controls %}{% endblock %}</section>
     {% endif %}
     <section class="data">{% block data %}{% endblock %}</section>
-
-    {#- ТИМЧАСОВО: сумісність зі старими шаблонами. Видаляється на кроці 3. -#}
-    {% if self.content() | trim %}
-    <section class="data">{% block content %}{% endblock %}</section>
-    {% endif %}
   </main>
 </div>
 

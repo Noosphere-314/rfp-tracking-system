@@ -7,25 +7,28 @@
 
     Композер НЕ є <form method="post"> — надсилати нікуди; кнопки задизейблені,
     тож жодного CSRF-контракту тут не виникає. Коли з'явиться бекенд, форма
-    отримає method="post" і {% include "_csrf.html" %} разом із ним. -#}
-{% block title %}AI-чат{% endblock %}
-{% block h1 %}AI-чат{% endblock %}
-{% block sub %}Питання до бази знань живою мовою — у розробці{% endblock %}
+    отримає method="post" і {% include "_csrf.html" %} разом із ним.
+
+    Двомовність: англійський текст стоїть у розмітці другим аргументом t(),
+    українська приходить зі словника admin/i18n.py. -#}
+{% block title %}{{ t("pg.chat.h1", "AI chat") }}{% endblock %}
+{% block h1 %}{{ t("pg.chat.h1", "AI chat") }}{% endblock %}
+{% block sub %}{{ t("pg.chat.sub", "Ask the knowledge base in plain language — in development") }}{% endblock %}
 {% block content_mod %} content--full{% endblock %}
 
 {% block data %}
-{% set empty_title = "Чат над базою знань — у розробці" %}
-{% set empty_hint = "Тут можна буде питати архів форумів звичайною мовою: модель сама перебере кілька формулювань, прочитає теми цілком і покаже джерела. Поки що те саме доступне повнотекстовим пошуком." %}
+{% set empty_title = t("pg.chat.soon", "Chat over the knowledge base — in development") %}
+{% set empty_hint = t("pg.chat.about", "Here you will be able to ask the forum archive in plain language: the model will try several phrasings itself, read whole topics and show its sources. For now the same is available through full-text search.") %}
 {% set empty_href = "/kb" %}
-{% set empty_link = "Пошук у Базі знань" %}
+{% set empty_link = t("pg.chat.kb_link", "Search the knowledge base") %}
 {% include "_empty.html" %}
 {% endblock %}
 
 {% block controls %}
 <div class="chat__composer">
-  <label class="visually-hidden" for="chat-input">Повідомлення</label>
+  <label class="visually-hidden" for="chat-input">{{ t("f.message", "Message") }}</label>
   <textarea id="chat-input" disabled
-            placeholder="Напр.: які гранти на dev tooling обговорювали в Optimism цього кварталу?"></textarea>
-  <button class="btn btn--primary" type="button" disabled>Надіслати</button>
+            placeholder="{{ t('pg.chat.ph', 'e.g. which dev tooling grants were discussed in Optimism this quarter?') }}"></textarea>
+  <button class="btn btn--primary" type="button" disabled>{{ t("act.send", "Send") }}</button>
 </div>
 {% endblock %}

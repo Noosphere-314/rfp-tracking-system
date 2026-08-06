@@ -6,57 +6,60 @@
     Сніпети приходять із `ts_headline` із керуючими сентинелами \x02/\x03 і
     рендеряться фільтром `|hl` (екранує, ПОТІМ ставить <mark>). `|safe` до
     r.snippet не додавати ні за яких умов: raw_text поста містить довільний
-    HTML із форуму. -#}
-{% block title %}База знань{% endblock %}
-{% block h1 %}База знань{% endblock %}
-{% block sub %}Архів форумів і повнотекстовий пошук по ньому{% endblock %}
+    HTML із форуму.
+
+    Двомовність (admin/i18n.py): англійський текст стоїть у розмітці другим
+    аргументом t(), українська приходить зі словника за ключем. Значення в
+    URL (?forum=…), слаги форумів і назви інструментів MCP — дані, не UI:
+    не перекладаються. -#}
+{% block title %}{{ t("pg.kb.h1", "Knowledge base") }}{% endblock %}
+{% block h1 %}{{ t("pg.kb.h1", "Knowledge base") }}{% endblock %}
+{% block sub %}{{ t("pg.kb.sub", "Forum archive and full-text search across it") }}{% endblock %}
 
 {% block controls %}
 <form class="toolbar" method="get" action="/kb" role="search">
   <div class="field">
-    <label class="field__label" for="kb-q">Пошук в архіві</label>
+    <label class="field__label" for="kb-q">{{ t("pg.kb.search_label", "Search the archive") }}</label>
     {#- size=46 — ширина в символах, атрибут HTML, а не інлайновий стиль (CSP). -#}
     <input class="input--wide" id="kb-q" name="q" size="46" value="{{ q }}"
-           placeholder='напр. "developer tooling" grant'>
+           placeholder='{{ t("pg.kb.q_ph", "e.g. \"developer tooling\" grant") }}'>
   </div>
   <div class="field">
-    <label class="field__label" for="kb-forum">Форум</label>
+    <label class="field__label" for="kb-forum">{{ t("f.forum", "Forum") }}</label>
     <select id="kb-forum" name="forum">
-      <option value="">усі форуми</option>
+      <option value="">{{ t("f.forum.any", "all forums") }}</option>
       {% for f in forums %}
       <option value="{{ f.forum_slug }}" {{ 'selected' if forum == f.forum_slug }}>{{ f.forum_slug }}</option>
       {% endfor %}
     </select>
   </div>
-  <button class="btn btn--primary">Шукати</button>
-  {% if q or forum %}<a class="btn btn--ghost" href="/kb">Скинути</a>{% endif %}
+  <button class="btn btn--primary">{{ t("act.search", "Search") }}</button>
+  {% if q or forum %}<a class="btn btn--ghost" href="/kb">{{ t("act.reset", "Reset") }}</a>{% endif %}
   <span class="toolbar__spacer"></span>
 </form>
 
 <details class="disclosure">
-  <summary>Зареєструвати форум</summary>
+  <summary>{{ t("pg.kb.register", "＋ Register a forum") }}</summary>
   <div class="disclosure__body">
     <form method="post" action="/kb/forums/add">
       {% include "_csrf.html" %}
       <div class="form-grid">
         <div class="field">
-          <label class="field__label" for="forum-slug">Ідентифікатор</label>
-          <input id="forum-slug" name="forum_slug" required placeholder="напр. lido">
-          <span class="field__hint">Латиницею, нижнім регістром — під ним форум
-            видно в пошуку і в логах воркера.</span>
+          <label class="field__label" for="forum-slug">{{ t("pg.kb.forum_slug", "Identifier") }}</label>
+          <input id="forum-slug" name="forum_slug" required placeholder="{{ t('pg.kb.slug_ph', 'e.g. lido') }}">
+          <span class="field__hint">{{ t("pg.kb.slug_hint", "Lowercase Latin letters — the forum appears under this name in search and in worker logs.") }}</span>
         </div>
         <div class="field">
-          <label class="field__label" for="forum-url">Адреса форуму</label>
+          <label class="field__label" for="forum-url">{{ t("pg.kb.base_url", "Forum address") }}</label>
           <input id="forum-url" name="base_url" required placeholder="https://research.lido.fi">
-          <span class="field__hint">Discourse, обов'язково з <code>https://</code>,
-            без слеша в кінці.</span>
+          <span class="field__hint">{{ t("pg.kb.url_hint_a", "Discourse, always with") }} <code>https://</code>,
+            {{ t("pg.kb.url_hint_b", "no trailing slash.") }}</span>
         </div>
-        <p class="field__hint field--wide">Реєстрація лише ставить форум у чергу.
-          Сам архів піднімає нічна робота
-          <code>docker compose run --rm worker kb-backfill</code>, далі
-          <code>kb-update</code> тримає його свіжим.</p>
+        <p class="field__hint field--wide">{{ t("pg.kb.register_note_a", "Registering only puts the forum in the queue. The archive itself is built by the nightly job") }}
+          <code>docker compose run --rm worker kb-backfill</code>{{ t("pg.kb.register_note_b", ", then") }}
+          <code>kb-update</code> {{ t("pg.kb.register_note_c", "keeps it fresh.") }}</p>
         <div class="field--wide toolbar">
-          <button class="btn">Зареєструвати форум</button>
+          <button class="btn">{{ t("pg.kb.register_btn", "Register forum") }}</button>
           <span class="toolbar__spacer"></span>
         </div>
       </div>
@@ -69,15 +72,17 @@
 {% if q %}
 <section class="panel">
   <div class="panel__head">
-    <h2>Результати</h2>
+    <h2>{{ t("pg.kb.results", "Results") }}</h2>
     <span class="toolbar__spacer"></span>
-    <span class="badge">{{ results | length }}{{ ' (обмежено)' if results | length == 25 }}</span>
+    <span class="badge">{{ results | length }}{% if results | length == 25 %} {{ t("msg.limited", "(capped)") }}{% endif %}</span>
   </div>
   {% if results %}
   <div class="tablewrap">
     <table>
       <thead>
-        <tr><th>Форум</th><th>Тема</th><th>Фрагмент</th><th>Автор</th><th>Дата</th></tr>
+        <tr><th>{{ t("f.forum", "Forum") }}</th><th>{{ t("f.topic", "Topic") }}</th>
+            <th>{{ t("f.snippet", "Snippet") }}</th><th>{{ t("f.author", "Author") }}</th>
+            <th>{{ t("f.date", "Date") }}</th></tr>
       </thead>
       <tbody>
         {% for r in results %}
@@ -97,10 +102,10 @@
   </div>
   {% else %}
   <div class="panel__body">
-    {% set empty_title = "Нічого не знайдено" %}
-    {% set empty_hint = "Спробуй інші формулювання: синонім («dev tooling» → «developer infrastructure»), англійською замість української, коротшу фразу з одного-двох слів. Пошук індексує англійський текст постів." %}
+    {% set empty_title = t("msg.nothing_found", "Nothing found") %}
+    {% set empty_hint = t("pg.kb.empty_hint", "Try other wording: a synonym (\"dev tooling\" → \"developer infrastructure\"), English rather than your own language, a shorter phrase of one or two words. The index covers the English text of the posts.") %}
     {% set empty_href = "/chat" %}
-    {% set empty_link = "AI-чат робитиме ці переформулювання сам" %}
+    {% set empty_link = t("pg.kb.empty_link", "AI chat will rephrase the question for you") %}
     {% include "_empty.html" %}
   </div>
   {% endif %}
@@ -109,16 +114,18 @@
 
 <section class="panel">
   <div class="panel__head">
-    <h2>Форуми в архіві</h2>
+    <h2>{{ t("pg.kb.forums", "Archived forums") }}</h2>
     <span class="toolbar__spacer"></span>
-    <span class="muted">Свіжість — за найновішою активністю в архіві</span>
+    <span class="muted">{{ t("pg.kb.fresh_note", "Freshness follows the newest activity in the archive") }}</span>
   </div>
   {% if forums %}
   <div class="tablewrap">
     <table>
       <thead>
-        <tr><th>Форум</th><th>Адреса</th><th>Стан</th><th>Свіжість</th>
-            <th>Теми</th><th>Пости</th><th>Останній збір</th><th></th></tr>
+        <tr><th>{{ t("f.forum", "Forum") }}</th><th>{{ t("f.address", "Address") }}</th>
+            <th>{{ t("f.state", "State") }}</th><th>{{ t("f.freshness", "Freshness") }}</th>
+            <th>{{ t("f.topics", "Topics") }}</th><th>{{ t("f.posts", "Posts") }}</th>
+            <th>{{ t("f.last_crawl", "Last crawl") }}</th><th></th></tr>
       </thead>
       <tbody>
         {% for f in forums %}
@@ -126,26 +133,26 @@
           <td class="cell--nowrap">{{ f.forum_slug }}</td>
           <td><a href="{{ f.base_url }}" target="_blank" rel="noopener noreferrer">{{ f.base_url | replace('https://', '') }}</a></td>
           <td class="cell--nowrap">
-            {% if not f.enabled %}<span class="badge b-off">вимкнено</span>
-            {% elif f.backfill_done %}<span class="badge b-on">заархівовано</span>
-            {% else %}<span class="badge b-pending">бекфіл у черзі</span>{% endif %}
-            {% if f.consecutive_failures %}<span class="badge b-dead">{{ f.consecutive_failures }} збоїв</span>{% endif %}
+            {% if not f.enabled %}<span class="badge b-off">{{ t("st.off", "off") }}</span>
+            {% elif f.backfill_done %}<span class="badge b-on">{{ t("st.archived", "archived") }}</span>
+            {% else %}<span class="badge b-pending">{{ t("st.backfill_queued", "backfill queued") }}</span>{% endif %}
+            {% if f.consecutive_failures %}<span class="badge b-dead">{{ f.consecutive_failures }} {{ t("st.failures", "failures") }}</span>{% endif %}
           </td>
           <td class="cell--nowrap">
             {% set d = f.stale_days %}
-            {% if d is none %}<span class="badge">порожній</span>
-            {% elif d < 7 %}<span class="badge b-ok">свіжий · {{ d }} дн</span>
-            {% elif d < 30 %}<span class="badge b-warn">{{ d }} дн без новин</span>
-            {% else %}<span class="badge b-bad">застояний · {{ d }} дн</span>{% endif %}
+            {% if d is none %}<span class="badge">{{ t("st.empty", "empty") }}</span>
+            {% elif d < 7 %}<span class="badge b-ok">{{ t("pg.kb.fresh", "fresh") }} · {{ d }} {{ t("f.days_short", "d") }}</span>
+            {% elif d < 30 %}<span class="badge b-warn">{{ d }} {{ t("f.days_short", "d") }} {{ t("pg.kb.no_news", "with no news") }}</span>
+            {% else %}<span class="badge b-bad">{{ t("pg.kb.stale", "stale") }} · {{ d }} {{ t("f.days_short", "d") }}</span>{% endif %}
           </td>
           <td class="cell--num">{{ f.topics }}</td>
           <td class="cell--num">{{ f.posts }}</td>
           <td class="muted cell--nowrap">{{ f.last_incremental_at.strftime('%m-%d %H:%M') if f.last_incremental_at else '—' }}</td>
           <td>
             <form class="inline" method="post" action="/kb/forums/{{ f.id }}/toggle"
-                  {% if f.enabled %}data-confirm="Вимкнути форум {{ f.forum_slug }}? Архів перестане оновлюватись."{% endif %}>
+                  {% if f.enabled %}data-confirm="{{ t('pg.kb.confirm_off', 'Disable forum') }} {{ f.forum_slug }}? {{ t('pg.kb.confirm_off2', 'The archive will stop updating.') }}"{% endif %}>
               {% include "_csrf.html" %}
-              <button class="btn btn--sm">{{ 'вимкнути' if f.enabled else 'увімкнути' }}</button>
+              <button class="btn btn--sm">{{ t("act.disable", "disable") if f.enabled else t("act.enable", "enable") }}</button>
             </form>
           </td>
         </tr>
@@ -155,8 +162,8 @@
   </div>
   {% else %}
   <div class="panel__body">
-    {% set empty_title = "Жодного форуму не зареєстровано" %}
-    {% set empty_hint = "Додай форум формою «Зареєструвати форум» угорі, потім запусти бекфіл:" %}
+    {% set empty_title = t("pg.kb.empty_forums", "No forums registered yet") %}
+    {% set empty_hint = t("pg.kb.empty_forums_hint", "Add one with the \"Register a forum\" form above, then start the backfill:") %}
     {% set empty_code = "docker compose run --rm worker kb-backfill" %}
     {% set empty_href = none %}
     {% include "_empty.html" %}
@@ -165,12 +172,14 @@
 </section>
 
 <details class="panel disclosure">
-  <summary>Останні запити MCP</summary>
+  <summary>{{ t("pg.kb.mcp", "Recent MCP queries") }}</summary>
   {% if recent_queries %}
   <div class="tablewrap">
     <table class="table--dense">
       <thead>
-        <tr><th>Коли</th><th>Інструмент</th><th>Запит</th><th>Форум</th><th>Влучань</th></tr>
+        <tr><th>{{ t("f.when", "When") }}</th><th>{{ t("f.tool", "Tool") }}</th>
+            <th>{{ t("f.query", "Query") }}</th><th>{{ t("f.forum", "Forum") }}</th>
+            <th>{{ t("f.hits", "Hits") }}</th></tr>
       </thead>
       <tbody>
         {% for query in recent_queries %}
@@ -187,8 +196,8 @@
   </div>
   {% else %}
   <div class="disclosure__body">
-    {% set empty_title = "Запитів через MCP ще не було" %}
-    {% set empty_hint = "Підключи kbmcp до Claude (див. User-Guide) і постав перше питання — сюди потрапляють запити з чату, а не з форми пошуку вище." %}
+    {% set empty_title = t("pg.kb.empty_mcp", "No MCP queries yet") %}
+    {% set empty_hint = t("pg.kb.empty_mcp_hint", "Connect kbmcp to Claude (see the User Guide) and ask the first question — what lands here are queries from chat, not from the search form above.") %}
     {% set empty_code = none %}
     {% set empty_href = none %}
     {% include "_empty.html" %}

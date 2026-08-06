@@ -3,33 +3,34 @@
     після генерації — згенерований учора бріф знайти було неможливо.
     Контекст маршруту `briefs_page`: briefs, ecosystems, ecosystem, tier.
     Значення фільтрів у URL лишаються англійськими (?tier=llm) — інваріант
-    локалізації: українська тільки в презентації. -#}
-{% block title %}Бріфи{% endblock %}
-{% block h1 %}Бріфи{% endblock %}
-{% block sub %}Останні 50 згенерованих пакетів по екосистемах{% endblock %}
+    локалізації: переклад тільки в презентації, англійський текст — прямо в
+    розмітці другим аргументом t(), українська зі словника admin/i18n.py. -#}
+{% block title %}{{ t("pg.briefs.h1", "Briefs") }}{% endblock %}
+{% block h1 %}{{ t("pg.briefs.h1", "Briefs") }}{% endblock %}
+{% block sub %}{{ t("pg.briefs.sub", "Ecosystem briefings assembled from the forum archive") }}{% endblock %}
 
 {% block controls %}
 <form class="toolbar" method="get" action="/briefs">
   <div class="field">
-    <label class="field__label" for="brief-ecosystem">Екосистема</label>
+    <label class="field__label" for="brief-ecosystem">{{ t("f.ecosystem", "Ecosystem") }}</label>
     <select id="brief-ecosystem" name="ecosystem">
-      <option value="">усі</option>
+      <option value="">{{ t("st.any", "all") }}</option>
       {% for e in ecosystems %}
       <option value="{{ e }}" {{ 'selected' if ecosystem == e }}>{{ e }}</option>
       {% endfor %}
     </select>
   </div>
   <div class="field">
-    <label class="field__label" for="brief-tier">Рівень</label>
+    <label class="field__label" for="brief-tier">{{ t("f.tier", "Tier") }}</label>
     <select id="brief-tier" name="tier">
-      <option value="">усі</option>
-      {% for t in ['llm', 'basic'] %}
-      <option value="{{ t }}" {{ 'selected' if tier == t }}>{{ TIER_UA.get(t, t) }}</option>
+      <option value="">{{ t("st.any", "all") }}</option>
+      {% for t_code in ['llm', 'basic'] %}
+      <option value="{{ t_code }}" {{ 'selected' if tier == t_code }}>{{ TIER_UA.get(t_code, t_code) }}</option>
       {% endfor %}
     </select>
   </div>
-  <button class="btn btn--primary">Фільтрувати</button>
-  {% if ecosystem or tier %}<a class="btn btn--ghost" href="/briefs">Скинути</a>{% endif %}
+  <button class="btn btn--primary">{{ t("act.filter", "Filter") }}</button>
+  {% if ecosystem or tier %}<a class="btn btn--ghost" href="/briefs">{{ t("act.reset", "Reset") }}</a>{% endif %}
   <span class="toolbar__spacer"></span>
 </form>
 {% endblock %}
@@ -37,16 +38,17 @@
 {% block data %}
 <section class="panel">
   <div class="panel__head">
-    <h2>Бріфи</h2>
+    <h2>{{ t("pg.briefs.h1", "Briefs") }}</h2>
     <span class="toolbar__spacer"></span>
-    <span class="badge">{{ briefs | length }}{{ ' (обмежено)' if briefs | length == 50 }}</span>
+    <span class="badge">{{ briefs | length }}{% if briefs | length == 50 %} {{ t("msg.limited", "(capped)") }}{% endif %}</span>
   </div>
   {% if briefs %}
   <div class="tablewrap">
     <table>
       <thead>
-        <tr><th>#</th><th>Створено</th><th>Екосистема</th><th>Тема</th>
-            <th>Рівень</th><th>Модель</th><th>Знахідка</th></tr>
+        <tr><th>#</th><th>{{ t("f.created", "Created") }}</th><th>{{ t("f.ecosystem", "Ecosystem") }}</th>
+            <th>{{ t("f.topic", "Topic") }}</th><th>{{ t("f.tier", "Tier") }}</th>
+            <th>{{ t("f.model", "Model") }}</th><th>{{ t("f.item", "Finding") }}</th></tr>
       </thead>
       <tbody>
         {% for b in briefs %}
@@ -70,15 +72,15 @@
   {% else %}
   <div class="panel__body">
     {% if ecosystem or tier %}
-    {% set empty_title = "За цим фільтром бріфів немає" %}
-    {% set empty_hint = "Спробуй іншу екосистему або рівень — або скинь фільтр." %}
+    {% set empty_title = t("pg.briefs.empty_filter", "No briefs match this filter") %}
+    {% set empty_hint = t("pg.briefs.empty_filter_hint", "Try another ecosystem or tier — or clear the filter.") %}
     {% set empty_href = "/briefs" %}
-    {% set empty_link = "Показати всі бріфи" %}
+    {% set empty_link = t("pg.briefs.show_all", "Show all briefs") %}
     {% else %}
-    {% set empty_title = "Бріфів ще немає" %}
-    {% set empty_hint = "Бріф створюється кнопкою «бріф» на сторінці знахідок або нодою n8n після створення ліда. Потрібен заархівований форум тієї ж екосистеми." %}
+    {% set empty_title = t("pg.briefs.empty", "No briefs yet") %}
+    {% set empty_hint = t("pg.briefs.empty_hint", "A brief is created by the \"brief\" button on the findings page, or by an n8n node once a lead is created. It needs an archived forum for the same ecosystem.") %}
     {% set empty_href = "/items" %}
-    {% set empty_link = "До знахідок" %}
+    {% set empty_link = t("nav.items", "Findings") %}
     {% endif %}
     {% include "_empty.html" %}
   </div>

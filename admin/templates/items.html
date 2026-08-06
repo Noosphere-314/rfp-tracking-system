@@ -8,9 +8,9 @@
 
     Значення статусів в URL лишаються англійськими (?status=done) — інваріант
     локалізації; українською лише підписи. -#}
-{% block title %}Знахідки{% endblock %}
-{% block h1 %}Знахідки{% endblock %}
-{% block sub %}Усе, що воркер побачив у джерелах, і що з цим сталося далі{% endblock %}
+{% block title %}{{ t("pg.items.h1", "Findings") }}{% endblock %}
+{% block h1 %}{{ t("pg.items.h1", "Findings") }}{% endblock %}
+{% block sub %}{{ t("pg.items.sub", "Everything the worker saw in the sources, and what happened to it next") }}{% endblock %}
 
 {#- Хвіст запиту без `status`: чипси міняють лише статус, решту фільтрів
     зберігають. -#}
@@ -18,9 +18,9 @@
 
 {% block controls %}
 <div class="toolbar">
-  <div class="chips" role="group" aria-label="Фільтр за статусом">
+  <div class="chips" role="group" aria-label="{{ t('f.status_filter', 'Filter by status') }}">
     <a class="chip" href="/items?status={{ tail }}"
-       aria-current="{{ 'true' if not status else 'false' }}">усі</a>
+       aria-current="{{ 'true' if not status else 'false' }}">{{ t("st.any", "all") }}</a>
     {% for st in ITEM_STATUSES %}
     <a class="chip" href="/items?status={{ st }}{{ tail }}"
        aria-current="{{ 'true' if status == st else 'false' }}">{{ STATUS_UA.get(st, st) }}</a>
@@ -34,26 +34,26 @@
         фільтр за джерелом не скидав обраний статус. -#}
     <input type="hidden" name="status" value="{{ status }}">
     <div class="field">
-      <label class="field__label" for="f-source">Джерело</label>
+      <label class="field__label" for="f-source">{{ t("f.source", "Source") }}</label>
       <select id="f-source" name="source_id">
-        <option value="0">усі джерела</option>
+        <option value="0">{{ t("f.all_sources", "all sources") }}</option>
         {% for s in source_options %}
         <option value="{{ s.id }}" {{ 'selected' if source_id == s.id }}>{{ s.name }}</option>
         {% endfor %}
       </select>
     </div>
     <div class="field">
-      <label class="field__label" for="f-q">Пошук у заголовку</label>
-      <input id="f-q" name="q" value="{{ q }}" placeholder="частина заголовка">
+      <label class="field__label" for="f-q">{{ t("f.search_title", "Search in title") }}</label>
+      <input id="f-q" name="q" value="{{ q }}" placeholder="{{ t('f.search_title_ph', 'part of the title') }}">
     </div>
-    <button class="btn btn--primary" type="submit">Фільтр</button>
+    <button class="btn btn--primary" type="submit">{{ t("act.filter", "Filter") }}</button>
   </form>
 
   <span class="toolbar__spacer"></span>
 
   <p class="pager">
     {% if page > 0 %}
-    <a href="/items?status={{ status|urlencode }}{{ tail }}&amp;page={{ page - 1 }}">‹ новіші</a>
+    <a href="/items?status={{ status|urlencode }}{{ tail }}&amp;page={{ page - 1 }}">‹ {{ t("act.newer", "newer") }}</a>
     {% endif %}
     {% if items %}
       {{ page * 50 + 1 }}–{{ page * 50 + items | length }}
@@ -61,7 +61,7 @@
       0
     {% endif %}
     {% if items | length == 50 %}
-    <a href="/items?status={{ status|urlencode }}{{ tail }}&amp;page={{ page + 1 }}">старіші ›</a>
+    <a href="/items?status={{ status|urlencode }}{{ tail }}&amp;page={{ page + 1 }}">{{ t("act.older", "older") }} ›</a>
     {% endif %}
   </p>
 </div>
@@ -73,8 +73,10 @@
     <table>
       <thead>
         <tr>
-          <th>Статус</th><th>Заголовок</th><th>Джерело</th><th>Спроб</th>
-          <th>Уперше побачено</th><th>Доставлено</th><th><span class="visually-hidden">Дії</span></th>
+          <th>{{ t("f.status", "Status") }}</th><th>{{ t("f.title", "Title") }}</th>
+          <th>{{ t("f.source", "Source") }}</th><th>{{ t("f.attempts", "Attempts") }}</th>
+          <th>{{ t("f.first_seen", "First seen") }}</th><th>{{ t("f.delivered", "Delivered") }}</th>
+          <th><span class="visually-hidden">{{ t("f.actions", "Actions") }}</span></th>
         </tr>
       </thead>
       <tbody>
@@ -91,20 +93,20 @@
               з нього не вийшло. Рендерити їх однаково означало б брехати. -#}
           <td class="cell--nowrap">
             {% if i.delivered_at %}
-              <span class="badge b-done">доставлено</span>
+              <span class="badge b-done">{{ t("st.delivered", "delivered") }}</span>
               <span class="muted">{{ i.delivered_at.strftime('%Y-%m-%d %H:%M') }}</span>
             {% elif i.status == 'done' %}
-              <span class="badge b-seeded" title="оброблено без створення ліда">оброблено</span>
+              <span class="badge b-seeded" title="{{ t('st.handled.title', 'processed without creating a lead') }}">{{ t("st.handled", "processed") }}</span>
             {% else %}
               <span class="muted">—</span>
             {% endif %}
           </td>
           <td>
             <form class="inline" method="post" action="/items/{{ i.item_uid }}/brief"
-                  data-busy="Готую бріф, до 5 хв…">
+                  data-busy="{{ t('msg.brief_busy', 'Building the brief, up to 5 min…') }}">
               {% include "_csrf.html" %}
               <button class="btn btn--sm" type="submit"
-                      title="Зібрати бріф із бази знань: пошук у форумному архіві, до 5 хвилин">бріф</button>
+                      title="{{ t('act.brief.title', 'Build a brief from the knowledge base: a search across the forum archive, up to 5 minutes') }}">{{ t("act.brief", "brief") }}</button>
             </form>
           </td>
         </tr>
@@ -112,12 +114,16 @@
         <tr>
           <td colspan="7">
             <div class="empty">
-              <div class="empty__title">Нічого не знайдено</div>
+              <div class="empty__title">{{ t("msg.nothing_found", "Nothing found") }}</div>
               <div class="empty__hint">
                 {% if status or source_id or q %}
-                Спробуй зняти частину фільтрів — <a href="/items">показати всі знахідки</a>.
+                {{ t("msg.drop_filters", "Try dropping some of the filters —") }}
+                <a href="/items">{{ t("msg.show_all_items", "show all findings") }}</a>.
                 {% else %}
-                Воркер ще нічого не приніс. Перевір <a href="/runs">історію збору</a> і <a href="/sources">стан джерел</a>.
+                {{ t("msg.no_items_yet", "The worker hasn't brought anything in yet. Check the") }}
+                <a href="/runs">{{ t("msg.check_runs", "run history") }}</a>
+                {{ t("msg.and", "and") }}
+                <a href="/sources">{{ t("msg.check_sources", "source health") }}</a>.
                 {% endif %}
               </div>
             </div>

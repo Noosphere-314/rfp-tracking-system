@@ -7,23 +7,23 @@
     Pipedrive-ноди вимкнені, `Mark handled (no lead)` пише done без ліда, а
     класифікатор у STUB із захардкодженим confidence 0.55 — така панель
     виглядала б робочою і брехала. Замість неї — чесний бейдж режиму. -#}
-{% block title %}Огляд{% endblock %}
-{% block h1 %}Огляд{% endblock %}
-{% block sub %}Черга, стан джерел і останні запуски збору{% endblock %}
+{% block title %}{{ t("pg.overview.h1", "Overview") }}{% endblock %}
+{% block h1 %}{{ t("pg.overview.h1", "Overview") }}{% endblock %}
+{% block sub %}{{ t("pg.overview.sub", "The queue, source health and the latest collection runs") }}{% endblock %}
 
 {% block topbar_actions %}
   {%- if stub_classifier %}
-  <span class="badge b-warn" title="Anthropic-ноди вимкнені: вердикт захардкоджено, confidence 0.55">STUB класифікатор</span>
+  <span class="badge b-warn" title="{{ t('pg.overview.stub.title', 'Anthropic nodes are off: the verdict is hardcoded, confidence 0.55') }}">{{ t("pg.overview.stub", "STUB classifier") }}</span>
   {%- endif %}
 {% endblock %}
 
 {% block controls %}
 <div class="toolbar">
-  <a class="btn" href="/">Оновити</a>
+  <a class="btn" href="/">{{ t("act.refresh", "Refresh") }}</a>
   <span class="toolbar__spacer"></span>
   {#- Автооновлення немає навмисно (розділ 3.11): будь-який поліг продовжував
       би сесію без участі людини і вбивав 30-хвилинний ідл-таймаут. -#}
-  <span class="muted">Стан на момент завантаження сторінки — автооновлення немає</span>
+  <span class="muted">{{ t("pg.overview.noauto", "A snapshot from page load — nothing refreshes on its own") }}</span>
 </div>
 {% endblock %}
 
@@ -44,9 +44,9 @@
     тож це не реєстр, а список того, що потребує уваги. -#}
 <section class="panel">
   <div class="panel__head">
-    <h2>Стан джерел</h2>
+    <h2>{{ t("pg.overview.sources", "Source health") }}</h2>
     <span class="toolbar__spacer"></span>
-    <a href="/sources">усі джерела →</a>
+    <a href="/sources">{{ t("act.all_sources", "all sources →") }}</a>
   </div>
 
   {% if source_health %}
@@ -54,8 +54,11 @@
     <table>
       <thead>
         <tr>
-          <th>Джерело</th><th>Тип</th><th>Напрям</th><th>Стан</th>
-          <th>Знахідок за 7 днів</th><th>Остання знахідка</th><th>Збоїв поспіль</th>
+          <th>{{ t("f.source", "Source") }}</th><th>{{ t("f.type", "Type") }}</th>
+          <th>{{ t("f.lane", "Lane") }}</th><th>{{ t("f.state", "State") }}</th>
+          <th>{{ t("f.items_7d", "Items in 7 days") }}</th>
+          <th>{{ t("f.last_item", "Last item") }}</th>
+          <th>{{ t("f.consec_fails", "Failures in a row") }}</th>
         </tr>
       </thead>
       <tbody>
@@ -64,15 +67,15 @@
           <td>
             {{ s.name }} <span class="muted">· {{ s.ecosystem }}</span>
             {%- if s.quarantined and s.quarantine_reason %}
-            <div class="field__hint field__hint--bad">Карантин: {{ s.quarantine_reason }}</div>
+            <div class="field__hint field__hint--bad">{{ t("st.quarantined.label", "Quarantined") }}: {{ s.quarantine_reason }}</div>
             {%- endif %}
           </td>
           <td class="muted">{{ s.type }}</td>
           <td><span class="badge b-{{ s.lane }}">{{ LANE_UA.get(s.lane, s.lane) }}</span></td>
           <td>
-            {% if s.quarantined %}<span class="badge b-quarantine">карантин</span>
-            {% elif s.enabled %}<span class="badge b-on">увімкнено</span>
-            {% else %}<span class="badge b-off">вимкнено</span>{% endif %}
+            {% if s.quarantined %}<span class="badge b-quarantine">{{ t("st.quarantined", "quarantined") }}</span>
+            {% elif s.enabled %}<span class="badge b-on">{{ t("st.on", "enabled") }}</span>
+            {% else %}<span class="badge b-off">{{ t("st.off", "disabled") }}</span>{% endif %}
           </td>
           <td class="cell--num">{{ s.items_7d }}</td>
           <td class="muted cell--nowrap">{{ s.last_item_at.strftime('%Y-%m-%d %H:%M') if s.last_item_at else '—' }}</td>
@@ -86,14 +89,17 @@
     </table>
   </div>
   <div class="panel__foot">
-    Показано найпроблемніші: {{ source_health | length }} із {{ sources_total }}.
-    Сортування — за кількістю збоїв поспіль, далі за давністю останньої знахідки.
+    {{ t("pg.overview.worst_shown", "Showing the most troubled:") }}
+    {{ source_health | length }} {{ t("msg.of", "of") }} {{ sources_total }}.
+    {{ t("pg.overview.worst_sort", "Sorted by failures in a row, then by how long ago the last item arrived.") }}
   </div>
   {% else %}
   <div class="panel__body">
     <div class="empty">
-      <div class="empty__title">Джерел ще немає</div>
-      <div class="empty__hint">Додай перше на сторінці <a href="/sources">Джерела</a> — форма перевіряє його живим тест-фетчем перед збереженням.</div>
+      <div class="empty__title">{{ t("msg.no_sources", "No sources yet") }}</div>
+      <div class="empty__hint">{{ t("pg.overview.add_first_a", "Add the first one on the") }}
+        <a href="/sources">{{ t("nav.sources", "Sources") }}</a>
+        {{ t("pg.overview.add_first_b", "page — the form only saves a source after a live test fetch succeeds.") }}</div>
     </div>
   </div>
   {% endif %}
@@ -102,9 +108,9 @@
 {#- 3. Останні запуски — п'ять рядків, повна історія на /runs. -#}
 <section class="panel">
   <div class="panel__head">
-    <h2>Останні запуски</h2>
+    <h2>{{ t("pg.overview.runs", "Latest runs") }}</h2>
     <span class="toolbar__spacer"></span>
-    <a href="/runs">уся історія →</a>
+    <a href="/runs">{{ t("act.all_runs", "full history →") }}</a>
   </div>
 
   {% if last_runs %}
@@ -112,8 +118,10 @@
     <table class="table--dense">
       <thead>
         <tr>
-          <th>Початок</th><th>Режим</th><th>Джерел</th><th>Побачено</th>
-          <th>Нових</th><th>Відсіяно</th><th>Доставлено</th><th>Не доставлено</th>
+          <th>{{ t("f.started", "Started") }}</th><th>{{ t("f.mode", "Mode") }}</th>
+          <th>{{ t("f.sources_n", "Sources") }}</th><th>{{ t("f.seen", "Seen") }}</th>
+          <th>{{ t("f.new", "New") }}</th><th>{{ t("f.filtered", "Filtered out") }}</th>
+          <th>{{ t("f.delivered", "Delivered") }}</th><th>{{ t("f.dead", "Not delivered") }}</th>
         </tr>
       </thead>
       <tbody>
@@ -140,8 +148,8 @@
   {% else %}
   <div class="panel__body">
     <div class="empty">
-      <div class="empty__title">Запусків ще не було</div>
-      <div class="empty__hint">Підніми воркер: <code>docker compose up -d worker</code></div>
+      <div class="empty__title">{{ t("msg.no_runs.title", "No runs yet") }}</div>
+      <div class="empty__hint">{{ t("msg.no_runs.hint", "Start the worker:") }} <code>docker compose up -d worker</code></div>
     </div>
   </div>
   {% endif %}
@@ -150,16 +158,20 @@
 {#- 4. У черзі / проблемні — те, що воркер уже побачив, але ще не довіз. -#}
 <section class="panel">
   <div class="panel__head">
-    <h2>У черзі / проблемні</h2>
+    <h2>{{ t("pg.overview.queue", "Queued and stuck") }}</h2>
     <span class="toolbar__spacer"></span>
-    <a href="/items?status=pending">уся черга →</a>
+    <a href="/items?status=pending">{{ t("act.all_queue", "whole queue →") }}</a>
   </div>
 
   {% if recent_pending %}
   <div class="tablewrap">
     <table>
       <thead>
-        <tr><th>Статус</th><th>Заголовок</th><th>Джерело</th><th>Спроб</th><th>Уперше побачено</th></tr>
+        <tr>
+          <th>{{ t("f.status", "Status") }}</th><th>{{ t("f.title", "Title") }}</th>
+          <th>{{ t("f.source", "Source") }}</th><th>{{ t("f.attempts", "Attempts") }}</th>
+          <th>{{ t("f.first_seen", "First seen") }}</th>
+        </tr>
       </thead>
       <tbody>
         {% for i in recent_pending %}
@@ -177,8 +189,8 @@
   {% else %}
   <div class="panel__body">
     <div class="empty">
-      <div class="empty__title">Черга порожня</div>
-      <div class="empty__hint">Усе, що воркер знайшов, уже оброблено — нічого не зависло.</div>
+      <div class="empty__title">{{ t("msg.queue_empty", "The queue is empty") }}</div>
+      <div class="empty__hint">{{ t("msg.queue_empty.hint", "Everything the worker found has been processed — nothing is stuck.") }}</div>
     </div>
   </div>
   {% endif %}

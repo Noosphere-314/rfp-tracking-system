@@ -4,25 +4,26 @@
 
     Контракт (усі змінні необов'язкові, невизначені просто не рендеряться):
 
-      empty_title  — рядок «що це означає»   (дефолт: «Тут поки порожньо»)
+      empty_title  — рядок «що це означає»   (дефолт: msg.empty)
       empty_hint   — рядок «що зробити»
       empty_code   — команда/значення моноширинним (<code>), окремим рядком
       empty_href   — куди вести далі
-      empty_link   — підпис посилання (дефолт: «Перейти»)
+      empty_link   — підпис посилання (дефолт: act.go)
 
-    Приклад:
-      {% set empty_title = "Запусків ще не було" %}
-      {% set empty_hint = "Підніми воркер:" %}
+    Рядки сторінка передає вже перекладеними — t() кличеться в {% set %},
+    бо тут не видно, до якої сторінки належить текст:
+      {% set empty_title = t("msg.no_runs.title", "No runs yet") %}
+      {% set empty_hint = t("msg.no_runs.hint", "Start the worker:") %}
       {% set empty_code = "docker compose up -d worker" %}
       {% include "_empty.html" %}
 
     Усередині таблиці — загортати в <tr><td colspan="N"> самостійно.
 -#}
 <div class="empty">
-  <div class="empty__title">{{ empty_title | default("Тут поки порожньо", true) }}</div>
+  <div class="empty__title">{{ empty_title | default(t("msg.empty", "Nothing here yet"), true) }}</div>
   {% if empty_hint %}<div class="empty__hint">{{ empty_hint }}</div>{% endif %}
   {% if empty_code %}<div class="empty__hint"><code>{{ empty_code }}</code></div>{% endif %}
   {% if empty_href %}
-  <div class="empty__hint"><a href="{{ empty_href }}">{{ empty_link | default("Перейти", true) }}</a></div>
+  <div class="empty__hint"><a href="{{ empty_href }}">{{ empty_link | default(t("act.go", "Go"), true) }}</a></div>
   {% endif %}
 </div>

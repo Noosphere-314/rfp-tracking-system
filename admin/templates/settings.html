@@ -7,22 +7,23 @@
     Контекст дає _render_settings: groups = [(gid, label, [item…])], де в item
     крім рядка таблиці settings є label / hint / kind із SETTING_META, і
     band = {low, high} для смуги подвійного порога. -#}
-{% block title %}Параметри{% endblock %}
-{% block h1 %}Параметри{% endblock %}
-{% block sub %}Значення читають воркер і n8n на кожному прогоні — редеплой не потрібен{% endblock %}
+{% block title %}{{ t("pg.settings.h1", "Settings") }}{% endblock %}
+{% block h1 %}{{ t("pg.settings.h1", "Settings") }}{% endblock %}
+{% block sub %}{{ t("pg.settings.sub", "The worker and n8n read these values on every run — no redeploy needed") }}{% endblock %}
 
 {% block controls %}
 <div class="toolbar">
   <div class="field">
-    <label class="field__label" for="settings-search">Пошук за ключем</label>
+    <label class="field__label" for="settings-search">{{ t("pg.settings.search", "Search by key") }}</label>
     {#- Клієнтський фільтр рядків (app.js, п.6): шукає по всіх картках одразу,
         бо селектор цілиться у форму, а не в окрему таблицю. -#}
     <input class="input" id="settings-search" type="search" autocomplete="off"
-           placeholder="напр. threshold" aria-label="Пошук за ключем"
+           placeholder="{{ t('pg.settings.search_ph', 'e.g. threshold') }}"
+           aria-label="{{ t('pg.settings.search', 'Search by key') }}"
            data-filter-target="#settings-form">
   </div>
   <span class="toolbar__spacer"></span>
-  <button form="settings-form" class="btn btn--primary">Зберегти все</button>
+  <button form="settings-form" class="btn btn--primary">{{ t("act.save_all", "Save all") }}</button>
 </div>
 {% endblock %}
 
@@ -36,7 +37,11 @@
     <div class="tablewrap">
       <table>
         <thead>
-          <tr><th>Параметр</th><th>Значення</th><th>Оновлено</th></tr>
+          <tr>
+            <th>{{ t("f.setting", "Setting") }}</th>
+            <th>{{ t("f.value", "Value") }}</th>
+            <th>{{ t("f.updated", "Updated") }}</th>
+          </tr>
         </thead>
         <tbody>
           {% for s in items %}
@@ -75,9 +80,19 @@
     {% set w1 = xl - x0 %}{% set w2 = xh - xl %}{% set w3 = x0 + bw - xh %}
     {% set low_txt = '%.2f' | format(band.low) %}
     {% set high_txt = '%.2f' | format(band.high) %}
+    {#- Опис смуги для скрінрідера збирається з одного рядка словника, а не з
+        трьох склеєних шматків: порядок чисел у реченні залежить від мови, тож
+        підстановка йде через %(low)s / %(high)s. -#}
+    {% set band_aria = t("pg.settings.band.aria",
+         "Below %(low)s a finding is ignored; from %(low)s to %(high)s it goes to the review channel; from %(high)s a lead is created automatically")
+         | replace("%(low)s", low_txt) | replace("%(high)s", high_txt) %}
     <div class="panel__foot">
-      <svg viewBox="0 0 1000 122" width="1000" height="122" role="img"
-           aria-label="Нижче {{ low_txt }} знахідка ігнорується; від {{ low_txt }} до {{ high_txt }} іде в канал на перегляд; від {{ high_txt }} лід створюється автоматично">
+      {#- width="100%" і НЕ задавати height: висота виводиться з viewBox, тож
+          смуга масштабується цілком. З фіксованим height="122" на вузькому
+          екрані вона б стискалася по ширині, лишаючи 122px порожнечі згори
+          і знизу. -#}
+      <svg viewBox="0 0 1000 122" width="100%" role="img"
+           aria-label="{{ band_aria }}">
         <rect x="{{ x0 }}" y="46" width="{{ w1 | round(1) }}" height="22" fill="#1A242C"></rect>
         <rect x="{{ xl | round(1) }}" y="46" width="{{ w2 | round(1) }}" height="22" fill="#2E2411"></rect>
         <rect x="{{ xh | round(1) }}" y="46" width="{{ w3 | round(1) }}" height="22" fill="#0E2B23"></rect>
@@ -97,19 +112,18 @@
         {#- Підпис зони показуємо, лише якщо вона достатньо широка: інакше
             текст вилазить за межі власної зони і читається як чужий. -#}
         {% if w1 > 150 %}
-        <text x="{{ ((x0 + xl) / 2) | round(1) }}" y="114" fill="#7C8B99" font-size="14" text-anchor="middle">ігнорується</text>
+        <text x="{{ ((x0 + xl) / 2) | round(1) }}" y="114" fill="#7C8B99" font-size="14" text-anchor="middle">{{ t("pg.settings.band.ignored", "ignored") }}</text>
         {% endif %}
         {% if w2 > 150 %}
-        <text x="{{ ((xl + xh) / 2) | round(1) }}" y="114" fill="#F0B429" font-size="14" text-anchor="middle">у review-канал</text>
+        <text x="{{ ((xl + xh) / 2) | round(1) }}" y="114" fill="#F0B429" font-size="14" text-anchor="middle">{{ t("pg.settings.band.review", "to review channel") }}</text>
         {% endif %}
         {% if w3 > 150 %}
-        <text x="{{ ((xh + x0 + bw) / 2) | round(1) }}" y="114" fill="#2FA37A" font-size="14" text-anchor="middle">лід автоматично</text>
+        <text x="{{ ((xh + x0 + bw) / 2) | round(1) }}" y="114" fill="#2FA37A" font-size="14" text-anchor="middle">{{ t("pg.settings.band.auto", "lead automatically") }}</text>
         {% endif %}
       </svg>
       <p class="field__hint">
-        Смуга від 0 до 1 за впевненістю класифікатора. Нижня межа не може бути
-        більшою за поріг автоліда — інакше смуга перегляду порожня і частина
-        знахідок зникає мовчки.
+        {{ t("pg.settings.band.hint",
+             "The strip runs from 0 to 1 by classifier confidence. The lower bound cannot be above the auto-lead threshold — otherwise the review band is empty and some findings vanish silently.") }}
       </p>
     </div>
     {% endif %}
@@ -117,8 +131,10 @@
   {% else %}
   <div class="panel">
     <div class="empty">
-      <p class="empty__title">Параметрів немає</p>
-      <p class="empty__hint">Таблиця <code>settings</code> порожня — застосуй міграції:
+      <p class="empty__title">{{ t("pg.settings.empty", "No settings yet") }}</p>
+      {#- Назва таблиці лишилася в тексті ключа, а не в окремому <code>: рвати
+          речення на шматки заради одного тега — гірше для перекладу. -#}
+      <p class="empty__hint">{{ t("pg.settings.empty_hint", "The settings table is empty — apply the migrations:") }}
         <code>docker compose run --rm worker migrate</code></p>
     </div>
   </div>
@@ -128,18 +144,21 @@
 {#- Картка «Сесії» — ЗА межами #settings-form: вкладені форми неприпустимі, а
     її кнопка веде на інший маршрут. Природне місце після ротації пароля. -#}
 <div class="panel">
-  <div class="panel__head"><h2>Сесії</h2></div>
+  <div class="panel__head"><h2>{{ t("pg.settings.sessions", "Sessions") }}</h2></div>
   <div class="panel__body">
+    {#- Речення закінчується назвою змінної, щоб <code> стояв у кінці: інакше
+        рядок довелося б різати на два ключі навколо тега. -#}
     <p class="muted">
-      Завершує всі активні сесії дашборда — на всіх пристроях і в усіх
-      браузерах, включно з поточним. Роби це після зміни
-      <code>DASHBOARD_PASSWORD</code> або якщо є підозра, що чужий пристрій
-      лишився залогіненим.
+      {{ t("pg.settings.logout_all_hint",
+           "Ends every active dashboard session — on all devices and in all browsers, including this one.") }}
+      {{ t("pg.settings.logout_all_when",
+           "Do it as well if you suspect that someone else's device is still signed in. The password itself lives in:") }}
+      <code>DASHBOARD_PASSWORD</code>
     </p>
     <form method="post" action="/logout/all"
-          data-confirm="Завершити всі сесії? Доведеться увійти заново — і вам теж.">
+          data-confirm="{{ t('msg.confirm_logout_all', 'End all sessions? Everyone will have to sign in again — you included.') }}">
       {% include "_csrf.html" %}
-      <button class="btn btn--danger">Завершити всі сесії</button>
+      <button class="btn btn--danger">{{ t("pg.settings.logout_all", "End all sessions") }}</button>
     </form>
   </div>
 </div>

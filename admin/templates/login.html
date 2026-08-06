@@ -2,15 +2,19 @@
 {#- Єдиний шаблон поза base.html: сайдбар, топбар і таймер сесії тут не мають
     сенсу, а це єдиний екран, який побачить сторонній.
 
+    ЗАВЖДИ англійською, без перемикача мови (рішення Миколи 2026-08-06):
+    перемикач до автентифікації — зайва деталь на єдиному публічному екрані.
+    Українська вмикається вже в кабінеті.
+
     Стиль — той самий /assets/app.css (розділ 3.6: класи .auth / .auth__card).
     Власного <style> тут навмисно немає: CSP `style-src 'self'` (крок 4)
     блокує і <style>, і атрибути style=. -#}
-<html lang="uk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Вхід · RFP Tracker</title>
+<title>Sign in · RFP Tracker</title>
 <link rel="stylesheet" href="/assets/app.css?v={{ asset_v | default(0) }}">
 <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
 <link rel="mask-icon" href="/assets/favicon.svg" color="#10B981">
@@ -33,29 +37,36 @@
 
   <form class="auth__form" method="post" action="/login">
     <label class="field">
-      <span class="field__label">Пароль</span>
+      <span class="field__label">Password</span>
       <input class="input" type="password" name="password"
              autocomplete="current-password" autofocus required>
     </label>
 
     {#- Журнал змін, не автентифікація (розділ 7, п.5, варіант C). Пароль
-        спільний, тож система не знає, хто увійшов; підпис добровільний і
-        потрапляє в settings.updated_by / sources.added_by. -#}
+        спільний, тож система не знає, хто увійшов; вибір зі списку потрапляє
+        в settings.updated_by / sources.added_by / keywords.added_by.
+        Вибір, а не вільний текст: інакше та сама людина стає то «Микола»,
+        то «микола», і колонка знову ні на що не відповідає.
+        Склад списку — env DASHBOARD_USERS, без деплою. -#}
     <label class="field">
-      <span class="field__label">Хто ти <span class="field__opt">— необов'язково</span></span>
-      <input class="input" type="text" name="who" maxlength="24"
-             autocomplete="nickname" placeholder="Ім'я або нік">
-      <span class="field__hint">Підпис показується поруч зі змінами, які ти
-        вносиш — щоб потім було видно, хто правив пороги чи джерела.</span>
+      <span class="field__label">Who are you</span>
+      <select class="input" name="who" required>
+        <option value="" disabled {{ 'selected' if not who }}>— select —</option>
+        {% for member in team %}
+        <option value="{{ member }}" {{ 'selected' if who == member }}>{{ member }}</option>
+        {% endfor %}
+      </select>
+      <span class="field__hint">Shown next to the changes you make, so it is
+        clear who edited thresholds or sources.</span>
     </label>
 
     <input type="hidden" name="next" value="{{ next }}">
     {#- Єдиний градієнт на екрані (правило палітри, розділ 3.3). -#}
-    <button class="btn btn--primary btn--block" type="submit">Увійти</button>
+    <button class="btn btn--primary btn--block" type="submit">Sign in</button>
   </form>
 
-  <p class="auth__foot">Пароль спільний для команди. Сесія завершиться після
-    {{ idle_minutes }}&nbsp;хв без активності.</p>
+  <p class="auth__foot">The password is shared across the team. The session ends
+    after {{ idle_minutes }}&nbsp;minutes of inactivity.</p>
 </main>
 </body>
 </html>
