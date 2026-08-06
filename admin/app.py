@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -90,7 +91,7 @@ NAV = [
     {"id": "dashboard", "href": "/", "label": "Огляд", "group": "work"},
     {"id": "items", "href": "/items", "label": "Знахідки", "group": "work"},
     {"id": "kb", "href": "/kb", "label": "База знань", "group": "work"},
-    {"id": "chat", "href": "/chat", "label": "AI-чат", "group": "work", "soon": True},
+    {"id": "chat", "href": "/chat", "label": "AI-чат", "group": "work"},
     {"id": "sources", "href": "/sources", "label": "Джерела", "group": "cfg"},
     {"id": "keywords", "href": "/keywords", "label": "Ключові слова", "group": "cfg"},
     {"id": "settings", "href": "/settings", "label": "Параметри", "group": "cfg"},
@@ -130,7 +131,33 @@ def hl(value: str) -> Markup:
     return Markup(text.replace("\x02", "<mark>").replace("\x03", "</mark>"))
 
 
+# Стандартна `re`, а не сторонній `regex` вище (той — під keyword-патерни
+# користувачів, тут — фіксований власний вираз без потреби в його фічах).
+_URL_RE = re.compile(r'https?://[^\s<>"\']+')
+
+
+def linkify(value: str) -> Markup:
+    """Відповідь AI-чату (розділ 4.9): markdown НЕ рендериться (те саме
+    рішення, що й для brief.html — власний рендерер [текст](url) був би
+    XSS-поверхнею), але голий URL у відповіді моделі має бути клікабельним.
+
+    Порядок «екранувати → підставити теги» — той самий принцип, що й у hl():
+    спершу ВЕСЬ текст втрачає html-сенс, і лише потім підрядки, що після
+    escape() лишились незмінними (URL не містить символів, які escape()
+    чіпає), обгортаються в <a>. Застосовується лише до тіла асистента —
+    повідомлення людини рендериться голим текстом нижче в шаблоні.
+    """
+    text = str(escape(value or ""))
+    return Markup(
+        _URL_RE.sub(
+            lambda m: f'<a href="{m.group(0)}" target="_blank" rel="noopener">{m.group(0)}</a>',
+            text,
+        )
+    )
+
+
 templates.env.filters["hl"] = hl
+templates.env.filters["linkify"] = linkify
 # Константи презентації — глобалами Jinja, а не context-процесором: вони
 # однакові для кожного запиту, а context-процесори Starlette перезаписують
 # контекст сторінки (`context.update(...)` після нього), тож усе, що маршрут
@@ -653,6 +680,10 @@ SETTING_META = {
         "group": "leads", "label": "Lead title template", "type": "text",
         "hint": "Placeholders {label}, {ecosystem}, {title}. Not in use yet.",
     },
+    "chat_model": {
+        "group": "other", "label": "Chat model", "type": "text",
+        "hint": "Anthropic model id for the KB chat; applies without redeploy.",
+    },
 }
 
 
@@ -1077,14 +1108,146 @@ def view_brief(request: Request, brief_id: int):
     )
 
 
-@app.get("/chat", response_class=HTMLResponse)
-def chat_page(request: Request):
-    """Стаб AI-чату над базою знань (розділ 4.9, задача #30).
+# ── AI-чат ─────────────────────────────────────────────────────────
+#
+# Історію пише kbmcp, не admin (розділ 4.9): POST /chat/send нижче лише
+# проксує запит на {KBMCP_URL}/chat і читає готову відповідь — той самий
+# поділ ролей, що й у generate_brief вище для kb.briefs (пише kbmcp, admin
+# показує результат). Тому в цьому розділі рівно один SELECT і жодного
+# INSERT: права БД admin на kb.* — читання (див. kb_page, briefs_page).
 
-    Сенс сторінки зараз — довести повноекранний лейаут, поки він дешевий:
-    інакше `base.html` довелося б переробляти під чат уже після редизайну.
+
+def _chat_key(request: Request) -> str:
+    """→ ключ сесії БЕЗ namespace 'web:' (його додає виклик, симетрично до
+    того, як kbmcp додає його на записі — розділ 4.9, контракт /chat).
+
+    Легасі cookie (видані до появи sid в admin/auth.py, `session_sid`
+    повертає '') отримують стабільний ключ за підписом людини: без цього
+    кожен re-sign (а він трапляється на КОЖНІЙ відповіді) губив би історію,
+    бо сам sid у такої cookie відсутній за визначенням. Без двокрапки — вона
+    вже є в самому namespace-префіксі, дві підряд ускладнили б парсинг на
+    боці kbmcp без жодної користі.
     """
-    return templates.TemplateResponse(request, "chat.html", {"nav": "chat"})
+    who = auth.session_who(request)
+    sid = auth.session_sid(request)
+    return sid if sid else f"legacy-{who}"
+
+
+def _chat_backend(payload: dict) -> dict:
+    """Виокремлено в окрему функцію, а не інлайн у хендлері (на відміну від
+    generate_brief вище) — саме для того, щоб тести підміняли її
+    monkeypatch'ем, не піднімаючи kbmcp і не ходячи в мережу.
+    """
+    import httpx
+
+    response = httpx.post(
+        f"{KBMCP_URL}/chat",
+        json=payload,
+        headers={"Authorization": f"Bearer {KB_MCP_TOKEN}"} if KB_MCP_TOKEN else {},
+        timeout=300,  # LLM tool loops легітимно тривають хвилини — те саме, що й /brief вище
+    )
+    return response.json()
+
+
+@app.get("/chat", response_class=HTMLResponse)
+def chat_page(request: Request, error: str = ""):
+    """AI-чат над базою знань (розділ 4.9, задача #30)."""
+    who = auth.session_who(request)
+    session_key = f"web:{_chat_key(request)}"
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, role, who, content, tier, model, created_at "
+            "FROM kb.chat_messages WHERE session_key = %s ORDER BY id LIMIT 200",
+            (session_key,),
+        ).fetchall()
+
+    # Останній рядок — user: відповідь, можливо, ще генерується (POST
+    # /chat/send блокується до 300 с — той самий таймаут, що й у /brief) в
+    # ІНШІЙ вкладці чи запиті, який саме зараз обробляється. Рядок-натяк, а
+    # не спінер із поллінгом — автополінг заборонений (app.js, розділ 0):
+    # він тихо продовжував би сесію без участі людини.
+    thinking = bool(rows) and rows[-1]["role"] == "user"
+
+    return templates.TemplateResponse(
+        request,
+        "chat.html",
+        {
+            "nav": "chat",
+            "who": who,
+            "messages": rows,
+            "thinking": thinking,
+            "error": error,
+        },
+    )
+
+
+@mutations.post("/chat/send")
+def send_chat_message(request: Request, message: str = Form(...)):
+    """Одне повідомлення → один запит до kbmcp.
+
+    Відповідь гілкується заголовком X-Requested-With: fetch — його ставить
+    лише app.js (звичайний браузер його не додає), тож без JS форма завжди
+    йде по PRG-контракту (303 на /chat), а з JS повертається JSON. Помилки
+    kbmcp НЕ ковтаються мовчки в редірект без деталей (на відміну від
+    generate_brief — там немає JS-гілки, і фрагмент у URL прийнятний
+    компроміс): тут є куди показати причину, і ковтати її означало б
+    видавати порожню відповідь замість пояснення.
+    """
+    # СИРИЙ ключ, без префікса "web:" — kbmcp неймспейсить сам при записі
+    # (контракт /chat забороняє ':' у session_key саме для того, щоб веб не
+    # міг адресувати telegram-сесії). Префікс додається лише при ЧИТАННІ
+    # kb.chat_messages у chat_page — там ключ уже збережений неймспейснутим.
+    session_key = _chat_key(request)
+    who = auth.session_who(request)
+    is_fetch = request.headers.get("X-Requested-With") == "fetch"
+
+    def fail(err: str, status_code: int = 400):
+        if is_fetch:
+            return JSONResponse({"ok": False, "error": err}, status_code=status_code)
+        return RedirectResponse(f"/chat?{urlencode({'error': err})}", status_code=303)
+
+    text = message.strip()
+    if not text:
+        return fail("Message is empty")
+    if len(text) > 4000:
+        return fail(f"Message is too long — {len(text)} characters (limit is 4000)")
+
+    import httpx
+
+    try:
+        payload = _chat_backend(
+            {"channel": "web", "session_key": session_key, "who": who, "message": text}
+        )
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("kbmcp /chat unreachable: %s", exc)
+        return fail("Chat backend is unreachable — please try again in a moment", 502)
+
+    if not payload.get("ok"):
+        return fail(payload.get("error") or "Chat backend returned an error")
+
+    if is_fetch:
+        return JSONResponse(
+            {
+                "ok": True,
+                "reply": payload.get("reply_md", ""),
+                "tier": payload.get("tier"),
+                "model": payload.get("model"),
+            }
+        )
+    return RedirectResponse("/chat", status_code=303)
+
+
+@mutations.post("/chat/new")
+def new_chat(request: Request):
+    """«Новий чат»: ротація sid (admin/auth.py) — той самий who, свіжа
+    історія. `/chat/new` навмисно в auth.NO_REISSUE (див. коментар там):
+    інакше rolling re-sign у middleware ПІСЛЯ цього хендлера перевидав би
+    cookie зі СТАРИМ sid, прочитаним із request.cookies (Set-Cookie цієї
+    відповіді йому не видно), і ротація не мала б жодного ефекту."""
+    response = RedirectResponse("/chat", status_code=303)
+    auth.issue(response, request, rotate_sid=True)
+    return response
 
 
 # Реєстрація мутуючого роутера — ОСТАННІМ рядком серед маршрутів, після того як

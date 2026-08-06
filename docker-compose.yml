@@ -120,6 +120,13 @@ services:
       USER_AGENT: ${USER_AGENT:-}
       # Briefing packs: unset key = deterministic tier only (still useful).
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    healthcheck:
+      # kbmcp тепер тримає чат — «зелений» деплой зі зламаним kbmcp неприйнятний.
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     ports:
       # Local Claude Code connects here. On the VPS this must instead be routed
       # through Caddy on a public path (Anthropic infra has to reach it) with
@@ -166,6 +173,23 @@ services:
       # домен зламані (Runbook: ssh -N -L 8080:localhost:8080). Логін діє й
       # тут; cookie автоматично без Secure, бо схема http.
       - "127.0.0.1:8080:8000"
+
+  tgbot:
+    build:
+      context: .
+      dockerfile: tgbot/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      kbmcp:
+        condition: service_healthy
+    environment:
+      KBMCP_URL: http://kbmcp:8000
+      KB_MCP_TOKEN: ${KB_MCP_TOKEN:-}
+      CHAT_TELEGRAM_TOKEN: ${CHAT_TELEGRAM_TOKEN:-}
+      CHAT_TELEGRAM_ALLOWED_IDS: ${CHAT_TELEGRAM_ALLOWED_IDS:-}
+      TZ: ${TZ:-Europe/Kyiv}
+    # окремий бот для AI-чату; порожній CHAT_TELEGRAM_TOKEN → сервіс спить
+    # (навмисно, щоб не крутився в crash-loop).
 
 volumes:
   postgres_data:

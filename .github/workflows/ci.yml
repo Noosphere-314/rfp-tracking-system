@@ -107,7 +107,7 @@ jobs:
           python-version: "3.12"
 
       - name: Byte-compile every module
-        run: python -m compileall -q worker admin mcp
+        run: python -m compileall -q worker admin mcp tgbot
 
       - name: n8n workflow exports are valid JSON
         run: |
@@ -139,14 +139,15 @@ jobs:
       # admin.app imports worker.fetchers / worker.http, so the worker pins are
       # part of the test environment. No Postgres here on purpose: the auth
       # tests never reach a handler that touches the database.
-      - name: Install admin + worker dependencies
+      - name: Install admin + worker + mcp dependencies
         run: |
           pip install -r worker/requirements.txt \
                       -r admin/requirements.txt \
-                      -r admin/requirements-dev.txt
+                      -r admin/requirements-dev.txt \
+                      -r mcp/requirements.txt
 
       - name: pytest
-        run: pytest admin/tests -q
+        run: pytest admin/tests mcp/tests tgbot/tests -q
 
   images:
     name: Docker images build
@@ -154,7 +155,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [worker, admin, mcp]
+        service: [worker, admin, mcp, tgbot]
     steps:
       - uses: actions/checkout@v4
       # All three Dockerfiles take the REPO ROOT as their build context, the

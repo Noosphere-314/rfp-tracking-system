@@ -16,7 +16,7 @@ import os
 import re
 import time
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 # Env — ДО імпорту admin.app: auth.py читає його на імпорті і навмисно падає,
 # якщо пароль не заданий (fail-fast замість відкритого дашборда).
@@ -259,6 +259,91 @@ def test_safe_next_rejects_backslash_and_absolute_targets():
 # ── 8. Порожній env не має спустошувати список команди ─────────────
 
 
+def _cookie_request(client) -> SimpleNamespace:
+    """Мінімальний Request-подібний об'єкт для auth.session_who/session_sid:
+    обом потрібен лише `.cookies`, а не повний Starlette Request (той самий
+    прийом, що й у test_signature_is_required_and_must_come_from_the_team_list
+    вище для auth.actor)."""
+    return SimpleNamespace(cookies={auth.COOKIE_BASE: client.cookies[auth.COOKIE_BASE]})
+
+
+def test_sid_is_minted_on_login_and_survives_a_resign(client):
+    """Payload росте з "epoch|who" до "epoch|who|sid" (розділ 1 задачі чату):
+    sid з'являється одразу на логіні і не губиться на rolling re-sign —
+    інакше кожен запит під час чату відкривав би нову «розмову»."""
+    _login(client)
+    sid = auth.session_sid(_cookie_request(client))
+    assert sid, "sid мав з'явитися одразу на логіні"
+    assert auth.session_who(_cookie_request(client)) == WHO
+
+    # Будь-який звичайний авторизований GET проходить через rolling re-sign
+    # у middleware (auth.issue(response, request) без rotate_sid) — sid має
+    # лишитися тим самим.
+    response = client.get("/session/ping")
+    assert response.status_code == 204
+    assert auth.session_sid(_cookie_request(client)) == sid
+
+
+def test_chat_new_rotates_sid_but_keeps_who(client):
+    """POST /chat/new — auth.issue(..., rotate_sid=True): новий sid, той
+    самий who/epoch. `/chat/new` навмисно в auth.NO_REISSUE (див. коментар
+    там) — без цього rolling re-sign одразу після хендлера переписав би
+    ротацію старим sid із request.cookies."""
+    _login(client)
+    before = auth.session_sid(_cookie_request(client))
+
+    csrf = auth.csrf_for(client.cookies[auth.COOKIE_BASE])
+    response = client.post(
+        "/chat/new",
+        data={"csrf": csrf},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/chat"
+
+    after = auth.session_sid(_cookie_request(client))
+    assert after and after != before, "ротація мала видати НОВИЙ sid"
+    assert auth.session_who(_cookie_request(client)) == WHO
+
+
+def test_legacy_two_part_cookie_still_authenticates_with_empty_sid(client, monkeypatch):
+    """Cookie, видана до появи sid (payload "epoch|who", без третьої
+    частини) — та сама, що й видавав старий auth.issue() до цієї зміни.
+    Підпис лишається валідним (SESSION_SECRET не змінювався), тож повний
+    редеплой не має розлогінити команду; /chat лише не бачить sid (fallback
+    на legacy-{who}, admin/app.py)."""
+    legacy_payload = f"{auth.current_epoch()}|{quote(WHO, safe='')}"
+    client.cookies.set(
+        auth.COOKIE_BASE, auth.signer.sign(legacy_payload.encode()).decode()
+    )
+
+    live, had_cookie = auth.session_live(_cookie_request(client))
+    assert (live, had_cookie) == (True, True)
+    assert auth.session_who(_cookie_request(client)) == WHO
+    assert auth.session_sid(_cookie_request(client)) == ""
+
+    # І справжній запит через застосунок теж проходить (не 303 на /login) —
+    # db() підмінений, бо тут перевіряється лише сесія, не SQL /chat.
+    class _Cursor:
+        def fetchall(self):
+            return []
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, *args, **kwargs):
+            return _Cursor()
+
+    monkeypatch.setattr(admin_app, "db", _Conn)
+    response = client.get("/chat", follow_redirects=False)
+    assert response.status_code == 200
+
+
 def test_empty_dashboard_users_env_falls_back_to_defaults(monkeypatch):
     """compose передає `DASHBOARD_USERS=${DASHBOARD_USERS:-}` — тобто змінна
     ІСНУЄ і порожня. `os.environ.get(key, default)` повернув би "", TEAM став би
@@ -273,3 +358,40 @@ def test_empty_dashboard_users_env_falls_back_to_defaults(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(auth)
+
+
+def test_csrf_token_survives_rolling_resign(monkeypatch):
+    """Регресія 2026-08-06 (знайдено наживо): csrf_for хешував ПОВНИЙ рядок
+    cookie, а rolling re-sign оновлює timestamp у ньому кожною відповіддю —
+    токен зі сторінки вмирав через секунду, і будь-яка форма, яку людина
+    заповнює довше, летіла на /login?reason=csrf. TestClient цього не бачив,
+    бо всі його запити вкладаються в одну секунду. Тому тут секунда
+    перетинається ШТУЧНО: той самий payload підписується двічі з різницею
+    в 5 «секунд» — токени мусять збігтися."""
+    import time as _time
+
+    payload = b"1|Growth|4244c388ffecf33435b8eb2435421e57"
+    real_time = _time.time
+    # «Старіший» підпис — у минулому: itsdangerous 2.2 відхиляє timestamp
+    # з майбутнього (SignatureExpired), тож межу секунди переходимо назад.
+    monkeypatch.setattr(_time, "time", lambda: real_time() - 5)
+    cookie_t0 = auth.signer.sign(payload).decode()
+    monkeypatch.undo()
+    cookie_t5 = auth.signer.sign(payload).decode()
+
+    assert cookie_t0 != cookie_t5, "re-sign мусить давати інший рядок cookie"
+    token_t0 = auth.csrf_for(cookie_t0)
+    token_t5 = auth.csrf_for(cookie_t5)
+    assert token_t0 and token_t0 == token_t5, (
+        "токен має бути функцією payload, а не timestamp"
+    )
+
+
+def test_csrf_token_differs_per_sid_and_rejects_garbage():
+    """Токен прив'язаний до конкретного логіна (sid у payload) і не
+    обчислюється для непідписаних рядків."""
+    a = auth.csrf_for(auth.signer.sign(b"1|Growth|" + b"a" * 32).decode())
+    b = auth.csrf_for(auth.signer.sign(b"1|Growth|" + b"b" * 32).decode())
+    assert a and b and a != b
+    assert auth.csrf_for("not-a-signed-cookie") == ""
+    assert auth.csrf_for("") == ""

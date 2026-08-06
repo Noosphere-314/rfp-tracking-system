@@ -500,3 +500,53 @@ form.inline,.inline{display:inline}
   outline: 2px solid var(--brand-1, #10B981);
   outline-offset: 1px;
 }
+
+/* ────────────────────────  12. AI-чат (4.9)  ──────────────────────────── */
+/* Бульбашки: user праворуч на бренд-градієнті (та сама пара кольорів, що й
+   .btn--primary), assistant ліворуч на нейтральній поверхні — розрізнення
+   без жодного нового кольору поза токенами розділу 1. */
+
+.chat__list{display:flex; flex-direction:column; gap:var(--sp-3)}
+.chat__msg{display:flex; flex-direction:column; max-width:74ch}
+.chat__msg--user{align-self:flex-end; align-items:flex-end}
+.chat__msg--assistant,.chat__msg--error{align-self:flex-start; align-items:flex-start}
+
+.chat__bubble{
+  padding:var(--sp-3) var(--sp-4); border-radius:var(--r-lg);
+  background:var(--surface-2); border:1px solid var(--line);
+}
+.chat__msg--user .chat__bubble{
+  background:var(--brand-grad); color:var(--brand-ink); border-color:transparent;
+}
+.chat__text{margin:0; white-space:pre-wrap; word-break:break-word}
+.chat__text a{color:inherit; text-decoration:underline}
+
+.chat__meta{
+  display:flex; gap:var(--sp-2); align-items:center; margin-top:var(--sp-1);
+  font-size:var(--fs-xs); color:var(--text-dim);
+}
+.chat__msg--user .chat__meta{flex-direction:row-reverse}
+
+.chat__bubble--error{color:var(--bad); background:var(--bad-bg); border-color:#4A2229}
+
+/* Індикатор «друкує» — три крапки, анімовані через @keyframes: reduced-motion
+   уже глушить будь-яку анімацію глобально (розділ 3), тут нічого дублювати
+   не треба. */
+.chat__bubble--thinking{display:inline-flex; align-items:center; padding:10px var(--sp-4)}
+.chat__dots{display:inline-flex; gap:4px}
+.chat__dots span{
+  width:6px; height:6px; border-radius:50%; background:var(--text-dim);
+  animation:chat-dot 1.2s ease-in-out infinite;
+}
+.chat__dots span:nth-child(2){animation-delay:.15s}
+.chat__dots span:nth-child(3){animation-delay:.3s}
+@keyframes chat-dot{
+  0%,80%,100%{opacity:.25; transform:translateY(0)}
+  40%{opacity:1; transform:translateY(-3px)}
+}
+
+/* Композер: «Новий чат» — маленька дія над полем вводу, не претендує на
+   рівень із .btn--primary «Надіслати». */
+.chat__controls{display:flex; flex-direction:column; gap:var(--sp-2)}
+.chat__newchat{align-self:flex-end}
+.chat__composer textarea:disabled{opacity:.6}

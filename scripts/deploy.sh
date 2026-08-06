@@ -45,17 +45,17 @@ echo "=== 3/7  check .env ==="
 # than serving an open panel on a public domain). Combined with
 # `restart: unless-stopped`, a missing value would otherwise be an endless
 # crash-loop that `docker compose ps` reports as "running".
-for v in DASHBOARD_PASSWORD SESSION_SECRET N8N_URL; do
+for v in DASHBOARD_PASSWORD SESSION_SECRET N8N_URL KB_MCP_TOKEN; do
     if ! grep -qE "^${v}=.+" .env; then
         echo "  .env: ${v} is not set — deploy stopped (the dashboard will not start without it)" >&2
         exit 1
     fi
 done
-echo "  DASHBOARD_PASSWORD, SESSION_SECRET, N8N_URL — present"
+echo "  DASHBOARD_PASSWORD, SESSION_SECRET, N8N_URL, KB_MCP_TOKEN — present"
 
 echo
 echo "=== 4/7  rebuild images ==="
-$COMPOSE build --quiet worker admin kbmcp
+$COMPOSE build --quiet worker admin kbmcp tgbot
 
 echo
 echo "=== 5/7  migrate ==="
@@ -66,7 +66,7 @@ echo "=== 6/7  restart services ==="
 # `up -d` recreates only what changed. The worker finishes its current run
 # first: SIGTERM is handled, and an interrupted run would leave items pending
 # rather than lost, but a clean stop keeps the logs readable.
-$COMPOSE up -d postgres n8n worker admin kbmcp
+$COMPOSE up -d postgres n8n worker admin kbmcp tgbot
 
 # Caddy is prod-profile only, so the plain $COMPOSE above never touched it —
 # which meant every Caddyfile change since the domain went up required a manual

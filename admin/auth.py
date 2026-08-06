@@ -27,6 +27,7 @@ import asyncio
 import hmac
 import logging
 import os
+import secrets
 import time
 from urllib.parse import quote, unquote, urlencode, urlparse
 
@@ -69,7 +70,11 @@ PUBLIC_PREFIX = ("/assets/",)
 # Rolling re-sign не має воскрешати cookie, яку щойно видалив хендлер логауту:
 # middleware виставляє Set-Cookie ПІСЛЯ хендлера, і браузер застосував би
 # останній заголовок. Тому для цих шляхів cookie не перевидається.
-NO_REISSUE = {"/logout", "/logout/all"}
+# `/chat/new` — той самий трюк заради тієї ж причини: хендлер сам видає cookie
+# з новим sid (issue(..., rotate_sid=True)); автоматичний re-sign нижче читав
+# би sid зі СТАРОЇ cookie запиту (request.cookies не бачить Set-Cookie
+# відповіді) і переписав би ротацію старим значенням.
+NO_REISSUE = {"/logout", "/logout/all", "/chat/new"}
 
 # Причини на сторінці логіну (`?reason=`).
 # ЗАВЖДИ англійською: усі ці повідомлення показуються на екрані логіну, який
@@ -217,6 +222,26 @@ def clean_who(raw: str) -> str:
     return candidate if candidate in TEAM else ""
 
 
+def _split_payload(payload: str) -> tuple[str, str, str]:
+    """→ (епоха, хто percent-encoded, sid).
+
+    Payload виріс з "<епоха>" до "<епоха>|<хто>" і тепер до
+    "<епоха>|<хто>|<sid>" (чат-сесія, admin/app.py /chat). `split("|", 2)`, а
+    не `partition`: останній вимагає точно один роздільник, а тут їх може
+    бути 0, 1 або 2 — інакше третя частина (sid) обрізалася б чи ламала
+    парсинг двочастинного payload.
+
+    Толерантність навмисна: cookie, видані ДО цієї зміни, лишаються
+    1- або 2-частинними (підпис однаково валідний — SESSION_SECRET не
+    змінювався), і повний редеплой не має розлогінити команду. Такі сесії
+    просто не мають sid (третій елемент — порожній рядок).
+    """
+    parts = payload.split("|", 2)
+    while len(parts) < 3:
+        parts.append("")
+    return parts[0], parts[1], parts[2]
+
+
 def session_who(request: Request) -> str:
     """Підпис із живої сесії (порожній рядок, якщо людина не представилась).
 
@@ -231,10 +256,30 @@ def session_who(request: Request) -> str:
         payload = signer.unsign(raw.encode(), max_age=IDLE_SECONDS).decode()
     except (BadSignature, SignatureExpired):
         return ""
-    _, _, who = payload.partition("|")
+    _, who, _ = _split_payload(payload)
     # Підпис зберігається percent-encoded (див. issue): у cookie можна класти
     # лише latin-1, а список команди — кирилицею.
     return unquote(who)
+
+
+def session_sid(request: Request) -> str:
+    """Ідентифікатор чат-сесії (admin/app.py /chat, /chat/send, /chat/new).
+
+    Порожній рядок для легасі cookie (2- або 1-частинний payload, виданий до
+    появи sid) — виклик очікує це і сам будує стабільний фолбек-ключ
+    (`legacy-{who}`), а не намагається розрізнити «немає сесії» від «сесія
+    без sid»: обидва випадки для чату означають одне й те саме — «історії за
+    справжнім sid нема».
+    """
+    raw = read_cookie(request)
+    if not raw:
+        return ""
+    try:
+        payload = signer.unsign(raw.encode(), max_age=IDLE_SECONDS).decode()
+    except (BadSignature, SignatureExpired):
+        return ""
+    _, _, sid = _split_payload(payload)
+    return sid
 
 
 def actor(request: Request) -> str:
@@ -248,21 +293,44 @@ def actor(request: Request) -> str:
     return f"admin-ui:{who}" if who else "admin-ui"
 
 
-def issue(response: Response, request: Request, who: str | None = None) -> None:
+def issue(
+    response: Response,
+    request: Request,
+    who: str | None = None,
+    *,
+    rotate_sid: bool = False,
+) -> None:
     """Rolling re-sign: свіжий timestamp на кожній успішній відповіді.
     Вікно ідлу рахується від останнього ЗАПИТУ, не від входу.
 
     `who` передається лише хендлером логіну; при перевидачі підпис береться з
     наявної cookie, інакше кожен наступний запит стирав би його.
+
+    `sid` (ідентифікатор чат-сесії — admin/app.py /chat) мінтиться заново
+    рівно у двох випадках: свіжий логін (`who` передано явно хендлером) і
+    явна ротація (`rotate_sid=True`, кнопка «Новий чат» — POST /chat/new,
+    який сам є в auth.NO_REISSUE, інакше rolling re-sign нижче переписав би
+    нову cookie старим sid із request.cookies). У ЗВИЧАЙНОМУ rolling
+    re-sign — той самий виклик `issue(response, request)`, що й був — sid
+    береться з наявної cookie і переноситься БЕЗ ЗМІН: інакше кожен запит під
+    час чату видавав би нову сесію, і історія розпадалася б на однорядкові
+    уламки.
     """
     secure = _secure(request)
     name = COOKIE_HOST if secure else COOKIE_BASE
+    fresh_login = who is not None
     if who is None:
         who = session_who(request)
+    sid = secrets.token_hex(16) if (fresh_login or rotate_sid) else session_sid(request)
     # quote() обов'язковий: HTTP-заголовки кодуються latin-1, а «Микола» в
     # Set-Cookie дає UnicodeEncodeError уже в Starlette — тобто 500 на самому
-    # логіні. Кодується лише підпис, епоха лишається читабельною.
-    payload = f"{_EPOCH}|{quote(who, safe='')}" if who else str(_EPOCH)
+    # логіні. Кодується лише підпис, епоха лишається читабельною. sid — hex,
+    # тобто вже latin-1 і без "|", quote() йому не потрібен.
+    payload = str(_EPOCH)
+    if who:
+        payload += f"|{quote(who, safe='')}"
+        if sid:
+            payload += f"|{sid}"
     response.set_cookie(
         name,
         signer.sign(payload.encode()).decode(),
@@ -393,12 +461,28 @@ class CsrfError(Exception):
 
 
 def csrf_for(raw_cookie: str) -> str:
-    """Виводиться детерміновано з cookie, тому не потребує сховища."""
+    """Виводиться детерміновано з cookie, тому не потребує сховища.
+
+    HMAC береться від ПІДПИСАНОГО PAYLOAD (epoch|who|sid), а НЕ від повного
+    рядка cookie. Повний рядок містить timestamp, а rolling re-sign у
+    session_guard оновлює його КОЖНОЮ відповіддю — токен, вирендерений у
+    форму, протухав би, щойно людина подумала довше за секунду (знайдено
+    наживо 2026-08-06: будь-який POST через ≥1с після рендера → 303
+    /login?reason=csrf; тести цього не бачили, бо TestClient укладається в
+    одну секунду). Payload стабільний на весь логін, тож токен живе разом із
+    сесією і лишається непідробним: sid — 128 випадкових біт, невідомих поза
+    цим браузером, плюс HMAC на SESSION_SECRET.
+
+    Побічний ефект підпису unsign(): битий/чужий cookie дає порожній токен —
+    csrf_guard відхилить такий запит так само, як і раніше.
+    """
     if not raw_cookie:
         return ""
-    return hmac.new(
-        SESSION_SECRET.encode(), raw_cookie.encode(), "sha256"
-    ).hexdigest()[:32]
+    try:
+        payload = signer.unsign(raw_cookie.encode(), max_age=IDLE_SECONDS)
+    except (BadSignature, SignatureExpired):
+        return ""
+    return hmac.new(SESSION_SECRET.encode(), payload, "sha256").hexdigest()[:32]
 
 
 async def csrf_guard(request: Request, csrf: str = Form("")) -> None:

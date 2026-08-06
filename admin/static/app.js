@@ -194,4 +194,172 @@
     ctl.addEventListener(ctl.type === "checkbox" ? "change" : "input", apply);
     if (ctl.value || ctl.checked) apply();
   });
+
+  /* ── 7. Чат: прогресивне посилення (розділ 4.9) ────────────────────────
+     ІНВАРІАНТ файлу зверху лишається: без цього блоку форма — звичайний
+     <form method="post" action="/chat/send"> і сама доїжджає по PRG (303 на
+     /chat). Тут лише підміна на fetch(), щоб бульбашка з'являлась одразу, а
+     не після повного перезавантаження сторінки.
+
+     Кнопку/напис вимикає й повертає розділ 3 (data-busy) — тут лише
+     ДОДАЄМО те, чого той розділ не знає: textarea, і скидання стану після
+     fetch (розділ 3 розрахований на навігацію геть зі сторінки, тут її нема).
+
+     DOM — виключно createElement/textContent: reply — вивід LLM, innerHTML
+     тут був би XSS-поверхнею. */
+  (function chatEnhance() {
+    var list = document.getElementById("chat-list");
+    var empty = document.getElementById("chat-empty");
+    var form = document.querySelector(".chat__composer");
+    if (!list || !empty || !form) return;
+
+    var dataBox = document.querySelector(".data");
+    var textarea = form.querySelector("textarea[name=message]");
+    var button = form.querySelector("button[type=submit]");
+    var URL_RE = /https?:\/\/[^\s<>"']+/g;
+
+    function scrollDown() {
+      if (dataBox) dataBox.scrollTop = dataBox.scrollHeight;
+    }
+
+    function linkifyInto(el, text) {
+      var last = 0, m;
+      URL_RE.lastIndex = 0;
+      while ((m = URL_RE.exec(text))) {
+        if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+        var a = document.createElement("a");
+        a.href = m[0];
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = m[0];
+        el.appendChild(a);
+        last = m.index + m[0].length;
+      }
+      if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+    }
+
+    function timeNow() {
+      return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function bubble(role, text, metaParts) {
+      var row = document.createElement("div");
+      row.className = "chat__msg chat__msg--" + role;
+      var body = document.createElement("div");
+      body.className = "chat__bubble";
+      var p = document.createElement("p");
+      p.className = "chat__text";
+      if (role === "assistant") linkifyInto(p, text);
+      else p.textContent = text;
+      body.appendChild(p);
+      row.appendChild(body);
+
+      var meta = document.createElement("div");
+      meta.className = "chat__meta";
+      metaParts.forEach(function (part) {
+        var span = document.createElement("span");
+        if (part.badge) span.className = "badge " + part.badge;
+        span.textContent = part.text;
+        meta.appendChild(span);
+      });
+      row.appendChild(meta);
+      return row;
+    }
+
+    function errorRow(text) {
+      var row = document.createElement("div");
+      row.className = "chat__msg chat__msg--error";
+      row.setAttribute("role", "alert");
+      var body = document.createElement("div");
+      body.className = "chat__bubble chat__bubble--error";
+      body.textContent = text;
+      row.appendChild(body);
+      return row;
+    }
+
+    function thinkingRow() {
+      var row = document.createElement("div");
+      row.className = "chat__msg chat__msg--assistant chat__msg--thinking";
+      row.setAttribute("aria-live", "polite");
+      var body = document.createElement("div");
+      body.className = "chat__bubble chat__bubble--thinking";
+      var dots = document.createElement("span");
+      dots.className = "chat__dots";
+      dots.appendChild(document.createElement("span"));
+      dots.appendChild(document.createElement("span"));
+      dots.appendChild(document.createElement("span"));
+      body.appendChild(dots);
+      row.appendChild(body);
+      return row;
+    }
+
+    function resetBusy() {
+      form.dataset.busyOn = "";
+      textarea.disabled = false;
+      if (button) {
+        button.disabled = false;
+        if (button.dataset.busyLabel) button.textContent = button.dataset.busyLabel;
+      }
+    }
+
+    form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      if (form.dataset.chatBusy === "1") return;
+      var text = textarea.value.trim();
+      if (!text) return;
+      form.dataset.chatBusy = "1";
+      textarea.disabled = true;
+
+      empty.hidden = true;
+      list.hidden = false;
+      list.appendChild(bubble("user", text, [
+        { text: form.dataset.who || "" },
+        { text: timeNow() },
+      ]));
+      var pending = thinkingRow();
+      list.appendChild(pending);
+      scrollDown();
+
+      var body = new FormData(form);
+      fetch("/chat/send", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "fetch" },
+        body: body,
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          pending.remove();
+          if (data && data.ok) {
+            var meta = [];
+            if (data.tier === "stub") meta.push({ text: form.dataset.stubChip || "", badge: "b-neutral" });
+            if (data.model) meta.push({ text: data.model, badge: "b-info" });
+            meta.push({ text: timeNow() });
+            list.appendChild(bubble("assistant", data.reply || "", meta));
+          } else {
+            list.appendChild(errorRow((data && data.error) || form.dataset.error));
+          }
+        })
+        .catch(function () {
+          pending.remove();
+          list.appendChild(errorRow(form.dataset.error));
+        })
+        .then(function () {
+          textarea.value = "";
+          resetBusy();
+          form.dataset.chatBusy = "";
+          scrollDown();
+        });
+    });
+
+    textarea.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        if (typeof form.requestSubmit === "function") form.requestSubmit();
+        else form.dispatchEvent(new Event("submit", { cancelable: true }));
+      }
+    });
+
+    scrollDown();
+  })();
 })();

@@ -1,0 +1,372 @@
+"""Тести AI-чату (розділ 4.9, задача #30): /chat, /chat/send, /chat/new.
+
+Без мережі й без БД: `admin.app._chat_backend` і `admin.app.db` тут завжди
+підмінені monkeypatch'ем. `/chat` вимагає сесію — це вже ловить
+`test_every_get_route_requires_a_session` у test_auth.py (він ітерує
+`app.routes`, тобто підхопить маршрут сам, без окремого тесту тут); так само
+CSRF-покриття `/chat/send` і `/chat/new` ловить
+`test_every_post_route_is_csrf_covered` — обидва на роутері `mutations`.
+
+Імпорт test_auth, а не копія його env-бутстрапу і `_login`/`client`: модуль
+один на процес pytest, тож env виставляється рівно один раз, а логін-флоу не
+дублюється (WHO, SAME_ORIGIN — звідти ж).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import httpx
+
+# Імпортувати ПЕРШИМ: test_auth виставляє env (DASHBOARD_PASSWORD,
+# SESSION_SECRET, …) ДО того, як сам імпортує admin.app — auth.py читає їх
+# на імпорті й падає fail-fast, якщо пароль не заданий. Якщо `admin.app`
+# імпортувати тут раніше за цей рядок, той самий файл, запущений одиночно
+# (`pytest admin/tests/test_chat.py`), впаде на колекції ще до першого тесту.
+from admin.tests.test_auth import SAME_ORIGIN, WHO, _login, client  # noqa: E402,F401
+
+from admin import app as admin_app  # noqa: E402
+from admin import auth  # noqa: E402
+
+
+def _csrf(client) -> str:
+    return auth.csrf_for(client.cookies[auth.COOKIE_BASE])
+
+
+class _Cursor:
+    """Мінімальний psycopg-подібний курсор: fetchall/fetchone над готовим
+    списком рядків, і запис останнього SQL+параметрів для перевірки
+    namespacing (розділ 2 задачі: 'web:' + sid, той самий, що пише kbmcp)."""
+
+    def __init__(self, rows: list[dict], sink: list):
+        self.rows = rows
+        self.sink = sink
+
+    def fetchall(self):
+        return self.rows
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+
+class _Conn:
+    def __init__(self, rows: list[dict] | None = None, sink: list | None = None):
+        self.rows = rows or []
+        self.sink = sink if sink is not None else []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.sink.append((sql, params))
+        return _Cursor(self.rows, self.sink)
+
+    def commit(self):
+        pass
+
+
+def _fake_db(monkeypatch, rows=None, sink=None):
+    conn = _Conn(rows, sink)
+    monkeypatch.setattr(admin_app, "db", lambda: conn)
+    return conn
+
+
+# ── GET /chat: історія й «thinking» ─────────────────────────────────
+
+
+def test_chat_page_reads_web_namespaced_session_key(client, monkeypatch):
+    """GET /chat має читати kb.chat_messages під ТИМ САМИМ ключем, під яким
+    kbmcp пише (розділ 4.9: 'web:' + sid) — інакше щойно надіслане
+    повідомлення просто не знайдеться в історії."""
+    _login(client)
+    sid = auth.session_sid(
+        type("R", (), {"cookies": {auth.COOKIE_BASE: client.cookies[auth.COOKIE_BASE]}})()
+    )
+    sink: list = []
+    _fake_db(monkeypatch, rows=[], sink=sink)
+
+    response = client.get("/chat")
+    assert response.status_code == 200
+    assert sink, "хендлер жодного разу не звернувся до БД"
+    sql, params = sink[0]
+    assert "kb.chat_messages" in sql
+    assert params == (f"web:{sid}",)
+
+
+def test_chat_page_shows_thinking_hint_when_last_row_is_user(client, monkeypatch):
+    """Останній рядок історії — user без відповіді: могла піти в іншу
+    вкладку/запит, що досі виконується (POST /chat/send блокується до
+    300 с) — сторінка показує натяк, а не мовчить."""
+    _login(client)
+    now = datetime.now(timezone.utc)
+    _fake_db(
+        monkeypatch,
+        rows=[
+            {"id": 1, "role": "user", "who": WHO, "content": "hi",
+             "tier": None, "model": None, "created_at": now},
+        ],
+    )
+    response = client.get("/chat")
+    assert response.status_code == 200
+    assert "chat__msg--thinking" in response.text
+
+
+def test_chat_page_no_thinking_hint_when_answered(client, monkeypatch):
+    _login(client)
+    now = datetime.now(timezone.utc)
+    _fake_db(
+        monkeypatch,
+        rows=[
+            {"id": 1, "role": "user", "who": WHO, "content": "hi",
+             "tier": None, "model": None, "created_at": now},
+            {"id": 2, "role": "assistant", "who": None, "content": "hello",
+             "tier": "llm", "model": "claude-x", "created_at": now},
+        ],
+    )
+    response = client.get("/chat")
+    assert response.status_code == 200
+    assert "chat__msg--thinking" not in response.text
+
+
+def test_chat_page_linkifies_assistant_urls_but_not_user_text(client, monkeypatch):
+    """NO markdown rendering (те саме рішення, що й brief.html): голий URL у
+    відповіді асистента стає клікабельним через фільтр linkify, але текст
+    людини — жодних посилань, навіть якщо вона сама вставила URL."""
+    _login(client)
+    now = datetime.now(timezone.utc)
+    _fake_db(
+        monkeypatch,
+        rows=[
+            {"id": 1, "role": "user", "who": WHO, "content": "see https://example.com",
+             "tier": None, "model": None, "created_at": now},
+            {"id": 2, "role": "assistant", "who": None, "content": "sure: https://example.com/x",
+             "tier": "llm", "model": "claude-x", "created_at": now},
+        ],
+    )
+    html = client.get("/chat").text
+    assert '<a href="https://example.com/x" target="_blank" rel="noopener">' in html
+    # Повідомлення людини лишається голим текстом — жодного <a> навколо нього.
+    assert "see https://example.com</p>" in html
+
+
+def test_chat_page_shows_stub_tier_chip(client, monkeypatch):
+    _login(client)
+    now = datetime.now(timezone.utc)
+    _fake_db(
+        monkeypatch,
+        rows=[
+            {"id": 1, "role": "assistant", "who": None, "content": "hi",
+             "tier": "stub", "model": None, "created_at": now},
+        ],
+    )
+    html = client.get("/chat").text
+    assert "keyword tier" in html  # pg.chat.stub_chip, дефолт en
+
+
+# ── POST /chat/send: валідація ──────────────────────────────────────
+
+
+def test_chat_send_rejects_empty_message_redirect_branch(client):
+    _login(client)
+    response = client.post(
+        "/chat/send",
+        data={"message": "   ", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/chat?error=")
+
+
+def test_chat_send_rejects_empty_message_json_branch(client):
+    _login(client)
+    response = client.post(
+        "/chat/send",
+        data={"message": "", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]
+
+
+def test_chat_send_rejects_message_over_4000_chars(client):
+    _login(client)
+    response = client.post(
+        "/chat/send",
+        data={"message": "x" * 4001, "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 400
+    assert "4000" in response.json()["error"]
+
+
+# ── POST /chat/send: гілкування відповіді за X-Requested-With ───────
+
+
+def test_chat_send_json_branch_returns_reply_without_writing_to_db(client, monkeypatch):
+    """Admin сам НЕ пише в kb.chat_messages (пише kbmcp — розділ 4.9), тож
+    db() тут узагалі торкатися не мав би: перевіряємо непрямо, підмінивши її
+    на об'єкт, що кидає AssertionError при будь-якому виклику."""
+    _login(client)
+
+    class _NoDb:
+        def __call__(self):
+            raise AssertionError("send_chat_message не мав звертатися до БД")
+
+    monkeypatch.setattr(admin_app, "db", _NoDb())
+    monkeypatch.setattr(
+        admin_app,
+        "_chat_backend",
+        lambda payload: {"ok": True, "reply_md": "hi there", "tier": "llm", "model": "claude-x"},
+    )
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"ok": True, "reply": "hi there", "tier": "llm", "model": "claude-x"}
+
+
+def test_chat_send_session_key_is_raw_without_namespace(client, monkeypatch):
+    """Контракт kbmcp /chat: session_key БЕЗ ':' — неймспейс "web:" додає
+    kbmcp при записі. Регресія знайдена на живому smoke 2026-08-06: admin
+    надсилав уже неймспейснутий ключ, kbmcp відповідав 400, а замокані тести
+    цього не бачили — тому фейковий бекенд тут повторює валідацію реального.
+    """
+    _login(client)
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        assert ":" not in payload["session_key"], (
+            "session_key має бути сирим — kbmcp неймспейсить сам"
+        )
+        return {"ok": True, "reply_md": "ok", "tier": "stub", "model": None}
+
+    monkeypatch.setattr(admin_app, "_chat_backend", fake_backend)
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 200
+    assert seen["channel"] == "web"
+    assert seen["session_key"]  # непорожній сирий ключ (sid або legacy-<who>)
+
+
+def test_chat_send_redirect_branch_without_fetch_header(client, monkeypatch):
+    """Без X-Requested-With: fetch (звичайний браузер) — 303 на /chat, PRG:
+    сторінка мусить повністю працювати без JS."""
+    _login(client)
+    monkeypatch.setattr(
+        admin_app, "_chat_backend",
+        lambda payload: {"ok": True, "reply_md": "hi", "tier": "llm", "model": None},
+    )
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/chat"
+
+
+def test_chat_send_passes_who_and_raw_sid_as_session_key(client, monkeypatch):
+    """session_key у бекенд іде СИРИМ (sid без "web:") — неймспейс додає
+    kbmcp при записі; ':' у ключі контракт /chat відхиляє 400-кою."""
+    _login(client)
+    sid = auth.session_sid(
+        type("R", (), {"cookies": {auth.COOKIE_BASE: client.cookies[auth.COOKIE_BASE]}})()
+    )
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        return {"ok": True, "reply_md": "ok", "tier": "llm", "model": None}
+
+    monkeypatch.setattr(admin_app, "_chat_backend", fake_backend)
+    client.post(
+        "/chat/send",
+        data={"message": "hello", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert seen["channel"] == "web"
+    assert seen["session_key"] == sid
+    assert seen["who"] == WHO
+    assert seen["message"] == "hello"
+
+
+# ── POST /chat/send: помилки бекенда НЕ ковтаються мовчки ───────────
+
+
+def test_chat_send_surfaces_kbmcp_ok_false_error(client, monkeypatch):
+    monkeypatch.setattr(
+        admin_app, "_chat_backend",
+        lambda payload: {"ok": False, "error": "rate limited, try later"},
+    )
+    _login(client)
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"ok": False, "error": "rate limited, try later"}
+
+    # Той самий шлях без fetch-заголовка — помилка потрапляє в query, а не
+    # губиться в мовчазному редіректі (на відміну від generate_brief вище,
+    # де для помилки немає JS-гілки, тож фрагмент — прийнятний компроміс).
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "rate+limited" in response.headers["location"] or "rate%20limited" in response.headers["location"]
+
+
+def test_chat_send_maps_httpx_error_to_visible_error(client, monkeypatch):
+    """Мережа впала (kbmcp недоступний) — httpx.HTTPError, не 500 і не
+    порожня відповідь."""
+    _login(client)
+
+    def boom(payload):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(admin_app, "_chat_backend", boom)
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 502
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]
+
+
+# ── POST /chat/new: ротація ──────────────────────────────────────────
+
+
+def test_chat_new_redirects_and_rotates_cookie(client):
+    _login(client)
+    before = client.cookies[auth.COOKIE_BASE]
+    response = client.post(
+        "/chat/new",
+        data={"csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/chat"
+    after = response.cookies.get(auth.COOKIE_BASE)
+    assert after and after != before

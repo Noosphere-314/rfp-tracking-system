@@ -1,34 +1,91 @@
 {% extends "base.html" %}
-{#- AI-чат — стаб (розділ 4.9). Сенс сторінки зараз у тому, щоб довести
-    повноекранний лейаут, поки він дешевий: .content--full робить .data
-    єдиним скрол-контейнером, а .controls — прибитим донизу композером.
-    Це єдиний екран, де «керування» візуально знизу, і саме тому це явний
-    модифікатор, а не виняток із правила.
+{#- AI-чат (розділ 4.9, задача #30). Чат живе поверх бази знань через kbmcp:
+    admin лише проксує POST на {KBMCP_URL}/chat (admin/app.py: _chat_backend)
+    і читає готову історію з kb.chat_messages для відображення — сам туди
+    нічого не пише (пише kbmcp, той самий поділ ролей, що й у generate_brief
+    для kb.briefs). Тому «thinking» нижче — не спінер, а факт: останній
+    рядок історії — user, а assistant ще нема.
 
-    Композер НЕ є <form method="post"> — надсилати нікуди; кнопки задизейблені,
-    тож жодного CSRF-контракту тут не виникає. Коли з'явиться бекенд, форма
-    отримає method="post" і {% include "_csrf.html" %} разом із ним.
+    .content--full і .chat__composer лишились від стаба (крок «довести
+    повноекранний лейаут, поки він дешевий») — тепер вони отримали справжній
+    вміст.
 
-    Двомовність: англійський текст стоїть у розмітці другим аргументом t(),
-    українська приходить зі словника admin/i18n.py. -#}
+    Композер — звичайна <form method="post" action="/chat/send"> із
+    {% include "_csrf.html" %}: сторінка мусить повністю працювати без JS
+    (PRG: POST → 303 на /chat). app.js лише перехоплює submit і підміняє
+    похід на fetch(), щоб не було повного перезавантаження сторінки —
+    розмітка нижче для цього й тримає #chat-list/#chat-empty стабільними id.
+
+    Двомовність: англійський текст — другим аргументом t(), українська зі
+    словника admin/i18n.py (pg.chat.*). -#}
 {% block title %}{{ t("pg.chat.h1", "AI chat") }}{% endblock %}
 {% block h1 %}{{ t("pg.chat.h1", "AI chat") }}{% endblock %}
-{% block sub %}{{ t("pg.chat.sub", "Ask the knowledge base in plain language — in development") }}{% endblock %}
+{% block sub %}{{ t("pg.chat.sub", "Ask the knowledge base in plain language") }}{% endblock %}
 {% block content_mod %} content--full{% endblock %}
 
 {% block data %}
-{% set empty_title = t("pg.chat.soon", "Chat over the knowledge base — in development") %}
-{% set empty_hint = t("pg.chat.about", "Here you will be able to ask the forum archive in plain language: the model will try several phrasings itself, read whole topics and show its sources. For now the same is available through full-text search.") %}
+{#- Обидва блоки рендеряться завжди — приховується непотрібний через
+    [hidden], а не {% if %}: JS перемикає видимість тим самим атрибутом при
+    оптимістичному додаванні першої бульбашки, без перебудови DOM. -#}
+<div id="chat-empty"{% if messages %} hidden{% endif %}>
+{% set empty_title = t("pg.chat.empty_title", "Ask the knowledge base") %}
+{% set empty_hint = t("pg.chat.empty_hint", "Plain-language questions over the forum archive: the model rephrases them itself, reads whole topics and uses what it found in the answer. The same archive is also searchable directly.") %}
 {% set empty_href = "/kb" %}
 {% set empty_link = t("pg.chat.kb_link", "Search the knowledge base") %}
 {% include "_empty.html" %}
+</div>
+
+<div class="chat__list" id="chat-list"{% if not messages %} hidden{% endif %}>
+  {% for m in messages %}
+  <div class="chat__msg chat__msg--{{ m.role }}">
+    <div class="chat__bubble">
+      {% if m.role == 'assistant' %}
+      <p class="chat__text">{{ m.content | linkify }}</p>
+      {% else %}
+      <p class="chat__text">{{ m.content }}</p>
+      {% endif %}
+    </div>
+    <div class="chat__meta">
+      {% if m.role == 'user' %}
+      <span>{{ m.who or who }}</span>
+      {% else %}
+      {% if m.tier == 'stub' %}<span class="badge b-neutral">{{ t("pg.chat.stub_chip", "keyword tier") }}</span>{% endif %}
+      {% if m.model %}<span class="badge b-info">{{ m.model }}</span>{% endif %}
+      {% endif %}
+      <span>{{ m.created_at.strftime('%H:%M') if m.created_at else '' }}</span>
+    </div>
+  </div>
+  {% endfor %}
+  {#- Натяк «відповідь генерується», а не спінер: сторінка нічого не пінгує
+      сама (заборона на автополінг, app.js розділ 0) — рядок просто видно,
+      поки людина не оновить сторінку чи не отримає відповідь у своїй
+      вкладці. -#}
+  {% if thinking %}
+  <div class="chat__msg chat__msg--assistant chat__msg--thinking" aria-live="polite">
+    <div class="chat__bubble chat__bubble--thinking">
+      <span class="chat__dots"><span></span><span></span><span></span></span>
+      <span class="visually-hidden">{{ t("pg.chat.thinking", "Thinking…") }}</span>
+    </div>
+  </div>
+  {% endif %}
+</div>
 {% endblock %}
 
 {% block controls %}
-<div class="chat__composer">
-  <label class="visually-hidden" for="chat-input">{{ t("f.message", "Message") }}</label>
-  <textarea id="chat-input" disabled
-            placeholder="{{ t('pg.chat.ph', 'e.g. which dev tooling grants were discussed in Optimism this quarter?') }}"></textarea>
-  <button class="btn btn--primary" type="button" disabled>{{ t("act.send", "Send") }}</button>
+<div class="chat__controls">
+  <form class="chat__newchat" method="post" action="/chat/new">{% include "_csrf.html" %}
+    <button class="btn btn--ghost btn--sm" type="submit">{{ t("pg.chat.new_chat", "New chat") }}</button>
+  </form>
+  <form class="chat__composer" method="post" action="/chat/send"
+        data-busy="{{ t('pg.chat.sending', 'Sending…') }}"
+        data-error="{{ t('pg.chat.error', 'Could not send the message — try again') }}"
+        data-stub-chip="{{ t('pg.chat.stub_chip', 'keyword tier') }}"
+        data-who="{{ who }}">
+    {% include "_csrf.html" %}
+    <label class="visually-hidden" for="chat-input">{{ t("f.message", "Message") }}</label>
+    <textarea id="chat-input" name="message" maxlength="4000" required
+              placeholder="{{ t('pg.chat.ph', 'e.g. which dev tooling grants were discussed in Optimism this quarter?') }}"></textarea>
+    <button class="btn btn--primary" type="submit">{{ t("act.send", "Send") }}</button>
+  </form>
 </div>
 {% endblock %}
