@@ -9,11 +9,11 @@ from typing import Any
 import httpx
 import psycopg
 
+from netguard import MAX_REDIRECTS, SsrfBlocked, assert_public_url  # noqa: F401
 from . import ratelimit
 from .config import config
 
 log = logging.getLogger(__name__)
-
 
 class SourceBlocked(Exception):
     """403/429 from a source.
@@ -48,7 +48,10 @@ class HttpClient:
         self._conn = conn
         self._client = httpx.Client(
             timeout=config.http_timeout_seconds,
-            follow_redirects=True,
+            # ВИМКНЕНО навмисно: редіректи веде _get_checked, щоб перевірити
+            # SSRF на кожному кроці. httpx із follow_redirects=True пройшов би
+            # 302 на внутрішній хост повз будь-яку перевірку входу.
+            follow_redirects=False,
             headers={
                 "User-Agent": config.user_agent,
                 "Accept-Encoding": "gzip, deflate",
@@ -63,6 +66,33 @@ class HttpClient:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+    def _get_checked(self, url: str, headers: dict[str, str]) -> httpx.Response:
+        """GET із перевіркою SSRF на КОЖНОМУ кроці редіректу.
+
+        Редіректи ведемо вручну саме тому, що перевіряти лише перший URL
+        безглуздо: `https://evil.example` віддає 302 на `http://n8n:5678/rest/`
+        — і httpx із `follow_redirects=True` слухняно туди піде, повз будь-яку
+        перевірку входу.
+        """
+        current = url
+        for hop in range(MAX_REDIRECTS + 1):
+            assert_public_url(current)
+            try:
+                response = self._client.get(current, headers=headers)
+            except httpx.HTTPError as exc:
+                raise FetchError(f"GET {current} failed: {exc}") from exc
+
+            if not response.is_redirect:
+                return response
+            if hop == MAX_REDIRECTS:
+                raise FetchError(f"GET {url}: більше за {MAX_REDIRECTS} редіректів")
+            # `.join()` розкриває відносний Location відносно поточного URL —
+            # інакше `Location: /rest/` після зовнішнього хоста перевірявся б
+            # як голий шлях без хоста.
+            current = str(response.url.join(response.headers["Location"]))
+
+        raise FetchError(f"GET {url}: цикл редіректів")  # недосяжно, для mypy
 
     def get(
         self,
@@ -89,11 +119,7 @@ class HttpClient:
                     request_headers["If-Modified-Since"] = cached["last_modified"]
 
         ratelimit.acquire(self._conn, url)
-
-        try:
-            response = self._client.get(url, headers=request_headers)
-        except httpx.HTTPError as exc:
-            raise FetchError(f"GET {url} failed: {exc}") from exc
+        response = self._get_checked(url, request_headers)
 
         if response.status_code in (403, 429):
             raise SourceBlocked(
@@ -127,6 +153,7 @@ class HttpClient:
         self, url: str, payload: Any, *, headers: dict[str, str] | None = None
     ) -> Response:
         ratelimit.acquire(self._conn, url)
+        assert_public_url(url)
         try:
             response = self._client.post(url, json=payload, headers=headers or {})
         except httpx.HTTPError as exc:

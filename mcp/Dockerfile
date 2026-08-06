@@ -8,6 +8,7 @@ WORKDIR /app
 COPY mcp/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY netguard.py ./
 COPY mcp/server.py mcp/briefing.py ./
 
 RUN useradd --create-home --uid 10003 kbmcp

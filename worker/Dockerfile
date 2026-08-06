@@ -12,6 +12,7 @@ WORKDIR /app
 COPY worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY netguard.py /app/netguard.py
 COPY worker /app/worker/
 
 # Fetching is I/O-bound and polite by design; no reason to run as root.

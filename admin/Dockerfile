@@ -12,6 +12,7 @@ COPY worker/requirements.txt worker-requirements.txt
 COPY admin/requirements.txt admin-requirements.txt
 RUN pip install --no-cache-dir -r worker-requirements.txt -r admin-requirements.txt
 
+COPY netguard.py /app/netguard.py
 COPY worker /app/worker
 COPY admin /app/admin
 COPY migrations /app/migrations

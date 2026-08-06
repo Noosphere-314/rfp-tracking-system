@@ -21,6 +21,8 @@ import os
 from datetime import datetime, timezone
 
 import httpx
+
+from netguard import SsrfBlocked, assert_public_url
 import psycopg
 from fastmcp import FastMCP
 from psycopg.rows import dict_row
@@ -230,12 +232,24 @@ def live_forum_search(forum: str, query: str) -> dict:
     if not row:
         return {"error": f"unknown forum slug {forum!r}"}
 
+    # `base_url` приходить із kb.forums, куди його кладе форма в адмінці —
+    # тобто це той самий недовірений вхід, що й у sources (worker/http.py).
+    target = f"{row['base_url'].rstrip('/')}/search.json"
+    try:
+        assert_public_url(target)
+    except SsrfBlocked as exc:
+        _log("live_forum_search", query, forum, 0)
+        return {"error": f"forum url rejected: {exc}"}
+
     try:
         response = httpx.get(
-            f"{row['base_url'].rstrip('/')}/search.json",
+            target,
             params={"q": query},
             headers={"User-Agent": USER_AGENT},
             timeout=20,
+            # Редіректи веде assert_public_url вище лише для першого кроку;
+            # 302 на внутрішній хост обійшов би перевірку, тож не ходимо за ними.
+            follow_redirects=False,
         )
         response.raise_for_status()
     except httpx.HTTPError as exc:
