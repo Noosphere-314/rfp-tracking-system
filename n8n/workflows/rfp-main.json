@@ -65,7 +65,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT status FROM seen_items WHERE item_uid = $1",
+        "query": "SELECT status FROM public.seen_items WHERE item_uid = $1",
         "options": {
           "queryReplacement": "={{ $json.item_uid }}"
         }
@@ -160,7 +160,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT (SELECT value::float FROM settings WHERE key='confidence_threshold') AS threshold, (SELECT value::float FROM settings WHERE key='review_band_low') AS band_low",
+        "query": "SELECT (SELECT value::float FROM public.settings WHERE key='confidence_threshold') AS threshold, (SELECT value::float FROM public.settings WHERE key='review_band_low') AS band_low",
         "options": {}
       },
       "id": "pg-thresholds",
@@ -254,7 +254,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO org_registry (normalized_name, pipedrive_org_id, display_name) VALUES (lower($1), -1, $1) ON CONFLICT (normalized_name) DO UPDATE SET normalized_name = org_registry.normalized_name RETURNING pipedrive_org_id",
+        "query": "INSERT INTO public.org_registry (normalized_name, pipedrive_org_id, display_name) VALUES (lower($1), -1, $1) ON CONFLICT (normalized_name) DO UPDATE SET normalized_name = org_registry.normalized_name RETURNING pipedrive_org_id",
         "options": {
           "queryReplacement": "={{ $('Unwrap payload').first().json.ecosystem }}"
         }
@@ -387,7 +387,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE seen_items SET status = 'done', delivered_at = now() WHERE item_uid = $1",
+        "query": "UPDATE public.seen_items SET status = 'done', delivered_at = now() WHERE item_uid = $1",
         "options": {
           "queryReplacement": "={{ $('Unwrap payload').first().json.item_uid }}"
         }
@@ -538,7 +538,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO items_log (item_uid, event, payload, prompt_version) VALUES ($1, 'classified', $2::jsonb, $3)",
+        "query": "INSERT INTO public.items_log (item_uid, event, payload, prompt_version) VALUES ($1, 'classified', $2::jsonb, $3)",
         "options": {
           "queryReplacement": "={{ [ $('Unwrap payload').first().json.item_uid, JSON.stringify($json), $json.prompt_version ] }}"
         }
@@ -561,7 +561,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO items_log (item_uid, event, payload, prompt_version) VALUES ($1, 'mock_lead', $2::jsonb, $3)",
+        "query": "INSERT INTO public.items_log (item_uid, event, payload, prompt_version) VALUES ($1, 'mock_lead', $2::jsonb, $3)",
         "options": {
           "queryReplacement": "={{ [ $('Unwrap payload').first().json.item_uid, JSON.stringify({\n  title: $('Unwrap payload').first().json.title,\n  url: $('Unwrap payload').first().json.url,\n  ecosystem: $('Unwrap payload').first().json.ecosystem,\n  category: $('Parse verdict').first().json.category,\n  confidence: $('Parse verdict').first().json.confidence,\n  canonical_project: $('Parse verdict').first().json.canonical_project,\n  canonical_title: $('Parse verdict').first().json.canonical_title,\n  enrichment: ($('Claude Sonnet enrich').first().json.content || []).filter(b => b.type === 'text').map(b => b.text).join(' ')\n}), 'rfp-classifier-v1' ] }}"
         }
@@ -635,7 +635,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE seen_items SET status = 'done' WHERE item_uid = $1",
+        "query": "UPDATE public.seen_items SET status = 'done' WHERE item_uid = $1",
         "options": {
           "queryReplacement": "={{ $('Unwrap payload').first().json.item_uid }}"
         }
