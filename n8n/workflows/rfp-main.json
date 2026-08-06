@@ -503,7 +503,7 @@
     },
     {
       "parameters": {
-        "chatId": "-5461137249",
+        "chatId": "-1004424509619",
         "text": "={{ '🆕 ЛІД (staging): ' + $('Parse verdict').first().json.canonical_title\n  + '\\n' + $('Parse verdict').first().json.category + ' · confidence ' + $('Parse verdict').first().json.confidence + ' · ' + $('Parse verdict').first().json.canonical_project\n  + '\\n\\n' + ($('Claude Sonnet enrich').first().json.content || []).filter(b => b.type === 'text').map(b => b.text).join(' ')\n  + '\\n\\n' + ($('Unwrap payload').first().json.url || '') }}",
         "additionalFields": {}
       },
@@ -613,7 +613,7 @@
     },
     {
       "parameters": {
-        "chatId": "-5461137249",
+        "chatId": "-1004424509619",
         "text": "={{ '🟡 REVIEW (' + $('Parse verdict').first().json.confidence + '): ' + $('Parse verdict').first().json.canonical_title\n  + '\\n' + $('Parse verdict').first().json.category + ' · ' + $('Unwrap payload').first().json.ecosystem\n  + '\\n' + $('Parse verdict').first().json.reason\n  + '\\n' + ($('Unwrap payload').first().json.url || '') }}",
         "additionalFields": {}
       },
