@@ -41,7 +41,7 @@
     },
     {
       "parameters": {
-        "chatId": "TELEGRAM_CHAT_ID_TODO",
+        "chatId": "8325998119",
         "text": "={{ '🚨 n8n workflow failed: ' + $json.workflow.name + '\\nNode: ' + ($json.execution.lastNodeExecuted || '?') + '\\nError: ' + ($json.execution.error.message || 'unknown') + '\\nExecution: ' + $json.execution.url }}",
         "additionalFields": {}
       },
@@ -55,6 +55,7 @@
       ],
       "credentials": {
         "telegramApi": {
+          "id": "BknL5zHv5PjAaBh1",
           "name": "Telegram account"
         }
       }

@@ -497,7 +497,7 @@
     },
     {
       "parameters": {
-        "chatId": "TELEGRAM_CHAT_ID_TODO",
+        "chatId": "8325998119",
         "text": "={{ '🆕 ' + $('Create lead (v1)').first().json.data.title + ' → Pipedrive Leads Inbox' }}",
         "additionalFields": {}
       },
@@ -511,6 +511,7 @@
       ],
       "credentials": {
         "telegramApi": {
+          "id": "BknL5zHv5PjAaBh1",
           "name": "Telegram account"
         }
       }
