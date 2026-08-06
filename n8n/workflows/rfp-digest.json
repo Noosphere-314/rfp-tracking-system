@@ -37,8 +37,8 @@
       ],
       "credentials": {
         "postgres": {
-          "name": "rfp-app-db (n8n role)",
-          "id": "rfpPgCredential1"
+          "id": "aGuV5tIZpbOq5Lbj",
+          "name": "Postgres account"
         }
       }
     },
@@ -66,7 +66,28 @@
           "name": "slack-bot"
         }
       },
-      "notes": "The CEO-visible health signal (Stage 3.6) + the lead-floor heartbeat (A3): quiet pipelines look identical to broken ones without this."
+      "notes": "The CEO-visible health signal (Stage 3.6) + the lead-floor heartbeat (A3): quiet pipelines look identical to broken ones without this.",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "chatId": "TELEGRAM_CHAT_ID_TODO",
+        "text": "={{ '📊 RFP tracker — daily digest\\n' +\n'Runs (24h): ' + $json.runs_24h + ' · sources checked: ' + $json.sources_checked + ($json.sources_failed > 0 ? ' (⚠️ ' + $json.sources_failed + ' failed)' : '') + '\\n' +\n'New items: ' + $json.items_new + ' · leads delivered: ' + $json.leads_24h + '\\n' +\n'Pending now: ' + $json.pending_now + ' · dead total: ' + $json.dead_total +\n($json.leads_7d < $json.lead_floor ? '\\n🚨 Lead floor breach: ' + $json.leads_7d + ' leads in 7d (floor ' + $json.lead_floor + ') — щось зламалось вище по трубі (A3)' : '') }}",
+        "additionalFields": {}
+      },
+      "id": "tg-8213434424",
+      "name": "Telegram digest",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        440,
+        160
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram account"
+        }
+      }
     }
   ],
   "connections": {
@@ -86,6 +107,22 @@
         [
           {
             "node": "Slack digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram digest": {
+      "main": [
+        []
+      ]
+    },
+    "Slack digest": {
+      "main": [
+        [
+          {
+            "node": "Telegram digest",
             "type": "main",
             "index": 0
           }

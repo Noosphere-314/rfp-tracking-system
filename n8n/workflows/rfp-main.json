@@ -80,8 +80,8 @@
       ],
       "credentials": {
         "postgres": {
-          "name": "rfp-app-db (n8n role)",
-          "id": "rfpPgCredential1"
+          "id": "aGuV5tIZpbOq5Lbj",
+          "name": "Postgres account"
         }
       },
       "notes": "Cheap first gate. The authoritative idempotency check is the Pipedrive search below — TODO wire GET /v1/itemSearch by item_uid custom field, and the fingerprint match → Note branch (A6)."
@@ -150,7 +150,8 @@
       ],
       "credentials": {
         "httpHeaderAuth": {
-          "name": "anthropic-api-key (x-api-key)"
+          "id": "Y3TZot1Sa9aCExrO",
+          "name": "Header Auth account"
         }
       },
       "notes": "TODO: add structured output per current API docs ({is_rfp, confidence, category, canonical_project, canonical_title, reason}); verify cache hits via usage.cache_read_input_tokens (A9). Log verdict + prompt version to items_log."
@@ -171,8 +172,8 @@
       ],
       "credentials": {
         "postgres": {
-          "name": "rfp-app-db (n8n role)",
-          "id": "rfpPgCredential1"
+          "id": "aGuV5tIZpbOq5Lbj",
+          "name": "Postgres account"
         }
       },
       "notes": "Read per item so the admin UI / form changes apply without redeploy (A8)."
@@ -242,7 +243,8 @@
       ],
       "credentials": {
         "httpHeaderAuth": {
-          "name": "anthropic-api-key (x-api-key)"
+          "id": "Y3TZot1Sa9aCExrO",
+          "name": "Header Auth account"
         }
       },
       "notes": "No hallucinated deadlines in front of sales (A8): regex-corroborate deadline/budget downstream."
@@ -265,8 +267,8 @@
       ],
       "credentials": {
         "postgres": {
-          "name": "rfp-app-db (n8n role)",
-          "id": "rfpPgCredential1"
+          "id": "aGuV5tIZpbOq5Lbj",
+          "name": "Postgres account"
         }
       },
       "notes": "Race-safe org identity (A7). pipedrive_org_id = -1 → next node creates the org via **API v2** (v1 orgs sunset 2026-07-31) with the RFP-bot marker field, then UPDATE org_registry with the real id."
@@ -276,7 +278,7 @@
         "method": "POST",
         "url": "https://api.pipedrive.com/api/v2/organizations",
         "authentication": "genericCredentialType",
-        "genericAuthType": "queryAuth",
+        "genericAuthType": "httpQueryAuth",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ name: $('Unwrap payload').first().json.ecosystem }) }}",
@@ -291,8 +293,9 @@
         -120
       ],
       "credentials": {
-        "queryAuth": {
-          "name": "pipedrive-api-token"
+        "httpQueryAuth": {
+          "id": "JhQkSsXyrp5LUSiF",
+          "name": "Query Auth account"
         }
       },
       "notes": "TODO: run only when registry returned -1; add marker field; write real id back to org_registry. Leads must never attach to unmarked (human) orgs (A7)."
@@ -302,7 +305,7 @@
         "method": "POST",
         "url": "https://api.pipedrive.com/v1/leads",
         "authentication": "genericCredentialType",
-        "genericAuthType": "queryAuth",
+        "genericAuthType": "httpQueryAuth",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({\n  title: '[' + ($('Unwrap payload').first().json.lane === 'funding' ? 'FUNDING' : 'RFP') + '] ' + $('Unwrap payload').first().json.ecosystem + ' — ' + $('Unwrap payload').first().json.title,\n  organization_id: $('org_registry lookup').first().json.pipedrive_org_id\n}) }}",
@@ -317,8 +320,9 @@
         -120
       ],
       "credentials": {
-        "queryAuth": {
-          "name": "pipedrive-api-token"
+        "httpQueryAuth": {
+          "id": "JhQkSsXyrp5LUSiF",
+          "name": "Query Auth account"
         }
       },
       "notes": "TODO after Pipedrive setup: label_ids [RFP|GRANT|FUNDING], custom fields Ecosystem / Source Link / Source API / Confidence / Item UID (hash keys from /v1/dealFields). Leads/Notes stay v1 — no v2 exists."
@@ -328,7 +332,7 @@
         "method": "POST",
         "url": "https://api.pipedrive.com/v1/notes",
         "authentication": "genericCredentialType",
-        "genericAuthType": "queryAuth",
+        "genericAuthType": "httpQueryAuth",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({\n  lead_id: $('Create lead (v1)').first().json.data.id,\n  content: 'Source: <a href=\"' + $('Unwrap payload').first().json.url + '\">' + $('Unwrap payload').first().json.url + '</a><br><br>' + ($('Unwrap payload').first().json.body || '').slice(0, 1500)\n}) }}",
@@ -343,8 +347,9 @@
         -120
       ],
       "credentials": {
-        "queryAuth": {
-          "name": "pipedrive-api-token"
+        "httpQueryAuth": {
+          "id": "JhQkSsXyrp5LUSiF",
+          "name": "Query Auth account"
         }
       }
     },
@@ -371,7 +376,8 @@
         "slackApi": {
           "name": "slack-bot"
         }
-      }
+      },
+      "disabled": true
     },
     {
       "parameters": {
@@ -391,8 +397,8 @@
       ],
       "credentials": {
         "postgres": {
-          "name": "rfp-app-db (n8n role)",
-          "id": "rfpPgCredential1"
+          "id": "aGuV5tIZpbOq5Lbj",
+          "name": "Postgres account"
         }
       },
       "notes": "THE final node. Runs only after the lead exists. Until it runs, the worker re-sends the item — that is the at-least-once design, not a bug. Never move this earlier."
@@ -467,7 +473,7 @@
         "method": "POST",
         "url": "https://api.pipedrive.com/v1/notes",
         "authentication": "genericCredentialType",
-        "genericAuthType": "queryAuth",
+        "genericAuthType": "httpQueryAuth",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({\n  lead_id: $('Create lead (v1)').first().json.data.id,\n  content: '<b>KB Briefing Pack</b> (tier: ' + $('KB briefing pack').first().json.tier + ')<br><br>' + $('KB briefing pack').first().json.brief_md.replace(/\\n/g, '<br>')\n}) }}",
@@ -483,8 +489,29 @@
       ],
       "onError": "continueRegularOutput",
       "credentials": {
-        "queryAuth": {
-          "name": "pipedrive-api-token"
+        "httpQueryAuth": {
+          "id": "JhQkSsXyrp5LUSiF",
+          "name": "Query Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "TELEGRAM_CHAT_ID_TODO",
+        "text": "={{ '🆕 ' + $('Create lead (v1)').first().json.data.title + ' → Pipedrive Leads Inbox' }}",
+        "additionalFields": {}
+      },
+      "id": "tg-7423613882",
+      "name": "Telegram alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        40
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram account"
         }
       }
     }
@@ -640,7 +667,7 @@
       "main": [
         [
           {
-            "node": "FINAL: mark done (A1)",
+            "node": "Telegram alert",
             "type": "main",
             "index": 0
           }
@@ -679,6 +706,17 @@
           }
         ],
         []
+      ]
+    },
+    "Telegram alert": {
+      "main": [
+        [
+          {
+            "node": "FINAL: mark done (A1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },

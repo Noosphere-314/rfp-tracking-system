@@ -36,7 +36,28 @@
           "name": "slack-bot"
         }
       },
-      "notes": "A3: any failure in any workflow lands in Slack. Items involved stay 'pending' in seen_items and are re-sent by the worker — nothing is lost by a crash here."
+      "notes": "A3: any failure in any workflow lands in Slack. Items involved stay 'pending' in seen_items and are re-sent by the worker — nothing is lost by a crash here.",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "chatId": "TELEGRAM_CHAT_ID_TODO",
+        "text": "={{ '🚨 n8n workflow failed: ' + $json.workflow.name + '\\nNode: ' + ($json.execution.lastNodeExecuted || '?') + '\\nError: ' + ($json.execution.error.message || 'unknown') + '\\nExecution: ' + $json.execution.url }}",
+        "additionalFields": {}
+      },
+      "id": "tg-2115745582",
+      "name": "Telegram: pipeline failure",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        160
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram account"
+        }
+      }
     }
   ],
   "connections": {
@@ -45,6 +66,22 @@
         [
           {
             "node": "Slack: pipeline failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: pipeline failure": {
+      "main": [
+        []
+      ]
+    },
+    "Slack: pipeline failure": {
+      "main": [
+        [
+          {
+            "node": "Telegram: pipeline failure",
             "type": "main",
             "index": 0
           }
