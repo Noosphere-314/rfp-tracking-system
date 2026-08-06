@@ -86,5 +86,23 @@ n8n.{$DOMAIN} {
 		output stdout
 		format console
 	}
-	reverse_proxy n8n:5678
+
+	# The workflow editor must never appear in search results: it is an internal
+	# tool, and an indexed login page is exactly what makes a fresh domain look
+	# like phishing to Safe Browsing in the first place.
+	header X-Robots-Tag "noindex, nofollow, noarchive"
+
+	# Google Search Console ownership proof. Served by Caddy rather than dropped
+	# into the container: n8n has no static directory to put a file in, and a
+	# bind mount would be a second moving part to keep alive across upgrades.
+	# Google only checks the body, so a one-line respond is the whole file.
+	# Do NOT delete after verification — Google re-checks periodically.
+	handle /google3fb00eb9c37521eb.html {
+		header Content-Type "text/html; charset=utf-8"
+		respond "google-site-verification: google3fb00eb9c37521eb.html" 200
+	}
+
+	handle {
+		reverse_proxy n8n:5678
+	}
 }
