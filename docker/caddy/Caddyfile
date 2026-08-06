@@ -11,6 +11,18 @@
 		format console
 	}
 
+	# CSP is affordable here precisely because CDNs are banned by design:
+	# every asset is same-origin. It costs nothing today and blocks a whole
+	# class of injection tomorrow — but it does mean zero inline styles and
+	# zero inline <script>, which the v2 templates already respect.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options    "nosniff"
+		X-Frame-Options           "DENY"
+		Referrer-Policy           "same-origin"
+		Content-Security-Policy   "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+	}
+
 	# Security boundary (System-Design.md §9). The main domain serves the
 	# team-facing surfaces only: webhooks, forms, and the dashboard. The n8n
 	# editor lives on its own subdomain below — never on these paths.
@@ -45,13 +57,21 @@
 	# 	reverse_proxy mcp:8000
 	# }
 
+	# The worker's local dev mock. Unreachable from the internet REGARDLESS of
+	# MOCK_N8N: once basic_auth came off the dashboard, that flag was the only
+	# thing standing between the public and an endpoint that writes to
+	# items_log and flips seen_items to 'done'. A flag that opens a public
+	# write endpoint is one that eventually gets set by accident.
+	handle /mock/* {
+		respond 404
+	}
+
 	# Dashboard for the team (sales included) — read leads, manage sources,
-	# browse the KB. The admin app has no auth of its own, so this basic_auth
-	# IS its security boundary; same credentials as the forms above.
+	# browse the KB. basic_auth REMOVED: the boundary is now the session login
+	# inside the app itself (admin/auth.py) — signed cookie, 30-minute idle
+	# window, fail-closed CSRF, and a real "sign out" button, which basic auth
+	# never had.
 	handle {
-		basic_auth {
-			{$ADMIN_FORM_USER} {$ADMIN_FORM_PASSWORD_HASH}
-		}
 		reverse_proxy admin:8000
 	}
 }
