@@ -71,7 +71,7 @@
     },
     {
       "parameters": {
-        "chatId": "8325998119",
+        "chatId": "-5461137249",
         "text": "={{ '📊 RFP tracker — daily digest\\n' +\n'Runs (24h): ' + $json.runs_24h + ' · sources checked: ' + $json.sources_checked + ($json.sources_failed > 0 ? ' (⚠️ ' + $json.sources_failed + ' failed)' : '') + '\\n' +\n'New items: ' + $json.items_new + ' · leads delivered: ' + $json.leads_24h + '\\n' +\n'Pending now: ' + $json.pending_now + ' · dead total: ' + $json.dead_total +\n($json.leads_7d < $json.lead_floor ? '\\n🚨 Lead floor breach: ' + $json.leads_7d + ' leads in 7d (floor ' + $json.lead_floor + ') — щось зламалось вище по трубі (A3)' : '') }}",
         "additionalFields": {}
       },
