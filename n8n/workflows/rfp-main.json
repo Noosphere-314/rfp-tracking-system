@@ -154,7 +154,8 @@
           "name": "Header Auth account"
         }
       },
-      "notes": "TODO: add structured output per current API docs ({is_rfp, confidence, category, canonical_project, canonical_title, reason}); verify cache hits via usage.cache_read_input_tokens (A9). Log verdict + prompt version to items_log."
+      "notes": "TODO: add structured output per current API docs ({is_rfp, confidence, category, canonical_project, canonical_title, reason}); verify cache hits via usage.cache_read_input_tokens (A9). Log verdict + prompt version to items_log.",
+      "disabled": true
     },
     {
       "parameters": {
@@ -247,7 +248,8 @@
           "name": "Header Auth account"
         }
       },
-      "notes": "No hallucinated deadlines in front of sales (A8): regex-corroborate deadline/budget downstream."
+      "notes": "No hallucinated deadlines in front of sales (A8): regex-corroborate deadline/budget downstream.",
+      "disabled": true
     },
     {
       "parameters": {
@@ -522,7 +524,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// output_config.format guarantees the text block is valid JSON (A9).\nconst resp = $('Claude Haiku classify').first().json;\nif (resp.stop_reason === 'refusal') { throw new Error('classifier refusal: ' + JSON.stringify(resp.stop_details || {})); }\nconst text = (resp.content || []).filter(b => b.type === 'text').map(b => b.text).join('');\nconst verdict = JSON.parse(text);\nconst t = $input.first().json; // thresholds row\nreturn [{ json: { ...verdict,\n  threshold: t.threshold, band_low: t.band_low,\n  prompt_version: 'rfp-classifier-v1',\n  // A9 verification: if cache_read stays 0 run after run, caching is broken.\n  cache_read_input_tokens: resp.usage ? resp.usage.cache_read_input_tokens : null,\n  cache_creation_input_tokens: resp.usage ? resp.usage.cache_creation_input_tokens : null,\n} }];"
+        "jsCode": "// Два режими:\n// 1) БОЙОВИЙ: нода 'Claude Haiku classify' увімкнена — structured output гарантує валідний JSON (A9).\n// 2) STUB (тимчасово, поки немає Anthropic-кредитів): Claude-ноди вимкнені,\n//    вердикт — груба евристика, confidence 0.55 => все йде в review-гілку.\n//    prompt_version='stub-no-llm' дозволяє потім повернути ці айтеми в чергу:\n//    UPDATE seen_items SET status='pending' WHERE item_uid IN\n//      (SELECT item_uid FROM items_log WHERE event='classified' AND prompt_version='stub-no-llm');\nlet resp = null;\ntry { resp = $('Claude Haiku classify').first().json; } catch (e) { resp = null; }\nconst t = $input.first().json; // thresholds row\nlet verdict, meta;\nif (resp && Array.isArray(resp.content)) {\n  if (resp.stop_reason === 'refusal') { throw new Error('classifier refusal: ' + JSON.stringify(resp.stop_details || {})); }\n  const text = resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n  verdict = JSON.parse(text);\n  meta = { prompt_version: 'rfp-classifier-v1',\n    cache_read_input_tokens: resp.usage ? resp.usage.cache_read_input_tokens : null,\n    cache_creation_input_tokens: resp.usage ? resp.usage.cache_creation_input_tokens : null };\n} else {\n  const item = $('Unwrap payload').first().json;\n  const hay = ((item.title || '') + ' ' + (item.body || '')).toLowerCase();\n  const cat = /request for proposal|rfp|proposals? (by|due)|tender|bounty/.test(hay) ? 'RFP'\n    : /grant|retro(active)? funding|applications? (open|are open)|apply by/.test(hay) ? 'GRANT'\n    : /raised|series [abc]|tvl|treasury|funding|budget/.test(hay) ? 'FUNDING' : 'NOISE';\n  verdict = { is_rfp: cat !== 'NOISE', confidence: 0.55, category: cat,\n    canonical_project: item.ecosystem || '?', canonical_title: (item.title || '').slice(0, 80),\n    reason: 'STUB: без LLM (немає Anthropic-кредитів) — категорія за ключовими словами' };\n  meta = { prompt_version: 'stub-no-llm' };\n}\nreturn [{ json: { ...verdict, threshold: t.threshold, band_low: t.band_low, ...meta } }];"
       },
       "id": "parse-verdict-v1",
       "name": "Parse verdict",
