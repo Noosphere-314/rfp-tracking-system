@@ -21,6 +21,10 @@
 		X-Frame-Options           "DENY"
 		Referrer-Policy           "same-origin"
 		Content-Security-Policy   "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+		# Внутрішній інструмент — у пошуку йому не місце. Плюс індексована
+		# сторінка логіну на молодому домені і є те, що Safe Browsing
+		# розпізнає як фішинг (n8n-піддомен уже на цьому попався).
+		X-Robots-Tag              "noindex, nofollow, noarchive"
 	}
 
 	# Security boundary (System-Design.md §9). The main domain serves the
