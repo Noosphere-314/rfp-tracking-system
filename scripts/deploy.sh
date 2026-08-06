@@ -70,11 +70,24 @@ $COMPOSE up -d postgres n8n worker admin kbmcp
 
 # Caddy is prod-profile only, so the plain $COMPOSE above never touched it —
 # which meant every Caddyfile change since the domain went up required a manual
-# restart nobody documented. Reload rather than restart: it re-reads the config
-# without dropping in-flight connections or re-negotiating TLS.
+# restart nobody documented.
+#
+# `caddy reload` is NOT usable here: the Caddyfile sets `admin off` (the admin
+# API has no business listening on a public box), and reload works *through*
+# that API. Restart it is — the config is bind-mounted, so `up -d` alone will
+# not pick up an edited Caddyfile either. Certificates survive: they live in
+# the caddy_data volume, so no re-issue and no rate-limit risk.
 $COMPOSE_PROD up -d caddy
-$COMPOSE_PROD exec -T caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null \
-    || echo "  caddy reload failed — check 'docker compose -f docker-compose.yml --profile prod logs caddy'" >&2
+$COMPOSE_PROD restart caddy >/dev/null
+
+# TLS handshake + config parse takes a moment; without this the check below
+# races the restart and reports a false failure.
+sleep 4
+if ! $COMPOSE_PROD exec -T caddy caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
+    echo "  Caddyfile did not validate — check 'docker compose -f docker-compose.yml --profile prod logs caddy'" >&2
+    exit 1
+fi
+echo "  caddy: config applied"
 
 echo
 echo "=== 7/7  verify ==="
