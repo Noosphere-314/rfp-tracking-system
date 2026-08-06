@@ -1,36 +1,160 @@
 {% extends "base.html" %}
-{% block title %}Keywords{% endblock %}
-{% block content %}
-<h1>Keywords</h1>
-{% if message %}<div class="msg ok">{{ message }}</div>{% endif %}
-{% if error %}<div class="msg err">{{ error }}</div>{% endif %}
+{#- Ключові слова (розділ 4.4). Дві протилежні за змістом сутності розводяться
+    по ДВОХ панелях: в одній таблиці вони розрізнялися лише бейджем — постійне
+    джерело помилок прочитання. Невалідні патерни закріплені зверху окремою
+    секцією з причиною, бо серед сотні рядків вони губилися.
 
-<p class="muted">Include-патерни пропускають айтем до класифікатора; exclude —
-відсікають до нього (exclude виграє). Regex, case-insensitive, з таймаутом
-{{ '' }}— патерн, що не компілюється або зависає, автоматично карантиниться.</p>
+    Контекст маршруту: invalid / include / exclude (уже розділені в
+    keywords_page), message, error. Змінної `keywords` більше немає.
 
-<div class="wrap"><table>
-  <tr><th>ID</th><th>Kind</th><th>Pattern</th><th>State</th><th></th></tr>
-  {% for k in keywords %}
-  <tr>
-    <td>{{ k.id }}</td>
-    <td><span class="badge {{ 'b-on' if k.kind == 'include' else 'b-funding' }}">{{ k.kind }}</span></td>
-    <td><code>{{ k.pattern }}</code>
-        {% if not k.valid %}<br><span class="badge b-quarantine">invalid: {{ k.invalid_reason }}</span>{% endif %}</td>
-    <td>{% if k.enabled %}<span class="badge b-on">on</span>{% else %}<span class="badge b-off">off</span>{% endif %}</td>
-    <td><form class="inline" method="post" action="/keywords/{{ k.id }}/toggle">
-        <button class="small">{{ 'disable' if k.enabled else 'enable' }}</button></form></td>
-  </tr>
-  {% endfor %}
-</table></div>
+    Нуль інлайнових стилів — CSP `style-src 'self'` блокує і атрибут style. -#}
 
-<h2>Add keyword</h2>
-<form method="post" action="/keywords/add">
-<div class="grid-form">
-  <label>Pattern</label><input name="pattern" required placeholder="\y(hackathon)\y">
-  <label>Kind</label>
-  <select name="kind"><option value="include">include</option><option value="exclude">exclude</option></select>
-  <span></span><button type="submit">Add</button>
-</div>
+{% block title %}Ключові слова{% endblock %}
+{% block h1 %}Ключові слова{% endblock %}
+{% block sub %}Regex без урахування регістру; exclude має пріоритет — збіг там відкидає знахідку ще до класифікатора{% endblock %}
+
+{% block controls %}
+<form class="toolbar" method="post" action="/keywords/add">
+  {% include "_csrf.html" %}
+  <label class="field">
+    <span class="field__label">Патерн</span>
+    <input class="input mono" name="pattern" required placeholder="\y(hackathon|grants?)\y">
+  </label>
+
+  <label class="field">
+    <span class="field__label">Дія</span>
+    {#- Значення лишаються англійськими (інваріант локалізації): їх розуміє
+        воркер і CHECK-констрейнт keywords_kind_check. Українська — у підписі
+        через KIND_UA. -#}
+    <select name="kind">
+      {% for code in ['include', 'exclude'] %}
+      <option value="{{ code }}">{{ KIND_UA.get(code, code) }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <button class="btn btn--primary" type="submit">Додати</button>
+  <span class="toolbar__spacer"></span>
+  <span class="field__hint">Патерн компілюється під час збереження — той, що не компілюється, не приймається</span>
 </form>
+
+<div class="toolbar">
+  <div class="chips">
+    {% if invalid %}
+    <a class="chip" href="#invalid">Невалідні · <span class="num">{{ invalid | length }}</span></a>
+    {% endif %}
+    <a class="chip" href="#include">Пропускають далі · <span class="num">{{ include | length }}</span></a>
+    <a class="chip" href="#exclude">Відсікають · <span class="num">{{ exclude | length }}</span></a>
+  </div>
+</div>
+{% endblock %}
+
+{% block data %}
+{#- Невалідні — ЗВЕРХУ й окремою секцією: вони мовчки не працюють, і поки
+    причина не видно, патерн виглядає робочим. -#}
+{% if invalid %}
+<section class="panel" id="invalid">
+  <div class="panel__head">
+    <h2>Невалідні патерни</h2>
+    <span class="badge b-bad">{{ invalid | length }}</span>
+    <span class="toolbar__spacer"></span>
+    <span class="muted">не застосовуються на прогонах</span>
+  </div>
+  <div class="tablewrap">
+    <table class="table--dense">
+      <thead>
+        <tr>
+          <th>ID</th><th>Патерн</th><th>Дія</th><th>Причина</th><th>Стан</th>
+          <th><span class="visually-hidden">Керування</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for k in invalid %}
+        <tr>
+          <td class="num">{{ k.id }}</td>
+          <td><code>{{ k.pattern }}</code></td>
+          <td class="cell--nowrap">{{ KIND_UA.get(k.kind, k.kind) }}</td>
+          <td class="field__hint field__hint--bad">{{ k.invalid_reason or 'причину не записано' }}</td>
+          <td>
+            {% if k.enabled %}<span class="badge b-on">увімкнено</span>
+            {% else %}<span class="badge b-off">вимкнено</span>{% endif %}
+          </td>
+          <td>
+            <form class="inline" method="post" action="/keywords/{{ k.id }}/toggle">
+              {% include "_csrf.html" %}
+              <button class="btn btn--sm" type="submit">{{ 'Вимкнути' if k.enabled else 'Увімкнути' }}</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="panel__foot">Редагувати патерн тут не можна: вимкни невалідний і додай виправлений через форму вгорі.</div>
+</section>
+{% endif %}
+
+{#- Цикл замість макроса: макрос має власну область видимості, і `include`
+    партіала з csrf усередині нього поводиться менш очевидно. -#}
+<div class="panels panels--2">
+  {% for sect_id, title, foot, rows in [
+       ('include', 'Пропускають далі',
+        'Знахідка йде до класифікатора, лише якщо збігся хоча б один із цих патернів.',
+        include),
+       ('exclude', 'Відсікають',
+        'Збіг тут відкидає знахідку ще до класифікатора — exclude виграє в include.',
+        exclude)] %}
+  <section class="panel" id="{{ sect_id }}">
+    <div class="panel__head">
+      <h2>{{ title }}</h2>
+      <span class="badge {{ 'b-on' if sect_id == 'include' else 'b-funding' }}">{{ rows | length }}</span>
+    </div>
+
+    {% if rows %}
+    {#- .tablewrap обов'язкова для КОЖНОЇ таблиці (розділ 3.7): довгий патерн
+        інакше розпирає сітку і скрол з'їжджає на <body>. -#}
+    <div class="tablewrap">
+      <table class="table--dense">
+        <thead>
+          <tr>
+            <th>ID</th><th>Патерн</th><th>Стан</th>
+            <th><span class="visually-hidden">Керування</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for k in rows %}
+          <tr>
+            <td class="num">{{ k.id }}</td>
+            <td><code>{{ k.pattern }}</code></td>
+            <td>
+              {% if k.enabled %}<span class="badge b-on">увімкнено</span>
+              {% else %}<span class="badge b-off">вимкнено</span>{% endif %}
+            </td>
+            <td>
+              <form class="inline" method="post" action="/keywords/{{ k.id }}/toggle">
+                {% include "_csrf.html" %}
+                <button class="btn btn--sm" type="submit">{{ 'Вимкнути' if k.enabled else 'Увімкнути' }}</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty">
+      {% if sect_id == 'include' %}
+      <p class="empty__title">Патернів пропуску немає</p>
+      <p class="empty__hint">Поки список порожній, до класифікатора не проходить нічого — додай хоча б один патерн вище.</p>
+      {% else %}
+      <p class="empty__title">Патернів відсіву немає</p>
+      <p class="empty__hint">Нічого не відкидається наперед — усе, що пройшло include, іде до класифікатора.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="panel__foot">{{ foot }}</div>
+  </section>
+  {% endfor %}
+</div>
 {% endblock %}

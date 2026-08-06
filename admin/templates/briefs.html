@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{#- Список бріфів (розділ 4.10, новий). Досі до бріфа вів лише редірект одразу
+    після генерації — згенерований учора бріф знайти було неможливо.
+    Контекст маршруту `briefs_page`: briefs, ecosystems, ecosystem, tier.
+    Значення фільтрів у URL лишаються англійськими (?tier=llm) — інваріант
+    локалізації: українська тільки в презентації. -#}
+{% block title %}Бріфи{% endblock %}
+{% block h1 %}Бріфи{% endblock %}
+{% block sub %}Останні 50 згенерованих пакетів по екосистемах{% endblock %}
+
+{% block controls %}
+<form class="toolbar" method="get" action="/briefs">
+  <div class="field">
+    <label class="field__label" for="brief-ecosystem">Екосистема</label>
+    <select id="brief-ecosystem" name="ecosystem">
+      <option value="">усі</option>
+      {% for e in ecosystems %}
+      <option value="{{ e }}" {{ 'selected' if ecosystem == e }}>{{ e }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label class="field__label" for="brief-tier">Рівень</label>
+    <select id="brief-tier" name="tier">
+      <option value="">усі</option>
+      {% for t in ['llm', 'basic'] %}
+      <option value="{{ t }}" {{ 'selected' if tier == t }}>{{ TIER_UA.get(t, t) }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button class="btn btn--primary">Фільтрувати</button>
+  {% if ecosystem or tier %}<a class="btn btn--ghost" href="/briefs">Скинути</a>{% endif %}
+  <span class="toolbar__spacer"></span>
+</form>
+{% endblock %}
+
+{% block data %}
+<section class="panel">
+  <div class="panel__head">
+    <h2>Бріфи</h2>
+    <span class="toolbar__spacer"></span>
+    <span class="badge">{{ briefs | length }}{{ ' (обмежено)' if briefs | length == 50 }}</span>
+  </div>
+  {% if briefs %}
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Створено</th><th>Екосистема</th><th>Тема</th>
+            <th>Рівень</th><th>Модель</th><th>Знахідка</th></tr>
+      </thead>
+      <tbody>
+        {% for b in briefs %}
+        <tr>
+          <td class="cell--num"><a href="/briefs/{{ b.id }}">{{ b.id }}</a></td>
+          <td class="muted cell--nowrap">{{ b.created_at.strftime('%Y-%m-%d %H:%M') if b.created_at else '—' }}</td>
+          <td class="cell--nowrap">{{ b.ecosystem }}</td>
+          <td><a href="/briefs/{{ b.id }}">{{ b.title | truncate(80) }}</a></td>
+          <td class="cell--nowrap">
+            <span class="badge {{ 'b-on' if b.tier == 'llm' else 'b-neutral' }}">{{ TIER_UA.get(b.tier, b.tier) }}</span>
+          </td>
+          <td class="muted cell--nowrap">{{ b.model or '—' }}</td>
+          <td class="muted cell--nowrap">
+            {% if b.item_uid %}<code>{{ b.item_uid[:12] }}…</code>{% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="panel__body">
+    {% if ecosystem or tier %}
+    {% set empty_title = "За цим фільтром бріфів немає" %}
+    {% set empty_hint = "Спробуй іншу екосистему або рівень — або скинь фільтр." %}
+    {% set empty_href = "/briefs" %}
+    {% set empty_link = "Показати всі бріфи" %}
+    {% else %}
+    {% set empty_title = "Бріфів ще немає" %}
+    {% set empty_hint = "Бріф створюється кнопкою «бріф» на сторінці знахідок або нодою n8n після створення ліда. Потрібен заархівований форум тієї ж екосистеми." %}
+    {% set empty_href = "/items" %}
+    {% set empty_link = "До знахідок" %}
+    {% endif %}
+    {% include "_empty.html" %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

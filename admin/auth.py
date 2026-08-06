@@ -178,14 +178,63 @@ def read_cookie(request: Request) -> str:
     return request.cookies.get(COOKIE_HOST) or request.cookies.get(COOKIE_BASE) or ""
 
 
-def issue(response: Response, request: Request) -> None:
+def clean_who(raw: str) -> str:
+    """Санітизація підпису «хто ти» з форми логіну.
+
+    Це журнал змін, а не автентифікація: значення ніхто не перевіряє, і воно
+    приходить від користувача. Тому — жорсткі межі: 24 символи, без роздільника
+    payload (`|`), без керуючих символів, які могли б поїхати в лог-рядок.
+    """
+    cleaned = "".join(
+        ch for ch in (raw or "").strip()[:24] if ch.isprintable() and ch != "|"
+    )
+    return cleaned.strip()
+
+
+def session_who(request: Request) -> str:
+    """Підпис із живої сесії (порожній рядок, якщо людина не представилась).
+
+    Читається з того самого підписаного cookie, тож підробити його без
+    SESSION_SECRET не можна — на відміну від, скажімо, окремої нехешованої
+    cookie з іменем.
+    """
+    raw = read_cookie(request)
+    if not raw:
+        return ""
+    try:
+        payload = signer.unsign(raw.encode(), max_age=IDLE_SECONDS).decode()
+    except (BadSignature, SignatureExpired):
+        return ""
+    _, _, who = payload.partition("|")
+    return who
+
+
+def actor(request: Request) -> str:
+    """Значення для колонок `added_by` / `updated_by`.
+
+    Спільний пароль не дає автентифікації особи — це журнал, а не аудит:
+    хто підписався, той і записаний. Без підпису лишається старе 'admin-ui',
+    щоб історія читалася однаково до і після цієї зміни.
+    """
+    who = session_who(request)
+    return f"admin-ui:{who}" if who else "admin-ui"
+
+
+def issue(response: Response, request: Request, who: str | None = None) -> None:
     """Rolling re-sign: свіжий timestamp на кожній успішній відповіді.
-    Вікно ідлу рахується від останнього ЗАПИТУ, не від входу."""
+    Вікно ідлу рахується від останнього ЗАПИТУ, не від входу.
+
+    `who` передається лише хендлером логіну; при перевидачі підпис береться з
+    наявної cookie, інакше кожен наступний запит стирав би його.
+    """
     secure = _secure(request)
     name = COOKIE_HOST if secure else COOKIE_BASE
+    if who is None:
+        who = session_who(request)
+    payload = f"{_EPOCH}|{who}" if who else str(_EPOCH)
     response.set_cookie(
         name,
-        signer.sign(str(_EPOCH).encode()).decode(),
+        signer.sign(payload.encode()).decode(),
         max_age=IDLE_SECONDS,
         httponly=True,
         secure=secure,
@@ -222,7 +271,10 @@ def session_live(request: Request) -> tuple[bool, bool]:
         payload = signer.unsign(raw.encode(), max_age=IDLE_SECONDS)
     except (BadSignature, SignatureExpired):
         return False, True
-    return payload.decode() == str(_EPOCH), True
+    # Payload — "<епоха>" або "<епоха>|<підпис>"; для життєздатності сесії
+    # важлива лише епоха.
+    epoch, _, _ = payload.decode().partition("|")
+    return epoch == str(_EPOCH), True
 
 
 # ── Редірект на логін ──────────────────────────────────────────────

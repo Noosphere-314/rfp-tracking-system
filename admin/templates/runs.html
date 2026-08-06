@@ -1,23 +1,106 @@
 {% extends "base.html" %}
-{% block title %}Runs{% endblock %}
-{% block content %}
-<h1>Worker runs</h1>
-<div class="wrap"><table>
-  <tr><th>ID</th><th>Started</th><th>Finished</th><th>Mode</th><th>Sources</th>
-      <th>Seen</th><th>New</th><th>Filtered</th><th>Delivered</th><th>Dead</th><th>Failures</th></tr>
-  {% for r in runs %}
-  <tr>
-    <td>{{ r.id }}</td>
-    <td>{{ r.started_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-    <td class="muted">{{ r.finished_at.strftime('%H:%M:%S') if r.finished_at else 'running…' }}</td>
-    <td>{{ r.mode }}</td>
-    <td>{{ r.sources_checked }}{% if r.sources_failed %} <span class="badge b-dead">-{{ r.sources_failed }}</span>{% endif %}</td>
-    <td>{{ r.items_seen }}</td><td>{{ r.items_new }}</td><td>{{ r.items_filtered }}</td>
-    <td>{{ r.items_delivered }}</td><td>{{ r.items_dead }}</td>
-    <td class="muted">{% for f in r.detail.get('failures', []) %}{{ f }}<br>{% endfor %}</td>
-  </tr>
+{#- Історія збору (розділ 4.6). Контекст із runs_page: runs (рядки worker_runs
+    + duration_s), mode, limit, modes.
+
+    r.detail.get('failures', []) навмисно БЕЗ (r.detail or {}): колонка
+    worker_runs.detail — jsonb NOT NULL DEFAULT '{}', NULL там неможливий (F8).
+    Раніше список помилок висипався в клітинку через <br>; тепер він згорнутий
+    у <details>, бо один зламаний прогін інакше розтягує рядок на пів екрана. -#}
+{% block title %}Історія збору{% endblock %}
+{% block h1 %}Історія збору{% endblock %}
+{% block sub %}Один рядок — один прогін воркера: скільки джерел опитано і що з них вийшло{% endblock %}
+
+{% block controls %}
+<form class="toolbar" method="get" action="/runs">
+  <div class="field">
+    <label class="field__label" for="f-mode">Режим</label>
+    <select id="f-mode" name="mode">
+      <option value="">усі</option>
+      {% for m in modes %}
+      <option value="{{ m.mode }}"{% if m.mode == mode %} selected{% endif %}>{{ MODE_UA.get(m.mode, m.mode) }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="field">
+    <label class="field__label" for="f-limit">Показувати</label>
+    <select id="f-limit" name="limit">
+      <option value="50"{% if limit != 200 %} selected{% endif %}>50 останніх</option>
+      <option value="200"{% if limit == 200 %} selected{% endif %}>200 останніх</option>
+    </select>
+  </div>
+
+  <button class="btn">Показати</button>
+
+  {#- Клієнтський фільтр (app.js, п.6): без name, тож у GET-запит не потрапляє
+      і посилання лишається чистим. Ознака проблемного рядка — data-fail на
+      клітинці помилок. -#}
+  <label class="check">
+    <input type="checkbox" data-filter-target="#runs-table" data-filter-only="[data-fail]"
+           data-filter-count="#runs-shown"> лише з помилками
+  </label>
+
+  <span class="toolbar__spacer"></span>
+  <span class="pager">показано <span id="runs-shown" class="num">{{ runs | length }}</span></span>
+</form>
+{% endblock %}
+
+{% block data %}
+<div class="panel">
+  {% if runs %}
+  <div class="tablewrap">
+    <table id="runs-table" class="table--dense">
+      <thead>
+        <tr>
+          <th>№</th><th>Початок</th><th>Тривалість</th><th>Режим</th><th>Джерела</th>
+          <th>Знайдено</th><th>Нові</th><th>Відсіяно</th><th>Доставлено</th>
+          <th>Не доставлено</th><th>Помилки</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in runs %}
+        {% set fails = r.detail.get('failures', []) %}
+        {% set n = fails | length %}
+        <tr>
+          <td class="muted">{{ r.id }}</td>
+          <td class="cell--nowrap">{{ r.started_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+          <td class="cell--nowrap">
+            {%- if r.finished_at is none %}<span class="badge b-pending">триває</span>
+            {%- elif r.duration_s is none %}<span class="muted">—</span>
+            {%- elif r.duration_s < 60 %}{{ r.duration_s }} с
+            {%- else %}{{ r.duration_s // 60 }} хв {{ r.duration_s % 60 }} с
+            {%- endif %}
+          </td>
+          <td>{{ MODE_UA.get(r.mode, r.mode) }}</td>
+          <td>{{ r.sources_checked }}{% if r.sources_failed %} <span class="badge b-dead">−{{ r.sources_failed }}</span>{% endif %}</td>
+          <td>{{ r.items_seen }}</td>
+          <td>{{ r.items_new }}</td>
+          <td>{{ r.items_filtered }}</td>
+          <td>{{ r.items_delivered }}</td>
+          <td>{% if r.items_dead %}<span class="badge b-dead">{{ r.items_dead }}</span>{% else %}0{% endif %}</td>
+          <td{% if n or r.sources_failed %} data-fail{% endif %}>
+            {% if n %}
+            <details>
+              <summary>{{ n }}
+                {%- if n % 10 == 1 and n % 100 != 11 %} помилка
+                {%- elif n % 10 in [2, 3, 4] and n % 100 not in [12, 13, 14] %} помилки
+                {%- else %} помилок{% endif %}
+              </summary>
+              <ul>{% for f in fails %}<li class="muted">{{ f }}</li>{% endfor %}</ul>
+            </details>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
-  <tr><td colspan="11" class="muted">No runs recorded yet.</td></tr>
-  {% endfor %}
-</table></div>
+  <div class="empty">
+    <p class="empty__title">Запусків ще не було</p>
+    <p class="empty__hint">Історія з'явиться після першого прогону — підніми воркер:
+      <code>docker compose up -d worker</code></p>
+  </div>
+  {% endif %}
+</div>
 {% endblock %}

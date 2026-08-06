@@ -1,84 +1,198 @@
 {% extends "base.html" %}
-{% block title %}Knowledge Base{% endblock %}
-{% block content %}
-<h1>Knowledge Base <span class="muted">· research mode</span></h1>
+{#- База знань (розділ 4.7). Сторінка найсильніше порушувала вимогу №2:
+    форуми → форма → пошук (головна дія, ТРЕТЯ згори) → результати → лог.
+    Тепер пошук — перший рядок керування, дані — нижче.
 
-<h2>Archived forums</h2>
-<div class="wrap"><table>
-  <tr><th>Forum</th><th>URL</th><th>State</th><th>Topics</th><th>Posts</th>
-      <th>Newest activity</th><th>Last update</th><th></th></tr>
-  {% for f in forums %}
-  <tr>
-    <td>{{ f.forum_slug }}</td>
-    <td><a href="{{ f.base_url }}" target="_blank" rel="noopener">{{ f.base_url | replace('https://', '') }}</a></td>
-    <td>
-      {% if not f.enabled %}<span class="badge b-off">off</span>
-      {% elif f.backfill_done %}<span class="badge b-on">archived</span>
-      {% else %}<span class="badge b-pending">backfill pending</span>{% endif %}
-      {% if f.consecutive_failures %}<span class="badge b-dead">{{ f.consecutive_failures }} fails</span>{% endif %}
-    </td>
-    <td>{{ f.topics }}</td>
-    <td>{{ f.posts }}</td>
-    <td class="muted">{{ f.newest_activity.strftime('%Y-%m-%d') if f.newest_activity else '—' }}</td>
-    <td class="muted">{{ f.last_incremental_at.strftime('%m-%d %H:%M') if f.last_incremental_at else '—' }}</td>
-    <td><form class="inline" method="post" action="/kb/forums/{{ f.id }}/toggle">
-        <button class="small">{{ 'disable' if f.enabled else 'enable' }}</button></form></td>
-  </tr>
-  {% endfor %}
-</table></div>
+    Сніпети приходять із `ts_headline` із керуючими сентинелами \x02/\x03 і
+    рендеряться фільтром `|hl` (екранує, ПОТІМ ставить <mark>). `|safe` до
+    r.snippet не додавати ні за яких умов: raw_text поста містить довільний
+    HTML із форуму. -#}
+{% block title %}База знань{% endblock %}
+{% block h1 %}База знань{% endblock %}
+{% block sub %}Архів форумів і повнотекстовий пошук по ньому{% endblock %}
 
-<form method="post" action="/kb/forums/add" style="margin-top: 10px; display: flex; gap: 8px;">
-  <input name="forum_slug" required placeholder="slug (напр. lido)">
-  <input name="base_url" required placeholder="https://research.lido.fi" style="min-width: 280px;">
-  <button type="submit">Register forum</button>
-</form>
-<p class="muted">Реєстрація лише додає форум у чергу. Сам архів запускається
-командою <code>docker compose run --rm worker kb-backfill</code> (нічна
-робота), далі <code>kb-update</code> тримає його свіжим.</p>
-
-<h2>Search the archive (FTS sanity check)</h2>
-<form method="get" action="/kb" style="display: flex; gap: 8px; margin-bottom: 14px;">
-  <input name="q" value="{{ q }}" placeholder='напр. "developer tooling" grant' style="flex: 1;">
-  <select name="forum">
-    <option value="">all forums</option>
-    {% for f in forums %}<option value="{{ f.forum_slug }}" {{ 'selected' if forum == f.forum_slug }}>{{ f.forum_slug }}</option>{% endfor %}
-  </select>
-  <button type="submit">Search</button>
+{% block controls %}
+<form class="toolbar" method="get" action="/kb" role="search">
+  <div class="field">
+    <label class="field__label" for="kb-q">Пошук в архіві</label>
+    {#- size=46 — ширина в символах, атрибут HTML, а не інлайновий стиль (CSP). -#}
+    <input class="input--wide" id="kb-q" name="q" size="46" value="{{ q }}"
+           placeholder='напр. "developer tooling" grant'>
+  </div>
+  <div class="field">
+    <label class="field__label" for="kb-forum">Форум</label>
+    <select id="kb-forum" name="forum">
+      <option value="">усі форуми</option>
+      {% for f in forums %}
+      <option value="{{ f.forum_slug }}" {{ 'selected' if forum == f.forum_slug }}>{{ f.forum_slug }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button class="btn btn--primary">Шукати</button>
+  {% if q or forum %}<a class="btn btn--ghost" href="/kb">Скинути</a>{% endif %}
+  <span class="toolbar__spacer"></span>
 </form>
 
+<details class="disclosure">
+  <summary>Зареєструвати форум</summary>
+  <div class="disclosure__body">
+    <form method="post" action="/kb/forums/add">
+      {% include "_csrf.html" %}
+      <div class="form-grid">
+        <div class="field">
+          <label class="field__label" for="forum-slug">Ідентифікатор</label>
+          <input id="forum-slug" name="forum_slug" required placeholder="напр. lido">
+          <span class="field__hint">Латиницею, нижнім регістром — під ним форум
+            видно в пошуку і в логах воркера.</span>
+        </div>
+        <div class="field">
+          <label class="field__label" for="forum-url">Адреса форуму</label>
+          <input id="forum-url" name="base_url" required placeholder="https://research.lido.fi">
+          <span class="field__hint">Discourse, обов'язково з <code>https://</code>,
+            без слеша в кінці.</span>
+        </div>
+        <p class="field__hint field--wide">Реєстрація лише ставить форум у чергу.
+          Сам архів піднімає нічна робота
+          <code>docker compose run --rm worker kb-backfill</code>, далі
+          <code>kb-update</code> тримає його свіжим.</p>
+        <div class="field--wide toolbar">
+          <button class="btn">Зареєструвати форум</button>
+          <span class="toolbar__spacer"></span>
+        </div>
+      </div>
+    </form>
+  </div>
+</details>
+{% endblock %}
+
+{% block data %}
 {% if q %}
-<div class="wrap"><table>
-  <tr><th>Forum</th><th>Topic</th><th>Snippet</th><th>Author</th><th>Date</th></tr>
-  {% for r in results %}
-  <tr>
-    <td>{{ r.forum_slug }}</td>
-    <td><a href="{{ r.post_url }}" target="_blank" rel="noopener">{{ r.title | truncate(60) }}</a>
-        <br><span class="muted">{{ r.category_name or '' }}</span></td>
-    <td>{{ r.snippet }}</td>
-    <td class="muted">{{ r.author }}</td>
-    <td class="muted">{{ r.posted_at.strftime('%Y-%m-%d') if r.posted_at else '—' }}</td>
-  </tr>
+<section class="panel">
+  <div class="panel__head">
+    <h2>Результати</h2>
+    <span class="toolbar__spacer"></span>
+    <span class="badge">{{ results | length }}{{ ' (обмежено)' if results | length == 25 }}</span>
+  </div>
+  {% if results %}
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Форум</th><th>Тема</th><th>Фрагмент</th><th>Автор</th><th>Дата</th></tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+        <tr>
+          <td class="cell--nowrap">{{ r.forum_slug }}</td>
+          <td>
+            <a href="{{ r.post_url }}" target="_blank" rel="noopener noreferrer">{{ r.title | truncate(60) }}</a>
+            {% if r.category_name %}<div class="muted">{{ r.category_name }}</div>{% endif %}
+          </td>
+          <td>{{ r.snippet | hl }}</td>
+          <td class="muted cell--nowrap">{{ r.author }}</td>
+          <td class="muted cell--nowrap">{{ r.posted_at.strftime('%Y-%m-%d') if r.posted_at else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
-  <tr><td colspan="5" class="muted">Nothing found — try different phrasing (Claude
-  через MCP автоматично пробує кілька варіантів).</td></tr>
-  {% endfor %}
-</table></div>
+  <div class="panel__body">
+    {% set empty_title = "Нічого не знайдено" %}
+    {% set empty_hint = "Спробуй інші формулювання: синонім («dev tooling» → «developer infrastructure»), англійською замість української, коротшу фразу з одного-двох слів. Пошук індексує англійський текст постів." %}
+    {% set empty_href = "/chat" %}
+    {% set empty_link = "AI-чат робитиме ці переформулювання сам" %}
+    {% include "_empty.html" %}
+  </div>
+  {% endif %}
+</section>
 {% endif %}
 
-<h2>Recent MCP queries</h2>
-<div class="wrap"><table>
-  <tr><th>When</th><th>Tool</th><th>Query</th><th>Forum</th><th>Hits</th></tr>
-  {% for query in recent_queries %}
-  <tr>
-    <td class="muted">{{ query.asked_at.strftime('%m-%d %H:%M') }}</td>
-    <td>{{ query.tool }}</td>
-    <td>{{ query.query | truncate(70) }}</td>
-    <td class="muted">{{ query.forum_slug or '—' }}</td>
-    <td>{{ query.hits }}</td>
-  </tr>
+<section class="panel">
+  <div class="panel__head">
+    <h2>Форуми в архіві</h2>
+    <span class="toolbar__spacer"></span>
+    <span class="muted">Свіжість — за найновішою активністю в архіві</span>
+  </div>
+  {% if forums %}
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Форум</th><th>Адреса</th><th>Стан</th><th>Свіжість</th>
+            <th>Теми</th><th>Пости</th><th>Останній збір</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for f in forums %}
+        <tr>
+          <td class="cell--nowrap">{{ f.forum_slug }}</td>
+          <td><a href="{{ f.base_url }}" target="_blank" rel="noopener noreferrer">{{ f.base_url | replace('https://', '') }}</a></td>
+          <td class="cell--nowrap">
+            {% if not f.enabled %}<span class="badge b-off">вимкнено</span>
+            {% elif f.backfill_done %}<span class="badge b-on">заархівовано</span>
+            {% else %}<span class="badge b-pending">бекфіл у черзі</span>{% endif %}
+            {% if f.consecutive_failures %}<span class="badge b-dead">{{ f.consecutive_failures }} збоїв</span>{% endif %}
+          </td>
+          <td class="cell--nowrap">
+            {% set d = f.stale_days %}
+            {% if d is none %}<span class="badge">порожній</span>
+            {% elif d < 7 %}<span class="badge b-ok">свіжий · {{ d }} дн</span>
+            {% elif d < 30 %}<span class="badge b-warn">{{ d }} дн без новин</span>
+            {% else %}<span class="badge b-bad">застояний · {{ d }} дн</span>{% endif %}
+          </td>
+          <td class="cell--num">{{ f.topics }}</td>
+          <td class="cell--num">{{ f.posts }}</td>
+          <td class="muted cell--nowrap">{{ f.last_incremental_at.strftime('%m-%d %H:%M') if f.last_incremental_at else '—' }}</td>
+          <td>
+            <form class="inline" method="post" action="/kb/forums/{{ f.id }}/toggle"
+                  {% if f.enabled %}data-confirm="Вимкнути форум {{ f.forum_slug }}? Архів перестане оновлюватись."{% endif %}>
+              {% include "_csrf.html" %}
+              <button class="btn btn--sm">{{ 'вимкнути' if f.enabled else 'увімкнути' }}</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
-  <tr><td colspan="5" class="muted">No MCP queries yet — підключи сервер до Claude
-  (див. User-Guide) і постав перше питання.</td></tr>
-  {% endfor %}
-</table></div>
+  <div class="panel__body">
+    {% set empty_title = "Жодного форуму не зареєстровано" %}
+    {% set empty_hint = "Додай форум формою «Зареєструвати форум» угорі, потім запусти бекфіл:" %}
+    {% set empty_code = "docker compose run --rm worker kb-backfill" %}
+    {% set empty_href = none %}
+    {% include "_empty.html" %}
+  </div>
+  {% endif %}
+</section>
+
+<details class="panel disclosure">
+  <summary>Останні запити MCP</summary>
+  {% if recent_queries %}
+  <div class="tablewrap">
+    <table class="table--dense">
+      <thead>
+        <tr><th>Коли</th><th>Інструмент</th><th>Запит</th><th>Форум</th><th>Влучань</th></tr>
+      </thead>
+      <tbody>
+        {% for query in recent_queries %}
+        <tr>
+          <td class="muted cell--nowrap">{{ query.asked_at.strftime('%m-%d %H:%M') }}</td>
+          <td class="cell--nowrap">{{ query.tool }}</td>
+          <td>{{ query.query | truncate(70) }}</td>
+          <td class="muted cell--nowrap">{{ query.forum_slug or '—' }}</td>
+          <td class="cell--num">{{ query.hits }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="disclosure__body">
+    {% set empty_title = "Запитів через MCP ще не було" %}
+    {% set empty_hint = "Підключи kbmcp до Claude (див. User-Guide) і постав перше питання — сюди потрапляють запити з чату, а не з форми пошуку вище." %}
+    {% set empty_code = none %}
+    {% set empty_href = none %}
+    {% include "_empty.html" %}
+  </div>
+  {% endif %}
+</details>
 {% endblock %}

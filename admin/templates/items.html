@@ -1,45 +1,131 @@
 {% extends "base.html" %}
-{% block title %}Items{% endblock %}
-{% block content %}
-<h1>Items</h1>
+{#- «Знахідки» (розділ 4.3). Контекст дає items_page() у admin/app.py:
+    items, status, source_id, q, page, source_options.
 
-<form method="get" action="/items" style="margin-bottom: 16px; display: flex; gap: 8px;">
-  <select name="status">
-    <option value="">any status</option>
-    {% for st in ['pending', 'done', 'dead', 'seeded', 'filtered'] %}
-    <option value="{{ st }}" {{ 'selected' if status == st }}>{{ st }}</option>
+    Дефолт «усі» НЕ змінюється: `done` не означає ліда (F5), а зміна дефолту
+    тихо перевизначила б сенс наявних посилань /items?status= — закладки і
+    посилання з Telegram почали б показувати інше, ніж учора.
+
+    Значення статусів в URL лишаються англійськими (?status=done) — інваріант
+    локалізації; українською лише підписи. -#}
+{% block title %}Знахідки{% endblock %}
+{% block h1 %}Знахідки{% endblock %}
+{% block sub %}Усе, що воркер побачив у джерелах, і що з цим сталося далі{% endblock %}
+
+{#- Хвіст запиту без `status`: чипси міняють лише статус, решту фільтрів
+    зберігають. -#}
+{%- set tail = '&source_id=' ~ source_id ~ (('&q=' ~ q|urlencode) if q else '') %}
+
+{% block controls %}
+<div class="toolbar">
+  <div class="chips" role="group" aria-label="Фільтр за статусом">
+    <a class="chip" href="/items?status={{ tail }}"
+       aria-current="{{ 'true' if not status else 'false' }}">усі</a>
+    {% for st in ITEM_STATUSES %}
+    <a class="chip" href="/items?status={{ st }}{{ tail }}"
+       aria-current="{{ 'true' if status == st else 'false' }}">{{ STATUS_UA.get(st, st) }}</a>
     {% endfor %}
-  </select>
-  <select name="source_id">
-    <option value="0">any source</option>
-    {% for s in source_options %}
-    <option value="{{ s.id }}" {{ 'selected' if source_id == s.id }}>{{ s.name }}</option>
-    {% endfor %}
-  </select>
-  <button type="submit">Filter</button>
-</form>
+  </div>
+</div>
 
-<div class="wrap"><table>
-  <tr><th>Status</th><th>Title</th><th>Source</th><th>Attempts</th>
-      <th>First seen</th><th>Delivered</th><th></th></tr>
-  {% for i in items %}
-  <tr>
-    <td><span class="badge b-{{ i.status }}">{{ i.status }}</span></td>
-    <td><a href="{{ i.url }}" target="_blank" rel="noopener">{{ i.title or i.item_uid[:16] }}</a></td>
-    <td class="muted">{{ i.source_name }}</td>
-    <td>{{ i.attempts }}</td>
-    <td class="muted">{{ i.first_seen.strftime('%Y-%m-%d %H:%M') }}</td>
-    <td class="muted">{{ i.delivered_at.strftime('%Y-%m-%d %H:%M') if i.delivered_at else '—' }}</td>
-    <td><form class="inline" method="post" action="/items/{{ i.item_uid }}/brief">
-        <button class="small" title="Generate KB briefing pack">brief</button></form></td>
-  </tr>
-  {% else %}
-  <tr><td colspan="6" class="muted">No items match.</td></tr>
-  {% endfor %}
-</table></div>
+<div class="toolbar">
+  <form class="toolbar" method="get" action="/items">
+    {#- Статус тримає чипсова панель вище — переносимо його через форму, щоб
+        фільтр за джерелом не скидав обраний статус. -#}
+    <input type="hidden" name="status" value="{{ status }}">
+    <div class="field">
+      <label class="field__label" for="f-source">Джерело</label>
+      <select id="f-source" name="source_id">
+        <option value="0">усі джерела</option>
+        {% for s in source_options %}
+        <option value="{{ s.id }}" {{ 'selected' if source_id == s.id }}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label class="field__label" for="f-q">Пошук у заголовку</label>
+      <input id="f-q" name="q" value="{{ q }}" placeholder="частина заголовка">
+    </div>
+    <button class="btn btn--primary" type="submit">Фільтр</button>
+  </form>
 
-<p style="margin-top: 12px;">
-  {% if page > 0 %}<a href="/items?status={{ status }}&source_id={{ source_id }}&page={{ page - 1 }}">← newer</a>{% endif %}
-  {% if items | length == 50 %} <a href="/items?status={{ status }}&source_id={{ source_id }}&page={{ page + 1 }}">older →</a>{% endif %}
-</p>
+  <span class="toolbar__spacer"></span>
+
+  <p class="pager">
+    {% if page > 0 %}
+    <a href="/items?status={{ status|urlencode }}{{ tail }}&amp;page={{ page - 1 }}">‹ новіші</a>
+    {% endif %}
+    {% if items %}
+      {{ page * 50 + 1 }}–{{ page * 50 + items | length }}
+    {% else %}
+      0
+    {% endif %}
+    {% if items | length == 50 %}
+    <a href="/items?status={{ status|urlencode }}{{ tail }}&amp;page={{ page + 1 }}">старіші ›</a>
+    {% endif %}
+  </p>
+</div>
+{% endblock %}
+
+{% block data %}
+<section class="panel">
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Статус</th><th>Заголовок</th><th>Джерело</th><th>Спроб</th>
+          <th>Уперше побачено</th><th>Доставлено</th><th><span class="visually-hidden">Дії</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for i in items %}
+        <tr>
+          <td><span class="badge b-{{ i.status }}">{{ STATUS_UA.get(i.status, i.status) }}</span></td>
+          <td><a href="{{ i.url }}" target="_blank" rel="noopener noreferrer">{{ i.title or i.item_uid[:16] }}</a></td>
+          <td class="muted">{{ i.source_name }}</td>
+          <td class="cell--num">{{ i.attempts }}</td>
+          <td class="muted cell--nowrap">{{ i.first_seen.strftime('%Y-%m-%d %H:%M') }}</td>
+          {#- Два різні `done` (F5). `FINAL: mark done (A1)` ставить done РАЗОМ із
+              delivered_at — це справжня доставка. Нода `Mark handled (no lead)`
+              ставить done БЕЗ delivered_at — елемент пройшов пайплайн, але ліда
+              з нього не вийшло. Рендерити їх однаково означало б брехати. -#}
+          <td class="cell--nowrap">
+            {% if i.delivered_at %}
+              <span class="badge b-done">доставлено</span>
+              <span class="muted">{{ i.delivered_at.strftime('%Y-%m-%d %H:%M') }}</span>
+            {% elif i.status == 'done' %}
+              <span class="badge b-seeded" title="оброблено без створення ліда">оброблено</span>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            <form class="inline" method="post" action="/items/{{ i.item_uid }}/brief"
+                  data-busy="Готую бріф, до 5 хв…">
+              {% include "_csrf.html" %}
+              <button class="btn btn--sm" type="submit"
+                      title="Зібрати бріф із бази знань: пошук у форумному архіві, до 5 хвилин">бріф</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7">
+            <div class="empty">
+              <div class="empty__title">Нічого не знайдено</div>
+              <div class="empty__hint">
+                {% if status or source_id or q %}
+                Спробуй зняти частину фільтрів — <a href="/items">показати всі знахідки</a>.
+                {% else %}
+                Воркер ще нічого не приніс. Перевір <a href="/runs">історію збору</a> і <a href="/sources">стан джерел</a>.
+                {% endif %}
+              </div>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
 {% endblock %}

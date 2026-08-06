@@ -1,69 +1,187 @@
 {% extends "base.html" %}
-{% block title %}Dashboard{% endblock %}
-{% block content %}
-<h1>Dashboard {% if mock_n8n %}<span class="badge b-funding">MOCK n8n mode</span>{% endif %}</h1>
+{#- «Огляд» (розділ 4.1). Контекст дає dashboard() у admin/app.py:
+    status_counts, last_runs, source_health, sources_total, recent_pending,
+    stub_classifier. Нічого поза цим списком тут не вигадується.
 
-<div class="cards">
-  {% for status in ['pending', 'done', 'dead', 'seeded', 'filtered'] %}
-  <div class="card">
-    <div class="num">{{ status_counts.get(status, 0) }}</div>
-    <div class="lbl"><span class="badge b-{{ status }}">{{ status }}</span></div>
-  </div>
+    Свідомо НЕ робимо блок «Ліди за 7 днів» і бари впевненості (F5+F6):
+    Pipedrive-ноди вимкнені, `Mark handled (no lead)` пише done без ліда, а
+    класифікатор у STUB із захардкодженим confidence 0.55 — така панель
+    виглядала б робочою і брехала. Замість неї — чесний бейдж режиму. -#}
+{% block title %}Огляд{% endblock %}
+{% block h1 %}Огляд{% endblock %}
+{% block sub %}Черга, стан джерел і останні запуски збору{% endblock %}
+
+{% block topbar_actions %}
+  {%- if stub_classifier %}
+  <span class="badge b-warn" title="Anthropic-ноди вимкнені: вердикт захардкоджено, confidence 0.55">STUB класифікатор</span>
+  {%- endif %}
+{% endblock %}
+
+{% block controls %}
+<div class="toolbar">
+  <a class="btn" href="/">Оновити</a>
+  <span class="toolbar__spacer"></span>
+  {#- Автооновлення немає навмисно (розділ 3.11): будь-який поліг продовжував
+      би сесію без участі людини і вбивав 30-хвилинний ідл-таймаут. -#}
+  <span class="muted">Стан на момент завантаження сторінки — автооновлення немає</span>
+</div>
+{% endblock %}
+
+{% block data %}
+
+{#- 1. П'ять плиток статусів. Кожна — посилання у «Знахідки» з фільтром;
+    значення в URL англійські (інваріант локалізації), підпис — український. -#}
+<div class="stats">
+  {% for st in ITEM_STATUSES %}
+  <a class="stat" href="/items?status={{ st }}">
+    <div class="stat__num">{{ status_counts.get(st, 0) }}</div>
+    <div class="stat__lbl">{{ STATUS_UA.get(st, st) }}</div>
+  </a>
   {% endfor %}
 </div>
 
-<h2>Source health</h2>
-<div class="wrap"><table>
-  <tr><th>Source</th><th>Type</th><th>Lane</th><th>State</th>
-      <th>Items 7d</th><th>Last item</th><th>Fails</th></tr>
-  {% for s in source_health %}
-  <tr>
-    <td>{{ s.name }} <span class="muted">· {{ s.ecosystem }}</span></td>
-    <td>{{ s.type }}</td>
-    <td><span class="badge b-{{ s.lane }}">{{ s.lane }}</span></td>
-    <td>
-      {% if s.quarantined %}<span class="badge b-quarantine">quarantined</span>
-      {% elif s.enabled %}<span class="badge b-on">on</span>
-      {% else %}<span class="badge b-off">off</span>{% endif %}
-    </td>
-    <td>{{ s.items_7d }}</td>
-    <td class="muted">{{ s.last_item_at.strftime('%Y-%m-%d %H:%M') if s.last_item_at else '—' }}</td>
-    <td>{% if s.consecutive_failures %}<span class="badge b-dead">{{ s.consecutive_failures }}</span>{% else %}0{% endif %}</td>
-  </tr>
-  {% endfor %}
-</table></div>
+{#- 2. Стан джерел. SQL уже сортує «найпроблемніші зверху» і має LIMIT 12,
+    тож це не реєстр, а список того, що потребує уваги. -#}
+<section class="panel">
+  <div class="panel__head">
+    <h2>Стан джерел</h2>
+    <span class="toolbar__spacer"></span>
+    <a href="/sources">усі джерела →</a>
+  </div>
 
-<h2>Recent runs</h2>
-<div class="wrap"><table>
-  <tr><th>Started</th><th>Mode</th><th>Sources</th><th>Seen</th><th>New</th>
-      <th>Filtered</th><th>Delivered</th><th>Dead</th></tr>
-  {% for r in last_runs %}
-  <tr>
-    <td>{{ r.started_at.strftime('%Y-%m-%d %H:%M') }}</td>
-    <td>{{ r.mode }}</td>
-    <td>{{ r.sources_checked }}{% if r.sources_failed %} <span class="badge b-dead">-{{ r.sources_failed }}</span>{% endif %}</td>
-    <td>{{ r.items_seen }}</td><td>{{ r.items_new }}</td>
-    <td>{{ r.items_filtered }}</td><td>{{ r.items_delivered }}</td>
-    <td>{{ r.items_dead }}</td>
-  </tr>
+  {% if source_health %}
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Джерело</th><th>Тип</th><th>Напрям</th><th>Стан</th>
+          <th>Знахідок за 7 днів</th><th>Остання знахідка</th><th>Збоїв поспіль</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in source_health %}
+        <tr>
+          <td>
+            {{ s.name }} <span class="muted">· {{ s.ecosystem }}</span>
+            {%- if s.quarantined and s.quarantine_reason %}
+            <div class="field__hint field__hint--bad">Карантин: {{ s.quarantine_reason }}</div>
+            {%- endif %}
+          </td>
+          <td class="muted">{{ s.type }}</td>
+          <td><span class="badge b-{{ s.lane }}">{{ LANE_UA.get(s.lane, s.lane) }}</span></td>
+          <td>
+            {% if s.quarantined %}<span class="badge b-quarantine">карантин</span>
+            {% elif s.enabled %}<span class="badge b-on">увімкнено</span>
+            {% else %}<span class="badge b-off">вимкнено</span>{% endif %}
+          </td>
+          <td class="cell--num">{{ s.items_7d }}</td>
+          <td class="muted cell--nowrap">{{ s.last_item_at.strftime('%Y-%m-%d %H:%M') if s.last_item_at else '—' }}</td>
+          <td class="cell--num">
+            {%- if s.consecutive_failures %}<span class="badge b-dead">{{ s.consecutive_failures }}</span>
+            {%- else %}0{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="panel__foot">
+    Показано найпроблемніші: {{ source_health | length }} із {{ sources_total }}.
+    Сортування — за кількістю збоїв поспіль, далі за давністю останньої знахідки.
+  </div>
   {% else %}
-  <tr><td colspan="8" class="muted">No runs yet — start the worker.</td></tr>
-  {% endfor %}
-</table></div>
+  <div class="panel__body">
+    <div class="empty">
+      <div class="empty__title">Джерел ще немає</div>
+      <div class="empty__hint">Додай перше на сторінці <a href="/sources">Джерела</a> — форма перевіряє його живим тест-фетчем перед збереженням.</div>
+    </div>
+  </div>
+  {% endif %}
+</section>
 
-<h2>Pending / dead items</h2>
-<div class="wrap"><table>
-  <tr><th>Status</th><th>Title</th><th>Source</th><th>Attempts</th><th>First seen</th></tr>
-  {% for i in recent_pending %}
-  <tr>
-    <td><span class="badge b-{{ i.status }}">{{ i.status }}</span></td>
-    <td><a href="{{ i.url }}" target="_blank" rel="noopener">{{ i.title or i.item_uid[:16] }}</a></td>
-    <td class="muted">{{ i.source_name }}</td>
-    <td>{{ i.attempts }}</td>
-    <td class="muted">{{ i.first_seen.strftime('%Y-%m-%d %H:%M') }}</td>
-  </tr>
+{#- 3. Останні запуски — п'ять рядків, повна історія на /runs. -#}
+<section class="panel">
+  <div class="panel__head">
+    <h2>Останні запуски</h2>
+    <span class="toolbar__spacer"></span>
+    <a href="/runs">уся історія →</a>
+  </div>
+
+  {% if last_runs %}
+  <div class="tablewrap">
+    <table class="table--dense">
+      <thead>
+        <tr>
+          <th>Початок</th><th>Режим</th><th>Джерел</th><th>Побачено</th>
+          <th>Нових</th><th>Відсіяно</th><th>Доставлено</th><th>Не доставлено</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in last_runs %}
+        <tr>
+          <td class="cell--nowrap">{{ r.started_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td>{{ MODE_UA.get(r.mode, r.mode) }}</td>
+          <td class="cell--num">
+            {{ r.sources_checked }}{% if r.sources_failed %} <span class="badge b-dead">−{{ r.sources_failed }}</span>{% endif %}
+          </td>
+          <td class="cell--num">{{ r.items_seen }}</td>
+          <td class="cell--num">{{ r.items_new }}</td>
+          <td class="cell--num">{{ r.items_filtered }}</td>
+          <td class="cell--num">{{ r.items_delivered }}</td>
+          <td class="cell--num">
+            {%- if r.items_dead %}<span class="badge b-dead">{{ r.items_dead }}</span>
+            {%- else %}0{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
-  <tr><td colspan="5" class="muted">Nothing pending — the queue is clean.</td></tr>
-  {% endfor %}
-</table></div>
+  <div class="panel__body">
+    <div class="empty">
+      <div class="empty__title">Запусків ще не було</div>
+      <div class="empty__hint">Підніми воркер: <code>docker compose up -d worker</code></div>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
+{#- 4. У черзі / проблемні — те, що воркер уже побачив, але ще не довіз. -#}
+<section class="panel">
+  <div class="panel__head">
+    <h2>У черзі / проблемні</h2>
+    <span class="toolbar__spacer"></span>
+    <a href="/items?status=pending">уся черга →</a>
+  </div>
+
+  {% if recent_pending %}
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Статус</th><th>Заголовок</th><th>Джерело</th><th>Спроб</th><th>Уперше побачено</th></tr>
+      </thead>
+      <tbody>
+        {% for i in recent_pending %}
+        <tr>
+          <td><span class="badge b-{{ i.status }}">{{ STATUS_UA.get(i.status, i.status) }}</span></td>
+          <td><a href="{{ i.url }}" target="_blank" rel="noopener noreferrer">{{ i.title or i.item_uid[:16] }}</a></td>
+          <td class="muted">{{ i.source_name }}</td>
+          <td class="cell--num">{{ i.attempts }}</td>
+          <td class="muted cell--nowrap">{{ i.first_seen.strftime('%Y-%m-%d %H:%M') }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="panel__body">
+    <div class="empty">
+      <div class="empty__title">Черга порожня</div>
+      <div class="empty__hint">Усе, що воркер знайшов, уже оброблено — нічого не зависло.</div>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
 {% endblock %}

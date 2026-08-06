@@ -224,8 +224,18 @@ def login_page(request: Request, reason: str = "", next: str = "/"):
 
 @app.post("/login")
 async def login_submit(
-    request: Request, password: str = Form(...), next: str = Form("/")
+    request: Request,
+    password: str = Form(...),
+    next: str = Form("/"),
+    who: str = Form(""),
 ):
+    """`who` — необов'язковий підпис «хто ти» (варіант C з розділу 7, п.5).
+
+    Це журнал змін, а не автентифікація: пароль спільний, тож система не може
+    знати, хто саме увійшов. Але коли хтось змінює поріг класифікатора,
+    `settings.updated_by` має відповідати на «хто це зробив» бодай на рівні
+    добровільного підпису — інакше колонка назавжди лишається 'admin-ui'.
+    """
     target = auth.safe_next(next)
     ok, blocked_for = await auth.verify_password(password)
     if not ok:
@@ -236,8 +246,10 @@ async def login_submit(
             params["next"] = target
         return RedirectResponse(f"/login?{urlencode(params)}", status_code=303)
 
+    signature = auth.clean_who(who)
+    log.info("вхід у дашборд%s", f" ({signature})" if signature else " (без підпису)")
     response = RedirectResponse(target, status_code=303)
-    auth.issue(response, request)
+    auth.issue(response, request, who=signature)
     return response
 
 
@@ -473,13 +485,14 @@ def add_source(
             """
             INSERT INTO sources (type, name, ecosystem, url, category, config, lane,
                                  enabled, added_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, true, 'admin-ui')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, true, %s)
             ON CONFLICT (type, url, category) DO UPDATE
                 SET name = EXCLUDED.name, config = EXCLUDED.config,
                     enabled = true, quarantined = false, quarantine_reason = NULL
             """,
             (type, candidate["name"], candidate["ecosystem"], candidate["url"],
-             candidate["category"], json.dumps(config_obj), lane),
+             candidate["category"], json.dumps(config_obj), lane,
+             auth.actor(request)),
         )
         conn.commit()
     return RedirectResponse(
@@ -513,7 +526,7 @@ def keywords_page(request: Request, message: str = "", error: str = ""):
 
 
 @mutations.post("/keywords/add")
-def add_keyword(pattern: str = Form(...), kind: str = Form(...)):
+def add_keyword(request: Request, pattern: str = Form(...), kind: str = Form(...)):
     if kind not in ("include", "exclude"):
         raise HTTPException(400, "kind must be include or exclude")
     # Compile-check at write time (A4); read-time quarantine still applies.
@@ -526,9 +539,9 @@ def add_keyword(pattern: str = Form(...), kind: str = Form(...)):
 
     with db() as conn:
         conn.execute(
-            "INSERT INTO keywords (pattern, kind, added_by) VALUES (%s, %s, 'admin-ui') "
+            "INSERT INTO keywords (pattern, kind, added_by) VALUES (%s, %s, %s) "
             "ON CONFLICT (pattern, kind) DO UPDATE SET enabled = true",
-            (pattern, kind),
+            (pattern, kind, auth.actor(request)),
         )
         conn.commit()
     return RedirectResponse("/keywords?message=Збережено", status_code=303)
@@ -753,11 +766,15 @@ async def save_settings(request: Request):
             except ValueError:
                 pass
 
+        # `value IS DISTINCT FROM %s` навмисно: підпис і updated_at міняються
+        # лише для ключів, які реально змінилися, тож «хто останній чіпав поріг»
+        # не затирається тим, хто просто натиснув «Зберегти все».
+        actor = auth.actor(request)
         for key, value in pending.items():
             conn.execute(
                 "UPDATE settings SET value = %s, updated_at = now(), "
-                "updated_by = 'admin-ui' WHERE key = %s AND value IS DISTINCT FROM %s",
-                (value, key, value),
+                "updated_by = %s WHERE key = %s AND value IS DISTINCT FROM %s",
+                (value, actor, key, value),
             )
         conn.commit()
     return RedirectResponse("/settings?message=Збережено", status_code=303)
@@ -897,7 +914,7 @@ def kb_page(request: Request, q: str = "", forum: str = ""):
     )
 
 
-@app.post("/kb/forums/{forum_id}/toggle")
+@mutations.post("/kb/forums/{forum_id}/toggle")
 def toggle_kb_forum(forum_id: int):
     with db() as conn:
         conn.execute(
@@ -907,7 +924,7 @@ def toggle_kb_forum(forum_id: int):
     return RedirectResponse("/kb", status_code=303)
 
 
-@app.post("/kb/forums/add")
+@mutations.post("/kb/forums/add")
 def add_kb_forum(forum_slug: str = Form(...), base_url: str = Form(...)):
     """Register a forum for archiving. The actual crawl is `worker kb-backfill`
     (an overnight job, deliberately not a button — see User-Guide)."""
@@ -929,7 +946,7 @@ KBMCP_URL = os.environ.get("KBMCP_URL", "http://kbmcp:8000")
 KB_MCP_TOKEN = os.environ.get("KB_MCP_TOKEN", "")
 
 
-@app.post("/items/{item_uid}/brief")
+@mutations.post("/items/{item_uid}/brief")
 def generate_brief(item_uid: str):
     """Manual trigger — the same call the n8n node makes after lead creation."""
     import httpx
@@ -972,6 +989,45 @@ def generate_brief(item_uid: str):
     return RedirectResponse(f"/briefs/{payload['brief_id']}", status_code=303)
 
 
+@app.get("/briefs", response_class=HTMLResponse)
+def briefs_page(request: Request, ecosystem: str = "", tier: str = ""):
+    """Список бріфів (розділ 4.10).
+
+    Досі до бріфа вів лише редірект одразу після генерації — згенерований учора
+    бріф знайти було неможливо.
+    """
+    where, params = [], []
+    if ecosystem:
+        where.append("ecosystem = %s")
+        params.append(ecosystem)
+    if tier:
+        where.append("tier = %s")
+        params.append(tier)
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+    with db() as conn:
+        briefs = conn.execute(
+            f"SELECT id, ecosystem, title, tier, model, item_uid, created_at "
+            f"FROM kb.briefs {clause} ORDER BY created_at DESC LIMIT 50",
+            params,
+        ).fetchall()
+        ecosystems = conn.execute(
+            "SELECT DISTINCT ecosystem FROM kb.briefs ORDER BY ecosystem"
+        ).fetchall()
+
+    return templates.TemplateResponse(
+        request,
+        "briefs.html",
+        {
+            "nav": "briefs",
+            "briefs": briefs,
+            "ecosystems": [r["ecosystem"] for r in ecosystems],
+            "ecosystem": ecosystem,
+            "tier": tier,
+        },
+    )
+
+
 @app.get("/briefs/{brief_id}", response_class=HTMLResponse)
 def view_brief(request: Request, brief_id: int):
     with db() as conn:
@@ -980,7 +1036,26 @@ def view_brief(request: Request, brief_id: int):
         ).fetchone()
     if not brief:
         raise HTTPException(404, "brief not found")
-    return templates.TemplateResponse(request, "brief.html", {"brief": brief})
+    return templates.TemplateResponse(
+        request, "brief.html", {"nav": "briefs", "brief": brief}
+    )
+
+
+@app.get("/chat", response_class=HTMLResponse)
+def chat_page(request: Request):
+    """Стаб AI-чату над базою знань (розділ 4.9, задача #30).
+
+    Сенс сторінки зараз — довести повноекранний лейаут, поки він дешевий:
+    інакше `base.html` довелося б переробляти під чат уже після редизайну.
+    """
+    return templates.TemplateResponse(request, "chat.html", {"nav": "chat"})
+
+
+# Реєстрація мутуючого роутера — ОСТАННІМ рядком серед маршрутів, після того як
+# усі @mutations.post оголошені: include_router копіює наявні на той момент
+# роути, а не тримає посилання на роутер. Виклик вище зареєстрував би порожній
+# набір, і кожна форма віддавала б 404 — саме це і сталося на кроці 2.
+app.include_router(mutations)
 
 
 # ── Mock n8n (local dev only) ──────────────────────────────────────

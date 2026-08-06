@@ -1,0 +1,28 @@
+{#- Порожній стан (розділ 4.11). Партіал, а не макрос у base.html: `include`
+    бачить контекст сторінки, тож змінні задаються звичайним {% set %} поруч
+    із викликом і не треба тягти їх через імпорт.
+
+    Контракт (усі змінні необов'язкові, невизначені просто не рендеряться):
+
+      empty_title  — рядок «що це означає»   (дефолт: «Тут поки порожньо»)
+      empty_hint   — рядок «що зробити»
+      empty_code   — команда/значення моноширинним (<code>), окремим рядком
+      empty_href   — куди вести далі
+      empty_link   — підпис посилання (дефолт: «Перейти»)
+
+    Приклад:
+      {% set empty_title = "Запусків ще не було" %}
+      {% set empty_hint = "Підніми воркер:" %}
+      {% set empty_code = "docker compose up -d worker" %}
+      {% include "_empty.html" %}
+
+    Усередині таблиці — загортати в <tr><td colspan="N"> самостійно.
+-#}
+<div class="empty">
+  <div class="empty__title">{{ empty_title | default("Тут поки порожньо", true) }}</div>
+  {% if empty_hint %}<div class="empty__hint">{{ empty_hint }}</div>{% endif %}
+  {% if empty_code %}<div class="empty__hint"><code>{{ empty_code }}</code></div>{% endif %}
+  {% if empty_href %}
+  <div class="empty__hint"><a href="{{ empty_href }}">{{ empty_link | default("Перейти", true) }}</a></div>
+  {% endif %}
+</div>

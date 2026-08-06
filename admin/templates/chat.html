@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{#- AI-чат — стаб (розділ 4.9). Сенс сторінки зараз у тому, щоб довести
+    повноекранний лейаут, поки він дешевий: .content--full робить .data
+    єдиним скрол-контейнером, а .controls — прибитим донизу композером.
+    Це єдиний екран, де «керування» візуально знизу, і саме тому це явний
+    модифікатор, а не виняток із правила.
+
+    Композер НЕ є <form method="post"> — надсилати нікуди; кнопки задизейблені,
+    тож жодного CSRF-контракту тут не виникає. Коли з'явиться бекенд, форма
+    отримає method="post" і {% include "_csrf.html" %} разом із ним. -#}
+{% block title %}AI-чат{% endblock %}
+{% block h1 %}AI-чат{% endblock %}
+{% block sub %}Питання до бази знань живою мовою — у розробці{% endblock %}
+{% block content_mod %} content--full{% endblock %}
+
+{% block data %}
+{% set empty_title = "Чат над базою знань — у розробці" %}
+{% set empty_hint = "Тут можна буде питати архів форумів звичайною мовою: модель сама перебере кілька формулювань, прочитає теми цілком і покаже джерела. Поки що те саме доступне повнотекстовим пошуком." %}
+{% set empty_href = "/kb" %}
+{% set empty_link = "Пошук у Базі знань" %}
+{% include "_empty.html" %}
+{% endblock %}
+
+{% block controls %}
+<div class="chat__composer">
+  <label class="visually-hidden" for="chat-input">Повідомлення</label>
+  <textarea id="chat-input" disabled
+            placeholder="Напр.: які гранти на dev tooling обговорювали в Optimism цього кварталу?"></textarea>
+  <button class="btn btn--primary" type="button" disabled>Надіслати</button>
+</div>
+{% endblock %}

@@ -1,18 +1,48 @@
 {% extends "base.html" %}
-{% block title %}Brief #{{ brief.id }}{% endblock %}
-{% block content %}
-<h1>Briefing pack <span class="muted">· {{ brief.ecosystem }}</span></h1>
-<p class="muted">
-  {{ brief.created_at.strftime('%Y-%m-%d %H:%M') }} ·
-  tier <span class="badge {{ 'b-on' if brief.tier == 'llm' else 'b-off' }}">{{ brief.tier }}</span>
-  {% if brief.model %} · {{ brief.model }}{% endif %}
-  {% if brief.tokens_in %} · {{ brief.tokens_in }}→{{ brief.tokens_out }} tok{% endif %}
-  {% if brief.item_uid %} · item <code>{{ brief.item_uid[:16] }}…</code>{% endif %}
-</p>
+{#- Бріф (розділ 4.8). Markdown НЕ рендериться: `brief_md` — вихід LLM, тож
+    власний рендерер із підтримкою [текст](url) був би XSS-поверхнею
+    (`[клац](javascript:…)`). Тіло лишається як є, під autoescape, з
+    `white-space: pre-wrap` через .prose--raw. Це рішення специфікації, а не
+    недоробка: рендер Markdown — окремий крок з окремим рев'ю. -#}
+{% block title %}Бріф #{{ brief.id }}{% endblock %}
+{% block h1 %}Бріф #{{ brief.id }}{% endblock %}
+{% block sub %}{{ brief.title }}{% endblock %}
 
-<div style="background: var(--panel); border: 1px solid var(--border);
-            border-radius: 8px; padding: 20px; white-space: pre-wrap;
-            font-size: 14px; line-height: 1.65;">{{ brief.brief_md }}</div>
+{% block controls %}
+<div class="toolbar">
+  <nav class="breadcrumbs" aria-label="Хлібні крихти">
+    <a href="/items">Знахідки</a>
+    <span aria-hidden="true">›</span>
+    <a href="/briefs">Бріфи</a>
+    <span aria-hidden="true">›</span>
+    <span>Бріф #{{ brief.id }}</span>
+  </nav>
+  <span class="toolbar__spacer"></span>
+  {#- Сенс бріфа — вставити його в Telegram/CRM, тому копіювання і є головна
+      дія сторінки. Обробник у app.js (data-copy → селектор джерела). -#}
+  <button class="btn btn--primary" type="button" data-copy="#brief-body">Копіювати</button>
+</div>
+{% endblock %}
 
-<p style="margin-top: 14px;"><a href="/items">← back to items</a></p>
+{% block data %}
+<article class="panel">
+  <div class="panel__head">
+    <h2 class="panel__title">{{ brief.ecosystem }}</h2>
+    <span class="badge {{ 'b-on' if brief.tier == 'llm' else 'b-neutral' }}">{{ TIER_UA.get(brief.tier, brief.tier) }}</span>
+    {% if brief.model %}<span class="badge b-info">{{ brief.model }}</span>{% endif %}
+    {% if brief.tokens_in %}
+    <span class="badge">{{ brief.tokens_in }}→{{ brief.tokens_out }} токенів</span>
+    {% endif %}
+    <span class="toolbar__spacer"></span>
+    <span class="muted">{{ brief.created_at.strftime('%Y-%m-%d %H:%M') if brief.created_at else '—' }}</span>
+  </div>
+  <div class="panel__body">
+    <div class="prose prose--raw" id="brief-body">{{ brief.brief_md }}</div>
+  </div>
+  {% if brief.item_uid %}
+  <div class="panel__foot">
+    Знахідка: <code>{{ brief.item_uid[:24] }}…</code>
+  </div>
+  {% endif %}
+</article>
 {% endblock %}

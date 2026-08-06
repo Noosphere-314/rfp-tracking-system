@@ -38,6 +38,17 @@
              autocomplete="current-password" autofocus required>
     </label>
 
+    {#- Журнал змін, не автентифікація (розділ 7, п.5, варіант C). Пароль
+        спільний, тож система не знає, хто увійшов; підпис добровільний і
+        потрапляє в settings.updated_by / sources.added_by. -#}
+    <label class="field">
+      <span class="field__label">Хто ти <span class="field__opt">— необов'язково</span></span>
+      <input class="input" type="text" name="who" maxlength="24"
+             autocomplete="nickname" placeholder="Ім'я або нік">
+      <span class="field__hint">Підпис показується поруч зі змінами, які ти
+        вносиш — щоб потім було видно, хто правив пороги чи джерела.</span>
+    </label>
+
     <input type="hidden" name="next" value="{{ next }}">
     {#- Єдиний градієнт на екрані (правило палітри, розділ 3.3). -#}
     <button class="btn btn--primary btn--block" type="submit">Увійти</button>

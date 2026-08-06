@@ -1,52 +1,190 @@
 {% extends "base.html" %}
-{% block title %}Sources{% endblock %}
-{% block content %}
-<h1>Sources</h1>
-{% if message %}<div class="msg ok">{{ message }}</div>{% endif %}
-{% if error %}<div class="msg err">{{ error }}</div>{% endif %}
+{#- Джерела (розділ 4.2). Головна перестановка: форма додавання була ПІД
+    таблицею — тепер вона в `controls`, тобто фізично вище за дані, і згорнута
+    в нативний <details>, щоб семипольова форма не відпихала таблицю вниз.
 
-<div class="wrap"><table>
-  <tr><th>ID</th><th>Name</th><th>Type</th><th>Lane</th><th>URL</th>
-      <th>State</th><th>Last item</th><th></th></tr>
-  {% for s in sources %}
-  <tr>
-    <td>{{ s.id }}</td>
-    <td>{{ s.name }}<br><span class="muted">{{ s.ecosystem }}{% if s.category %} · {{ s.category }}{% endif %}</span></td>
-    <td>{{ s.type }}</td>
-    <td><span class="badge b-{{ s.lane }}">{{ s.lane }}</span></td>
-    <td><a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.url | replace('https://', '') | truncate(40) }}</a></td>
-    <td>
-      {% if s.quarantined %}<span class="badge b-quarantine" title="{{ s.quarantine_reason }}">quarantined</span>
-      {% elif s.enabled %}<span class="badge b-on">on</span>
-      {% else %}<span class="badge b-off">off</span>{% endif %}
-    </td>
-    <td class="muted">{{ s.last_item_at.strftime('%m-%d %H:%M') if s.last_item_at else '—' }}</td>
-    <td>
-      <form class="inline" method="post" action="/sources/{{ s.id }}/toggle">
-        <button class="small">{{ 'disable' if s.enabled else 'enable' }}</button>
-      </form>
-    </td>
-  </tr>
-  {% endfor %}
-</table></div>
+    Нуль інлайнових стилів — CSP `style-src 'self'` блокує і атрибут style
+    (у CSP3 style-src є fallback для style-src-attr). Усе — класами з app.css.
 
-<h2>Add source (runs a live test-fetch before saving)</h2>
-<form method="post" action="/sources/add">
-<div class="grid-form">
-  <label>Type</label>
-  <select name="type">{% for t in fetcher_types %}<option>{{ t }}</option>{% endfor %}</select>
-  <label>Name</label><input name="name" required placeholder="Celo forum">
-  <label>Ecosystem</label><input name="ecosystem" required placeholder="Celo">
-  <label>URL</label><input name="url" required placeholder="https://forum.celo.org">
-  <label>Category</label><input name="category" placeholder="grants (label, optional)">
-  <label>Lane</label>
-  <select name="lane"><option value="rfp">rfp</option><option value="funding">funding</option></select>
-  <label>Config JSON</label>
-  <textarea name="config" placeholder='{"categories": [{"slug": "grants", "id": 12}]}'>{}</textarea>
-  <span></span><button type="submit">Test-fetch &amp; save</button>
+    Клієнтські фільтри — розмітка, яку читає app.js (розділ 3.11, п.7):
+    [data-filter-target] — CSS-селектор таблиці, [data-filter-count] — селектор
+    лічильника показаних рядків. Бекенд не змінюється: sources_page приймає
+    лише message/error. -#}
+
+{% block title %}Джерела{% endblock %}
+{% block h1 %}Джерела{% endblock %}
+{% block sub %}Перед збереженням виконується живий тест-фетч: джерело, що не віддало жодного елемента, не зберігається{% endblock %}
+
+{% block controls %}
+<div class="toolbar">
+  <label class="field">
+    <span class="field__label">Пошук</span>
+    <input class="input" type="search" name="q"
+           placeholder="назва, екосистема, тип, URL"
+           data-filter-target="#sources-table" data-filter-count="#sources-shown">
+  </label>
+
+  <label class="field">
+    <span class="field__label">Стан</span>
+    {#- Значення — рівно той текст, що стоїть у бейджі рядка: фільтр у app.js
+        шукає підрядок у textContent рядка. «вимкнено» НЕ є підрядком
+        «увімкнено» (в-и-м проти в-і-м), тож гілки не перетинаються. -#}
+    <select name="state" data-filter-target="#sources-table" data-filter-count="#sources-shown">
+      <option value="">усі</option>
+      <option value="увімкнено">увімкнені</option>
+      <option value="вимкнено">вимкнені</option>
+      <option value="карантин">карантин</option>
+    </select>
+  </label>
+
+  <span class="toolbar__spacer"></span>
+  <span class="field__hint">Фільтри клієнтські: діє той, який змінили останнім</span>
 </div>
-</form>
-<p class="muted">A source that fails its test-fetch is not saved — same guarantee
-as the n8n form. Discourse config: <code>{"categories": [{"slug": …, "id": …}]}</code>;
-rest_aggregator needs <code>items_path</code> + <code>fields</code> mapping.</p>
+
+{#- <details open> при помилці: add_source повертає відрендерену сторінку зі
+    збереженими полями (а не редірект), тож форма мусить бути розкрита —
+    інакше введене зникає з очей, хоч і лишається в DOM. -#}
+<details class="disclosure"{% if error %} open{% endif %}>
+  <summary>＋ Додати джерело</summary>
+  <div class="disclosure__body">
+    {#- data-busy: тест-фетч триває до 30 с, і без блокування кнопки другий
+        клік запускає його вдруге. -#}
+    <form method="post" action="/sources/add" data-busy="Перевіряю джерело…">
+      {% include "_csrf.html" %}
+      <div class="form-grid">
+        <label class="field">
+          <span class="field__label">Тип</span>
+          <select name="type">
+            {% for t in fetcher_types %}
+            <option value="{{ t }}"{% if form.type == t %} selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="field__label">Назва</span>
+          <input class="input" name="name" required placeholder="Celo forum"
+                 value="{{ form.name }}">
+        </label>
+
+        <label class="field">
+          <span class="field__label">Екосистема</span>
+          <input class="input" name="ecosystem" required placeholder="Celo"
+                 value="{{ form.ecosystem }}">
+        </label>
+
+        <label class="field">
+          <span class="field__label">URL</span>
+          <input class="input" name="url" required placeholder="https://forum.celo.org"
+                 value="{{ form.url }}">
+        </label>
+
+        <label class="field">
+          <span class="field__label">Категорія</span>
+          <input class="input" name="category" placeholder="grants"
+                 value="{{ form.category }}">
+          <span class="field__hint">Необов'язково — мітка розділу всередині джерела</span>
+        </label>
+
+        <label class="field">
+          <span class="field__label">Напрям</span>
+          {#- Значення лишаються англійськими (інваріант локалізації): українська
+              тільки в підписі через LANE_UA. -#}
+          <select name="lane">
+            {% for code in ['rfp', 'funding'] %}
+            <option value="{{ code }}"{% if form.lane == code or (not form.lane and code == 'rfp') %} selected{% endif %}>{{ LANE_UA.get(code, code) }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="field field--wide">
+          <span class="field__label">Конфіг (JSON)</span>
+          <textarea name="config" placeholder='{"categories": [{"slug": "grants", "id": 12}]}'>{{ form.config or '{}' }}</textarea>
+          <span class="field__hint">discourse: <code>{"categories": [{"slug": …, "id": …}]}</code> ·
+            rest_aggregator: <code>items_path</code> і мапінг <code>fields</code></span>
+        </label>
+      </div>
+
+      <div class="toolbar">
+        <span class="field__hint">Джерело, що не пройшло тест-фетч, не зберігається — та сама гарантія, що дає n8n-форма</span>
+        <span class="toolbar__spacer"></span>
+        <button class="btn btn--primary" type="submit">Перевірити й зберегти</button>
+      </div>
+    </form>
+  </div>
+</details>
+{% endblock %}
+
+{% block data %}
+<section class="panel">
+  <div class="panel__head">
+    <h2>Усі джерела</h2>
+    <span class="muted">показано <span class="num" id="sources-shown">{{ sources | length }}</span> з {{ sources | length }}</span>
+  </div>
+
+  {% if sources %}
+  {#- .tablewrap обов'язкова для КОЖНОЇ таблиці (розділ 3.7): без неї
+      горизонтальний скрол з'їжджає на <body>. -#}
+  <div class="tablewrap">
+    <table id="sources-table">
+      <thead>
+        <tr>
+          <th>ID</th><th>Джерело</th><th>Тип</th><th>Напрям</th><th>URL</th>
+          <th>Стан</th><th>Остання знахідка</th>
+          <th><span class="visually-hidden">Дія</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sources %}
+        <tr>
+          <td class="num">{{ s.id }}</td>
+          <td>
+            {{ s.name }}
+            <div class="muted">{{ s.ecosystem }}{% if s.category %} · {{ s.category }}{% endif %}</div>
+          </td>
+          <td class="cell--nowrap">{{ s.type }}</td>
+          <td><span class="badge b-{{ s.lane }}">{{ LANE_UA.get(s.lane, s.lane) }}</span></td>
+          <td>
+            <a href="{{ s.url }}" target="_blank" rel="noopener noreferrer">{{ s.url | replace('https://', '') | truncate(44) }}</a>
+          </td>
+          <td>
+            {% if s.quarantined %}
+              <span class="badge b-quarantine">карантин</span>
+              {#- Причина — інлайном під бейджем, а не в title=: карантин і є
+                  головна причина, через яку сюди заходять, а тултип не видно
+                  ні з клавіатури, ні з телефона. -#}
+              {% if s.quarantine_reason %}
+              <div class="field__hint field__hint--bad">{{ s.quarantine_reason }}</div>
+              {% endif %}
+            {% elif s.enabled %}
+              <span class="badge b-on">увімкнено</span>
+            {% else %}
+              <span class="badge b-off">вимкнено</span>
+            {% endif %}
+            {% if s.consecutive_failures %}
+            <div class="field__hint field__hint--bad">невдач поспіль: {{ s.consecutive_failures }}</div>
+            {% endif %}
+          </td>
+          <td class="muted cell--nowrap">{{ s.last_item_at.strftime('%d.%m %H:%M') if s.last_item_at else '—' }}</td>
+          <td>
+            <form class="inline" method="post" action="/sources/{{ s.id }}/toggle"
+                  {% if s.enabled %}data-confirm="Вимкнути «{{ s.name }}»? Воркер перестане опитувати це джерело."{% endif %}>
+              {% include "_csrf.html" %}
+              <button class="btn btn--sm" type="submit">{{ 'Вимкнути' if s.enabled else 'Увімкнути' }}</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    <p class="empty__title">Джерел ще немає</p>
+    <p class="empty__hint">Додай перше через «＋ Додати джерело» вгорі — перед збереженням воно пройде живий тест-фетч.</p>
+  </div>
+  {% endif %}
+
+  <div class="panel__foot">Увімкнення знімає карантин: воркер спробує джерело знову на найближчому прогоні.</div>
+</section>
 {% endblock %}

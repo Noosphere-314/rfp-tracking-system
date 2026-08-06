@@ -1,23 +1,146 @@
 {% extends "base.html" %}
-{% block title %}Settings{% endblock %}
-{% block content %}
-<h1>Settings</h1>
-{% if message %}<div class="msg ok">{{ message }}</div>{% endif %}
+{#- Параметри (розділ 4.5). Кнопка «Зберегти все» переїхала з-під довгої
+    таблиці нагору, у controls. Форма при цьому лишається цілою: controls і
+    data — сусідні блоки base.html, рвати <form> між ними не можна, тож кнопка
+    прив'язана HTML5-атрибутом form="settings-form".
 
-<form method="post" action="/settings/save">
-<div class="wrap"><table>
-  <tr><th>Key</th><th>Value</th><th>Updated</th></tr>
-  {% for s in settings %}
-  <tr>
-    <td><code>{{ s.key }}</code></td>
-    <td><input name="{{ s.key }}" value="{{ s.value }}" style="width: 100%"></td>
-    <td class="muted">{{ s.updated_at.strftime('%Y-%m-%d %H:%M') }} · {{ s.updated_by }}</td>
-  </tr>
+    Контекст дає _render_settings: groups = [(gid, label, [item…])], де в item
+    крім рядка таблиці settings є label / hint / kind із SETTING_META, і
+    band = {low, high} для смуги подвійного порога. -#}
+{% block title %}Параметри{% endblock %}
+{% block h1 %}Параметри{% endblock %}
+{% block sub %}Значення читають воркер і n8n на кожному прогоні — редеплой не потрібен{% endblock %}
+
+{% block controls %}
+<div class="toolbar">
+  <div class="field">
+    <label class="field__label" for="settings-search">Пошук за ключем</label>
+    {#- Клієнтський фільтр рядків (app.js, п.6): шукає по всіх картках одразу,
+        бо селектор цілиться у форму, а не в окрему таблицю. -#}
+    <input class="input" id="settings-search" type="search" autocomplete="off"
+           placeholder="напр. threshold" aria-label="Пошук за ключем"
+           data-filter-target="#settings-form">
+  </div>
+  <span class="toolbar__spacer"></span>
+  <button form="settings-form" class="btn btn--primary">Зберегти все</button>
+</div>
+{% endblock %}
+
+{% block data %}
+<form id="settings-form" method="post" action="/settings/save">
+  {% include "_csrf.html" %}
+
+  {% for gid, group_label, items in groups %}
+  <div class="panel">
+    <div class="panel__head"><h2>{{ group_label }}</h2></div>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Параметр</th><th>Значення</th><th>Оновлено</th></tr>
+        </thead>
+        <tbody>
+          {% for s in items %}
+          <tr>
+            <td>
+              <label class="field__label" for="set-{{ s.key }}">{{ s.label }}</label>
+              {% if s.hint %}<div class="field__hint">{{ s.hint }}</div>{% endif %}
+              <code>{{ s.key }}</code>
+            </td>
+            <td>
+              <input class="input input--wide" id="set-{{ s.key }}" name="{{ s.key }}"
+                     value="{{ s.value }}" autocomplete="off" spellcheck="false"
+                     {% if s.kind == 'float' %}inputmode="decimal"
+                     {% elif s.kind == 'int' %}inputmode="numeric"{% endif %}>
+            </td>
+            <td class="muted cell--nowrap">
+              {{ s.updated_at.strftime('%Y-%m-%d %H:%M') }} · {{ s.updated_by }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {#- Смуга подвійного порога (A8) стоїть під тими двома полями, які вона
+        пояснює. Це інлайновий <svg> із порахованими координатами, а не
+        інлайнова ширина: CSP `style-src 'self'` блокує і тег style, і
+        однойменний атрибут, а презентаційні атрибути SVG — ні. Кольори літеральні з тієї
+        ж причини: var() у presentation-атрибутах ненадійний, а класу під це
+        в app.css немає. Значення дзеркалять токени --neutral-bg / --warn-bg /
+        --ok-bg / --line / --text / --text-faint / --text-dim. -#}
+    {% if gid == 'classify' %}
+    {% set x0 = 60 %}{% set bw = 880 %}
+    {% set xl = x0 + band.low * bw %}
+    {% set xh = x0 + band.high * bw %}
+    {% set w1 = xl - x0 %}{% set w2 = xh - xl %}{% set w3 = x0 + bw - xh %}
+    {% set low_txt = '%.2f' | format(band.low) %}
+    {% set high_txt = '%.2f' | format(band.high) %}
+    <div class="panel__foot">
+      <svg viewBox="0 0 1000 122" width="1000" height="122" role="img"
+           aria-label="Нижче {{ low_txt }} знахідка ігнорується; від {{ low_txt }} до {{ high_txt }} іде в канал на перегляд; від {{ high_txt }} лід створюється автоматично">
+        <rect x="{{ x0 }}" y="46" width="{{ w1 | round(1) }}" height="22" fill="#1A242C"></rect>
+        <rect x="{{ xl | round(1) }}" y="46" width="{{ w2 | round(1) }}" height="22" fill="#2E2411"></rect>
+        <rect x="{{ xh | round(1) }}" y="46" width="{{ w3 | round(1) }}" height="22" fill="#0E2B23"></rect>
+        <rect x="{{ x0 }}" y="46" width="{{ bw }}" height="22" fill="none" stroke="#20303A"></rect>
+
+        <line x1="{{ xl | round(1) }}" y1="40" x2="{{ xl | round(1) }}" y2="74"
+              stroke="#F0B429" stroke-width="2"></line>
+        <line x1="{{ xh | round(1) }}" y1="40" x2="{{ xh | round(1) }}" y2="74"
+              stroke="#2FA37A" stroke-width="2"></line>
+
+        <text x="{{ xl | round(1) }}" y="32" fill="#E6EDF3" font-size="15" text-anchor="middle">{{ low_txt }}</text>
+        <text x="{{ xh | round(1) }}" y="32" fill="#E6EDF3" font-size="15" text-anchor="middle">{{ high_txt }}</text>
+
+        <text x="{{ x0 }}" y="90" fill="#647685" font-size="13" text-anchor="middle">0</text>
+        <text x="{{ x0 + bw }}" y="90" fill="#647685" font-size="13" text-anchor="middle">1</text>
+
+        {#- Підпис зони показуємо, лише якщо вона достатньо широка: інакше
+            текст вилазить за межі власної зони і читається як чужий. -#}
+        {% if w1 > 150 %}
+        <text x="{{ ((x0 + xl) / 2) | round(1) }}" y="114" fill="#7C8B99" font-size="14" text-anchor="middle">ігнорується</text>
+        {% endif %}
+        {% if w2 > 150 %}
+        <text x="{{ ((xl + xh) / 2) | round(1) }}" y="114" fill="#F0B429" font-size="14" text-anchor="middle">у review-канал</text>
+        {% endif %}
+        {% if w3 > 150 %}
+        <text x="{{ ((xh + x0 + bw) / 2) | round(1) }}" y="114" fill="#2FA37A" font-size="14" text-anchor="middle">лід автоматично</text>
+        {% endif %}
+      </svg>
+      <p class="field__hint">
+        Смуга від 0 до 1 за впевненістю класифікатора. Нижня межа не може бути
+        більшою за поріг автоліда — інакше смуга перегляду порожня і частина
+        знахідок зникає мовчки.
+      </p>
+    </div>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="panel">
+    <div class="empty">
+      <p class="empty__title">Параметрів немає</p>
+      <p class="empty__hint">Таблиця <code>settings</code> порожня — застосуй міграції:
+        <code>docker compose run --rm worker migrate</code></p>
+    </div>
+  </div>
   {% endfor %}
-</table></div>
-<p><button type="submit">Save all</button></p>
 </form>
-<p class="muted">Ці значення читаються воркером і n8n на кожному рані —
-редеплой не потрібен. <code>confidence_threshold</code> / <code>review_band_low</code>
-— подвійний поріг (A8).</p>
+
+{#- Картка «Сесії» — ЗА межами #settings-form: вкладені форми неприпустимі, а
+    її кнопка веде на інший маршрут. Природне місце після ротації пароля. -#}
+<div class="panel">
+  <div class="panel__head"><h2>Сесії</h2></div>
+  <div class="panel__body">
+    <p class="muted">
+      Завершує всі активні сесії дашборда — на всіх пристроях і в усіх
+      браузерах, включно з поточним. Роби це після зміни
+      <code>DASHBOARD_PASSWORD</code> або якщо є підозра, що чужий пристрій
+      лишився залогіненим.
+    </p>
+    <form method="post" action="/logout/all"
+          data-confirm="Завершити всі сесії? Доведеться увійти заново — і вам теж.">
+      {% include "_csrf.html" %}
+      <button class="btn btn--danger">Завершити всі сесії</button>
+    </form>
+  </div>
+</div>
 {% endblock %}
