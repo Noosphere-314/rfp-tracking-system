@@ -1,0 +1,50 @@
+<!doctype html>
+{#- Єдиний шаблон поза base.html: сайдбар, топбар і таймер сесії тут не мають
+    сенсу, а це єдиний екран, який побачить сторонній.
+
+    Стиль — той самий /assets/app.css (розділ 3.6: класи .auth / .auth__card).
+    Власного <style> тут навмисно немає: CSP `style-src 'self'` (крок 4)
+    блокує і <style>, і атрибути style=. -#}
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Вхід · RFP Tracker</title>
+<link rel="stylesheet" href="/assets/app.css?v={{ asset_v | default(0) }}">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="mask-icon" href="/assets/favicon.svg" color="#10B981">
+<meta name="theme-color" content="#0B1014">
+</head>
+<body class="auth">
+<main class="auth__card">
+  <img class="auth__logo" src="/assets/logo.svg" alt="" width="76" height="56">
+  <h1 class="auth__name">RFP&nbsp;Tracker</h1>
+
+  {% if reason_text %}
+    {% if reason == 'bye' %}
+      <p class="alert alert--ok" role="status">{{ reason_text }}</p>
+    {% elif reason == 'expired' %}
+      <p class="alert alert--info" role="status">{{ reason_text }}</p>
+    {% else %}
+      <p class="alert alert--err" role="alert">{{ reason_text }}</p>
+    {% endif %}
+  {% endif %}
+
+  <form class="auth__form" method="post" action="/login">
+    <label class="field">
+      <span class="field__label">Пароль</span>
+      <input class="input" type="password" name="password"
+             autocomplete="current-password" autofocus required>
+    </label>
+
+    <input type="hidden" name="next" value="{{ next }}">
+    {#- Єдиний градієнт на екрані (правило палітри, розділ 3.3). -#}
+    <button class="btn btn--primary btn--block" type="submit">Увійти</button>
+  </form>
+
+  <p class="auth__foot">Пароль спільний для команди. Сесія завершиться після
+    {{ idle_minutes }}&nbsp;хв без активності.</p>
+</main>
+</body>
+</html>

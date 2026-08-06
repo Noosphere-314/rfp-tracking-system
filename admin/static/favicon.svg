@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="296" height="296" viewBox="53 108 296 296">
+  <!-- Фавікон: лише сітка квадратів (стрілка прибрана свідомо — на 16px вона
+       перетворюється на пляму). Геометрія і градієнт — 1:1 з logo.svg. -->
+  <defs>
+    <linearGradient id="rfpGrad" gradientUnits="userSpaceOnUse" x1="56" y1="108" x2="460" y2="404">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(53,108)">
+    <rect x="0"   y="0"   width="88" height="88" rx="10" fill="url(#rfpGrad)"/>
+    <rect x="104" y="0"   width="88" height="88" rx="10" fill="url(#rfpGrad)" opacity="0.62"/>
+    <rect x="208" y="0"   width="88" height="88" rx="10" fill="url(#rfpGrad)" opacity="0.32"/>
+    <rect x="0"   y="104" width="88" height="88" rx="10" fill="url(#rfpGrad)" opacity="0.62"/>
+    <rect x="104" y="104" width="88" height="88" rx="10" fill="url(#rfpGrad)" opacity="0.40"/>
+    <rect x="0"   y="208" width="88" height="88" rx="10" fill="url(#rfpGrad)" opacity="0.32"/>
+  </g>
+</svg>

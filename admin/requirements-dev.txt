@@ -1,0 +1,11 @@
+# Тільки для тестів — у прод-образ не потрапляє (admin/Dockerfile ставить
+# лише worker/requirements.txt + admin/requirements.txt).
+#
+# Ставити ПОВЕРХ обох прод-файлів: admin.app імпортує worker.fetchers і
+# worker.http, тож без worker/requirements.txt тести не зберуться.
+#   pip install -r worker/requirements.txt -r admin/requirements.txt \
+#               -r admin/requirements-dev.txt
+#   pytest admin/tests/test_auth.py
+pytest==8.3.4
+# TestClient зі Starlette ходить через httpx; пін той самий, що у воркера.
+httpx==0.28.1

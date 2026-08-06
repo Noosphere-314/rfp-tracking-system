@@ -89,7 +89,10 @@ services:
       - "443:443"
 
   worker:
-    build: ./worker
+    build:
+      # Кореневий контекст, як в admin і kbmcp — див. коментар у worker/Dockerfile.
+      context: .
+      dockerfile: worker/Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:
@@ -137,9 +140,30 @@ services:
       MOCK_N8N: ${MOCK_N8N:-false}
       KBMCP_URL: http://kbmcp:8000
       KB_MCP_TOKEN: ${KB_MCP_TOKEN:-}
+      # Сесійний логін дашборда. Порожній DASHBOARD_PASSWORD або SESSION_SECRET
+      # коротший за 32 символи → контейнер навмисно не стартує (admin/auth.py).
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
+      # Пункт меню «n8n». Плоске значення в .env — вкладену інтерполяцію
+      # ${N8N_URL:-https://n8n.${DOMAIN}} компоуз 2.2.3 псує мовчки.
+      N8N_URL: ${N8N_URL}
+    healthcheck:
+      # Обов'язковий у тому ж коміті, що й fail-fast на env: інакше
+      # `restart: unless-stopped` + RuntimeError = нескінченний crash-loop, а
+      # `docker compose ps` показує контейнер, що рестартиться, як «running».
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     ports:
-      # Engineers only — same access model as the n8n editor: loopback binding,
-      # reach it over Tailscale/SSH. Never routed through Caddy.
+      # F16: дашборд ТЕПЕР публічний — Caddy віддає йому все, що не
+      # /webhook/*, /form/*, /form-waiting-room/* (комміт c5d3e68). Межа
+      # безпеки — сесійний логін у застосунку (admin/auth.py), а не мережа.
+      # Цей порт лишається аварійним входом для інженерів, коли Caddy або
+      # домен зламані (Runbook: ssh -N -L 8080:localhost:8080). Логін діє й
+      # тут; cookie автоматично без Secure, бо схема http.
       - "127.0.0.1:8080:8000"
 
 volumes:

@@ -1,14 +1,20 @@
-"""Engineer-facing admin dashboard.
+"""Панель команди — дашборд RFP Tracker.
 
-Access model mirrors the n8n editor (System-Design.md §9): this service is
-never exposed through Caddy — it binds to localhost on the box and is reached
-over Tailscale or an SSH tunnel. Non-engineers keep using the n8n forms; this
-panel is for the people running the system: health, source management with a
-live test-fetch, keyword/threshold editing, and item/run inspection.
+Доступ (F16, змінено комітом c5d3e68). Раніше сервіс жив за Tailscale і
+твердження «never exposed through Caddy» було правдою; тепер дашборд стоїть на
+публічному домені, а його межа безпеки — сесійний логін у самому застосунку
+(`admin/auth.py`): підписаний cookie, ідл-таймаут, CSRF fail-closed. Порт
+127.0.0.1:8080 лишається аварійним входом через SSH-тунель, коли Caddy або
+домен зламані, і той самий логін діє й там.
 
-It also hosts the local-dev mock of the n8n pipeline (MOCK_N8N=true): the
-worker can point N8N_WEBHOOK_URL here and the full deliver→confirm loop runs
-end-to-end with no Pipedrive, no Claude and no n8n.
+Панель для людей, що ведуть систему: здоров'я, керування джерелами з живим
+тест-фетчем, редагування ключових слів і порогів, перегляд знахідок і прогонів.
+Не-інженери користуються n8n-формами на /form/* (там лишається basic_auth).
+
+Тут же живе локальний мок пайплайна n8n (MOCK_N8N=true): воркер може навести
+N8N_WEBHOOK_URL сюди і повний цикл deliver→confirm проходить наскрізь без
+Pipedrive, Claude і n8n. Публічно цей маршрут закритий на рівні Caddy
+(`handle /mock/* { respond 404 }`).
 """
 
 from __future__ import annotations
@@ -18,14 +24,18 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlencode, urlparse
 
 import psycopg
 import regex
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 from psycopg.rows import dict_row
 
+from admin import auth
 from worker import fetchers
 from worker.fetchers.base import Source
 from worker.http import HttpClient, SourceBlocked
@@ -36,12 +46,239 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 MOCK_N8N = os.environ.get("MOCK_N8N", "").lower() in ("1", "true", "yes")
 WEBHOOK_SECRET = os.environ.get("N8N_WEBHOOK_SECRET", "")
 
-app = FastAPI(title="RFP Tracker Admin", docs_url=None, redoc_url=None)
-templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
+STATIC = Path(__file__).parent / "static"
+
+# Кеш-бастинг: один stat на імпорті → ?v= у base.html і login.html. Без нього
+# правка CSS не доїжджає до браузерів, які тримають старий файл у кеші.
+try:
+    ASSET_V = int((STATIC / "app.css").stat().st_mtime)
+except OSError:  # ассетів немає — краще 0, ніж 500 на кожній сторінці
+    ASSET_V = 0
+
+# Пункт меню «n8n» — з env, не хардкод: локально DOMAIN=localhost, і зашитий
+# прод-URL вів би дев-режим на прод.
+N8N_URL = os.environ.get("N8N_URL", "")
+
+# openapi_url=None, бо docs_url=None НЕ вимикає /openapi.json: карта всіх
+# маршрутів на публічному домені не має цінності для команди і має ненульову —
+# для сканера.
+app = FastAPI(
+    title="RFP Tracker Admin", docs_url=None, redoc_url=None, openapi_url=None
+)
+templates = Jinja2Templates(
+    directory=Path(__file__).parent / "templates",
+    context_processors=[auth.template_context],
+)
+# /assets/, а не /static/: каддівський catch-all віддає адміну все, що не
+# /webhook/*, /form/*, /form-waiting-room/*. Якщо HTML n8n-форми колись
+# запросить щось із /static/..., запит прийде в адмінку і форма зламається.
+app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
 
 
 def db() -> psycopg.Connection:
     return psycopg.connect(DATABASE_URL, row_factory=dict_row, client_encoding="utf8")
+
+
+# ── Презентація: навігація, словники, фільтри (розділ 4) ───────────
+#
+# Навігація живе тут, а не в шаблоні (розділ 2.3): активний пункт визначається
+# nav-ідентифікатором із контексту маршруту, а не
+# `request.url.path.startswith()` — останній зробив би «/» активним завжди.
+
+NAV_GROUPS = [("work", "Робота"), ("cfg", "Налаштування"), ("sys", "Система")]
+NAV = [
+    {"id": "dashboard", "href": "/", "label": "Огляд", "group": "work"},
+    {"id": "items", "href": "/items", "label": "Знахідки", "group": "work"},
+    {"id": "kb", "href": "/kb", "label": "База знань", "group": "work"},
+    {"id": "chat", "href": "/chat", "label": "AI-чат", "group": "work", "soon": True},
+    {"id": "sources", "href": "/sources", "label": "Джерела", "group": "cfg"},
+    {"id": "keywords", "href": "/keywords", "label": "Ключові слова", "group": "cfg"},
+    {"id": "settings", "href": "/settings", "label": "Параметри", "group": "cfg"},
+    {"id": "runs", "href": "/runs", "label": "Історія збору", "group": "sys"},
+    {"id": "briefs", "href": "/briefs", "label": "Бріфи", "group": "sys"},
+]
+
+# ІНВАРІАНТ ЛОКАЛІЗАЦІЇ: українська ТІЛЬКИ в презентації. Значення в URL і в БД
+# лишаються англійськими (`?status=done`) — інакше ламаються закладки,
+# посилання з Telegram і фільтри, які вміє воркер. Скрізь `.get(x, x)`:
+# у БД може з'явитися нове значення (F13 — це один рядок міграції), і воно має
+# показатися як є, а не зникнути.
+ITEM_STATUSES = ["pending", "done", "dead", "seeded", "filtered"]
+STATUS_UA = {
+    "pending": "у черзі",
+    "done": "оброблено",
+    "dead": "не доставлено",
+    "seeded": "засіяно",
+    "filtered": "відсіяно",
+}
+LANE_UA = {"rfp": "RFP", "funding": "фандинг"}
+KIND_UA = {"include": "пропускає", "exclude": "відсікає"}
+MODE_UA = {"run": "звичайний", "seed": "засів"}
+TIER_UA = {"llm": "LLM", "basic": "базовий"}
+
+
+def hl(value: str) -> Markup:
+    """Підсвітка сніпета `ts_headline` (розділ 4.7).
+
+    Порядок «екранувати → підставити теги» тут і є вся безпека: `raw_text`
+    форумного поста може містити літеральний `<script>`, тож спершу все
+    екранується, і лише потім керуючі сентинели \\x02/\\x03 (їх не буває
+    в тексті) стають `<mark>`. `|safe` до сніпета не додавати НІ ЗА ЯКИХ УМОВ.
+    Бонус: перестають ламатися легітимні лапки «» в українських постах.
+    """
+    text = str(escape(value or ""))
+    return Markup(text.replace("\x02", "<mark>").replace("\x03", "</mark>"))
+
+
+templates.env.filters["hl"] = hl
+# Константи презентації — глобалами Jinja, а не context-процесором: вони
+# однакові для кожного запиту, а context-процесори Starlette перезаписують
+# контекст сторінки (`context.update(...)` після нього), тож усе, що маршрут
+# може перевизначити (`nav`, `message`, `error`), сюди класти НЕ можна.
+templates.env.globals.update(
+    NAV=NAV,
+    NAV_GROUPS=NAV_GROUPS,
+    N8N_URL=N8N_URL,
+    asset_v=ASSET_V,
+    mock_n8n=MOCK_N8N,
+    ITEM_STATUSES=ITEM_STATUSES,
+    STATUS_UA=STATUS_UA,
+    LANE_UA=LANE_UA,
+    KIND_UA=KIND_UA,
+    MODE_UA=MODE_UA,
+    TIER_UA=TIER_UA,
+)
+
+# Усі мутуючі маршрути — на одному роутері з `csrf_guard` (розділ 1.9, третій
+# шар). Роутер, а не декоратор поштучно: новий POST потрапляє під захист самим
+# фактом реєстрації тут. Основний, fail-closed бар'єр — перевірка
+# Sec-Fetch-Site/Origin у middleware вище; `/mock/webhook` навмисно лишається
+# поза цим роутером (машинний вхід із власним секретом у заголовку).
+mutations = APIRouter(dependencies=[Depends(auth.csrf_guard)])
+
+
+# ── Авторизація ────────────────────────────────────────────────────
+#
+# Guard — рівно один middleware, зареєстрований першим у файлі, тобто
+# найзовнішній (add_middleware вставляє на позицію 0). Порядок операцій у тілі
+# обов'язковий, див. розділ 1.7 специфікації.
+
+
+@app.middleware("http")
+async def session_guard(request: Request, call_next):
+    path = request.url.path
+
+    # 1. Виключення — ПЕРШИМИ. /mock/webhook не бачить ні auth, ні CSRF.
+    if path in auth.PUBLIC_EXACT or path.startswith(auth.PUBLIC_PREFIX):
+        return await call_next(request)
+
+    # 2. CSRF рівня транспорту — fail CLOSED, без читання тіла (читання body в
+    #    BaseHTTPMiddleware робить форму порожньою в ендпоінті). Покриває кожен
+    #    маршрут, включно з тими, яких ще нема; SameSite=Lax тут другий шар, бо
+    #    rolling re-sign тримає cookie постійно всередині вікна Chrome
+    #    «Lax+POST», де top-level cross-site POST cookie ще несе.
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        site = request.headers.get("sec-fetch-site")
+        origin = request.headers.get("origin")
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        same = (site == "same-origin") or bool(
+            origin and urlparse(origin).netloc == host
+        )
+        if not same:
+            return auth.login_redirect(request, "csrf")
+
+    # 3. Сесія
+    live, had_cookie = auth.session_live(request)
+    if not live:
+        return auth.login_redirect(request, "expired" if had_cookie else "")
+
+    response = await call_next(request)
+
+    # 4. Rolling re-sign + companion cookie + no-store
+    if path not in auth.NO_REISSUE:
+        auth.issue(response, request)
+    if "text/html" in response.headers.get("content-type", ""):
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
+@app.exception_handler(auth.CsrfError)
+async def csrf_error_handler(request: Request, exc: auth.CsrfError):
+    # HTML-редірект, а не голий JSON {"detail": …}.
+    return RedirectResponse("/login?reason=csrf", status_code=303)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, reason: str = "", next: str = "/"):
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "reason": reason,
+            "reason_text": auth.REASONS.get(reason, ""),
+            "next": auth.safe_next(next),
+            "idle_minutes": auth.IDLE_SECONDS // 60,
+        },
+    )
+
+
+@app.post("/login")
+async def login_submit(
+    request: Request, password: str = Form(...), next: str = Form("/")
+):
+    target = auth.safe_next(next)
+    ok, blocked_for = await auth.verify_password(password)
+    if not ok:
+        reason = "throttled" if blocked_for else "bad"
+        log.warning("невдалий вхід у дашборд (reason=%s)", reason)
+        params = {"reason": reason}
+        if target != "/":
+            params["next"] = target
+        return RedirectResponse(f"/login?{urlencode(params)}", status_code=303)
+
+    response = RedirectResponse(target, status_code=303)
+    auth.issue(response, request)
+    return response
+
+
+# /logout тільки POST: GET-логаут префетчиться браузерами і спрацьовує від
+# чужого <img src>.
+@app.post("/logout", dependencies=[Depends(auth.csrf_guard)])
+def logout(request: Request):
+    response = RedirectResponse("/login?reason=bye", status_code=303)
+    auth.clear(response, request)
+    return response
+
+
+@app.post("/logout/all", dependencies=[Depends(auth.csrf_guard)])
+def logout_all(request: Request):
+    """Кнопка на /settings — природне місце після ротації пароля."""
+    epoch = auth.bump_epoch()
+    log.info("усі сесії завершено, session_epoch=%s", epoch)
+    response = RedirectResponse("/login?reason=bye", status_code=303)
+    auth.clear(response, request)
+    return response
+
+
+@app.get("/session/ping")
+def session_ping():
+    """204, no-op — кнопка «Залишитись» у банері таймера. Окремий keepalive не
+    потрібен: middleware і так продовжив сесію ще до входу в хендлер."""
+    return Response(status_code=204)
+
+
+@app.get("/healthz")
+def healthz():
+    """Публічний. Compose healthcheck б'є сюди: без нього `restart:
+    unless-stopped` + fail-fast на env дають нескінченний crash-loop, який
+    `docker compose ps` показує як «running»."""
+    try:
+        with db() as conn:
+            conn.execute("SELECT 1").fetchone()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("healthz: БД не відповідає (%s)", exc)
+        return JSONResponse({"ok": False, "db": False}, status_code=503)
+    return {"ok": True}
 
 
 # ── Dashboard ──────────────────────────────────────────────────────
@@ -57,17 +294,32 @@ def dashboard(request: Request):
             )
         }
         last_runs = conn.execute(
-            "SELECT * FROM worker_runs ORDER BY started_at DESC LIMIT 10"
+            "SELECT * FROM worker_runs ORDER BY started_at DESC LIMIT 5"
         ).fetchall()
+        # Сортування «найпроблемніші зверху» + LIMIT (розділ 4.1): попереднє
+        # `ORDER BY enabled DESC, name` без ліміту ховало зламане джерело
+        # посеред алфавіту. На головній має бути видно проблему, а не повний
+        # реєстр — повний живе на /sources.
         source_health = conn.execute(
             """
             SELECT s.id, s.name, s.type, s.ecosystem, s.enabled, s.quarantined,
-                   s.lane, s.last_success_at, s.last_item_at, s.consecutive_failures,
+                   s.quarantine_reason, s.lane, s.last_success_at, s.last_item_at,
+                   s.consecutive_failures,
                    count(i.item_uid) FILTER (WHERE i.first_seen > now() - interval '7 days') AS items_7d
               FROM sources s LEFT JOIN seen_items i ON i.source_id = s.id
-             GROUP BY s.id ORDER BY s.enabled DESC, s.name
+             GROUP BY s.id
+             ORDER BY s.consecutive_failures DESC, s.last_item_at ASC NULLS FIRST
+             LIMIT 12
             """
         ).fetchall()
+        sources_total = conn.execute("SELECT count(*) AS n FROM sources").fetchone()["n"]
+        # Чесний бейдж режиму (розділ 4.1, F6): поки класифікатор — заглушка з
+        # захардкодженим confidence 0.55, будь-яка аналітика по впевненості
+        # малювала б сотню однакових барів і виглядала б робочою.
+        last_verdict = conn.execute(
+            "SELECT prompt_version FROM items_log WHERE event = 'classified' "
+            "ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
         recent_pending = conn.execute(
             """
             SELECT i.*, s.name AS source_name FROM seen_items i
@@ -81,11 +333,15 @@ def dashboard(request: Request):
         request,
         "dashboard.html",
         {
+            "nav": "dashboard",
             "status_counts": status_counts,
             "last_runs": last_runs,
             "source_health": source_health,
+            "sources_total": sources_total,
             "recent_pending": recent_pending,
-            "mock_n8n": MOCK_N8N,
+            "stub_classifier": bool(
+                last_verdict and last_verdict["prompt_version"] == "stub-no-llm"
+            ),
         },
     )
 
@@ -93,8 +349,20 @@ def dashboard(request: Request):
 # ── Sources ────────────────────────────────────────────────────────
 
 
-@app.get("/sources", response_class=HTMLResponse)
-def sources_page(request: Request, message: str = "", error: str = ""):
+SOURCE_FORM_FIELDS = ("type", "name", "ecosystem", "url", "category", "lane", "config")
+
+
+def _render_sources(
+    request: Request,
+    *,
+    message: str = "",
+    error: str = "",
+    form: dict | None = None,
+    status_code: int = 200,
+):
+    """Одна точка рендеру /sources — щоб помилкова гілка `add_source` могла
+    повернути сторінку з уже введеними значеннями (розділ 4.2), а не редірект,
+    після якого 7 полів і JSON-конфіг доводиться набирати заново."""
     with db() as conn:
         rows = conn.execute(
             "SELECT * FROM sources ORDER BY enabled DESC, quarantined, type, name"
@@ -103,15 +371,23 @@ def sources_page(request: Request, message: str = "", error: str = ""):
         request,
         "sources.html",
         {
+            "nav": "sources",
             "sources": rows,
             "fetcher_types": sorted(fetchers.FETCHERS),
             "message": message,
             "error": error,
+            "form": {key: (form or {}).get(key, "") for key in SOURCE_FORM_FIELDS},
         },
+        status_code=status_code,
     )
 
 
-@app.post("/sources/{source_id}/toggle")
+@app.get("/sources", response_class=HTMLResponse)
+def sources_page(request: Request, message: str = "", error: str = ""):
+    return _render_sources(request, message=message, error=error)
+
+
+@mutations.post("/sources/{source_id}/toggle")
 def toggle_source(source_id: int):
     with db() as conn:
         conn.execute(
@@ -142,8 +418,9 @@ def _test_fetch(row: dict) -> tuple[int, str]:
             return 0, f"{type(exc).__name__}: {exc}"
 
 
-@app.post("/sources/add")
+@mutations.post("/sources/add")
 def add_source(
+    request: Request,
     type: str = Form(...),
     name: str = Form(...),
     ecosystem: str = Form(...),
@@ -152,16 +429,32 @@ def add_source(
     lane: str = Form("rfp"),
     config: str = Form("{}"),
 ):
-    """Add with live test-fetch — the same guarantee the n8n form gives:
-    a source that cannot produce items right now is not saved as enabled."""
+    """Додавання з живим тест-фетчем — та сама гарантія, що дає n8n-форма:
+    джерело, яке зараз не може віддати жодного елемента, не зберігається
+    увімкненим.
+
+    Помилкові гілки повертають ВІДРЕНДЕРЕНУ сторінку зі збереженими полями
+    (розділ 4.2), а не редірект: тест-фетч триває до 30 с, і втрачати після
+    нього сім полів разом із JSON-конфігом — найдорожча дрібниця цієї сторінки.
+    """
+    submitted = {
+        "type": type, "name": name, "ecosystem": ecosystem, "url": url,
+        "category": category, "lane": lane, "config": config,
+    }
     if type not in fetchers.FETCHERS:
-        return RedirectResponse(f"/sources?error=unknown+type+{type}", status_code=303)
+        return _render_sources(
+            request, error=f"Невідомий тип джерела: {type}",
+            form=submitted, status_code=400,
+        )
     try:
         config_obj = json.loads(config or "{}")
         if not isinstance(config_obj, dict):
-            raise ValueError("config must be a JSON object")
+            raise ValueError("конфіг має бути JSON-об'єктом {…}")
     except ValueError as exc:
-        return RedirectResponse(f"/sources?error=bad+config:+{exc}", status_code=303)
+        return _render_sources(
+            request, error=f"Некоректний JSON у конфізі: {exc}",
+            form=submitted, status_code=400,
+        )
 
     candidate = {
         "id": 0, "type": type, "name": name.strip(), "ecosystem": ecosystem.strip(),
@@ -170,7 +463,10 @@ def add_source(
     }
     count, error = _test_fetch(candidate)
     if error:
-        return RedirectResponse(f"/sources?error=test-fetch failed: {error}", status_code=303)
+        return _render_sources(
+            request, error=f"Тест-фетч не пройшов: {error}",
+            form=submitted, status_code=400,
+        )
 
     with db() as conn:
         conn.execute(
@@ -187,7 +483,8 @@ def add_source(
         )
         conn.commit()
     return RedirectResponse(
-        f"/sources?message=saved — test-fetch returned {count} item(s)", status_code=303
+        f"/sources?message=Збережено — тест-фетч повернув елементів: {count}",
+        status_code=303,
     )
 
 
@@ -198,12 +495,24 @@ def add_source(
 def keywords_page(request: Request, message: str = "", error: str = ""):
     with db() as conn:
         rows = conn.execute("SELECT * FROM keywords ORDER BY kind, id").fetchall()
+    # Дві протилежні за змістом сутності розводяться по двох панелях (розділ
+    # 4.4): в одній таблиці вони розрізнялися лише бейджем — постійне джерело
+    # помилок прочитання. Невалідні закріплені зверху окремою секцією.
     return templates.TemplateResponse(
-        request, "keywords.html", {"keywords": rows, "message": message, "error": error}
+        request,
+        "keywords.html",
+        {
+            "nav": "keywords",
+            "invalid": [k for k in rows if not k["valid"]],
+            "include": [k for k in rows if k["valid"] and k["kind"] == "include"],
+            "exclude": [k for k in rows if k["valid"] and k["kind"] == "exclude"],
+            "message": message,
+            "error": error,
+        },
     )
 
 
-@app.post("/keywords/add")
+@mutations.post("/keywords/add")
 def add_keyword(pattern: str = Form(...), kind: str = Form(...)):
     if kind not in ("include", "exclude"):
         raise HTTPException(400, "kind must be include or exclude")
@@ -211,7 +520,9 @@ def add_keyword(pattern: str = Form(...), kind: str = Form(...)):
     try:
         regex.compile(pattern, regex.IGNORECASE)
     except regex.error as exc:
-        return RedirectResponse(f"/keywords?error=bad pattern: {exc}", status_code=303)
+        return RedirectResponse(
+            f"/keywords?error=Патерн не компілюється: {exc}", status_code=303
+        )
 
     with db() as conn:
         conn.execute(
@@ -220,10 +531,10 @@ def add_keyword(pattern: str = Form(...), kind: str = Form(...)):
             (pattern, kind),
         )
         conn.commit()
-    return RedirectResponse("/keywords?message=saved", status_code=303)
+    return RedirectResponse("/keywords?message=Збережено", status_code=303)
 
 
-@app.post("/keywords/{keyword_id}/toggle")
+@mutations.post("/keywords/{keyword_id}/toggle")
 def toggle_keyword(keyword_id: int):
     with db() as conn:
         conn.execute(
@@ -234,36 +545,237 @@ def toggle_keyword(keyword_id: int):
 
 
 # ── Settings ───────────────────────────────────────────────────────
+#
+# `session_epoch` — службовий лічильник відкликання сесій (admin/auth.py).
+# Не рендериться і не редагується: ручна правка розлогінила б команду без
+# жодного натяку на причину.
+HIDDEN_SETTINGS = {"session_epoch"}
+
+SETTING_GROUPS = [
+    ("classify", "Класифікація"),
+    ("volume", "Обсяг і контроль"),
+    ("channels", "Канали"),
+    ("leads", "Ліди"),
+    ("other", "Інше"),
+]
+
+# Підказки навмисно чесні (розділ 7.12): кілька ключів зараз не читає ніхто,
+# і підказка, що описує неіснуючу поведінку, гірша за її відсутність.
+SETTING_META = {
+    "confidence_threshold": {
+        "group": "classify", "label": "Поріг автоліда", "type": "float",
+        "hint": "0…1. Вище порога — лід створюється автоматично. Читає n8n (rfp-main).",
+    },
+    "review_band_low": {
+        "group": "classify", "label": "Нижня межа review-смуги", "type": "float",
+        "hint": "0…1, не більше за поріг автоліда. Між ними — у канал на перегляд.",
+    },
+    "classifier_prompt_version": {
+        "group": "classify", "label": "Версія промпта", "type": "text",
+        "hint": "Поки не використовується: класифікатор у STUB-режимі пише "
+                "prompt_version='stub-no-llm' самостійно.",
+    },
+    "max_leads_per_run": {
+        "group": "volume", "label": "Максимум лідів за прогін", "type": "int",
+        "min": 1, "max": 500,
+        "hint": "1…500. Поки не використовується — жоден компонент цього ключа не читає.",
+    },
+    "lead_floor_7d": {
+        "group": "volume", "label": "Мінімум лідів за 7 днів", "type": "int",
+        "min": 0, "max": 100,
+        "hint": "0…100. Менше — алерт «щось зламалося вгорі» (читає n8n rfp-digest).",
+    },
+    "source_dark_days": {
+        "group": "volume", "label": "Днів мовчання джерела до алерту", "type": "int",
+        "min": 1, "max": 365,
+        "hint": "1…365. Читає воркер на кожному прогоні — нечислове значення "
+                "зупиняє прогін посеред циклу.",
+    },
+    "alert_channel": {
+        "group": "channels", "label": "Канал алертів", "type": "channel",
+        "hint": "Починається з #. Поки не використовується: Slack-ноди вимкнені, "
+                "сповіщення йдуть у Telegram.",
+    },
+    "review_channel": {
+        "group": "channels", "label": "Канал перегляду", "type": "channel",
+        "hint": "Починається з #. Поки не використовується (Slack-ноди вимкнені).",
+    },
+    "digest_channel": {
+        "group": "channels", "label": "Канал дайджесту", "type": "channel",
+        "hint": "Починається з #. Поки не використовується (Slack-ноди вимкнені).",
+    },
+    "lead_title_template": {
+        "group": "leads", "label": "Шаблон заголовка ліда", "type": "text",
+        "hint": "Плейсхолдери {label}, {ecosystem}, {title}. Поки не використовується.",
+    },
+}
+
+
+def validate_setting(key: str, value: str) -> tuple[bool, str]:
+    """→ (ок, текст помилки українською).
+
+    Без цієї перевірки `0.7.` у `confidence_threshold` тихо ламає класифікацію
+    на наступному прогоні, а «14 днів» у `source_dark_days` кидає ValueError
+    прямо в pipeline.py посеред циклу (F11). Редизайн робить сторінку зручною,
+    тобто підвищує шанси, що сюди хтось надрукує.
+    """
+    meta = SETTING_META.get(key, {})
+    kind = meta.get("type", "text")
+    label = meta.get("label", key)
+    value = value.strip()
+
+    if kind == "float":
+        try:
+            number = float(value)
+        except ValueError:
+            return False, f"«{label}»: потрібне число від 0 до 1, а не «{value}»"
+        if not 0.0 <= number <= 1.0:
+            return False, f"«{label}»: число має бути в межах 0…1"
+    elif kind == "int":
+        try:
+            number = int(value)
+        except ValueError:
+            return False, f"«{label}»: потрібне ціле число, а не «{value}»"
+        low, high = meta.get("min", 0), meta.get("max", 10**9)
+        if not low <= number <= high:
+            return False, f"«{label}»: число має бути в межах {low}…{high}"
+    elif kind == "channel":
+        if not value.startswith("#"):
+            return False, f"«{label}»: назва каналу має починатися з #"
+    if not value:
+        return False, f"«{label}»: порожнє значення"
+    return True, ""
+
+
+def _to_float(value, default: float) -> float:
+    try:
+        return min(max(float(value), 0.0), 1.0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _render_settings(
+    request: Request,
+    *,
+    message: str = "",
+    error: str = "",
+    overrides: dict | None = None,
+    status_code: int = 200,
+):
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM settings ORDER BY key").fetchall()
+
+    values, grouped = {}, {}
+    for row in rows:
+        if row["key"] in HIDDEN_SETTINGS:
+            continue
+        item = dict(row)
+        if overrides and row["key"] in overrides:
+            item["value"] = overrides[row["key"]]
+        meta = SETTING_META.get(row["key"], {})
+        # Ключ, якого нема в мапі, лишається видимим звичайним текстовим полем:
+        # нова міграція не має робити налаштування невидимим.
+        item["label"] = meta.get("label", row["key"])
+        item["hint"] = meta.get("hint", "")
+        item["kind"] = meta.get("type", "text")
+        values[row["key"]] = item["value"]
+        grouped.setdefault(meta.get("group", "other"), []).append(item)
+
+    low = _to_float(values.get("review_band_low"), 0.4)
+    high = _to_float(values.get("confidence_threshold"), 0.7)
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "nav": "settings",
+            "groups": [
+                (gid, label, grouped[gid])
+                for gid, label in SETTING_GROUPS
+                if gid in grouped
+            ],
+            # Смуга подвійного порога (A8) малюється як SVG із порахованими
+            # координатами: CSP забороняє і атрибут style, і <style>, а
+            # SVG-атрибути дозволені.
+            "band": {"low": low, "high": min(max(high, low), 1.0)},
+            "message": message,
+            "error": error,
+        },
+        status_code=status_code,
+    )
 
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, message: str = ""):
-    with db() as conn:
-        rows = conn.execute("SELECT * FROM settings ORDER BY key").fetchall()
-    return templates.TemplateResponse(
-        request, "settings.html", {"settings": rows, "message": message}
-    )
+    return _render_settings(request, message=message)
 
 
-@app.post("/settings/save")
+@mutations.post("/settings/save")
 async def save_settings(request: Request):
     form = await request.form()
+    submitted = {k: v for k, v in form.items() if isinstance(v, str)}
+
     with db() as conn:
-        for key, value in form.items():
+        # Whitelist із БД, а не з форми (F11): раніше сюди писався БУДЬ-ЯКИЙ
+        # ключ форми, включно з `csrf` і будь-яким майбутнім службовим полем.
+        allowed = {
+            row["key"] for row in conn.execute("SELECT key FROM settings")
+        } - HIDDEN_SETTINGS
+        current = {
+            row["key"]: row["value"]
+            for row in conn.execute("SELECT key, value FROM settings")
+        }
+
+        pending = {}
+        for key, value in submitted.items():
+            if key not in allowed:
+                continue
+            ok, err = validate_setting(key, value)
+            if not ok:
+                return _render_settings(
+                    request, error=err, overrides=submitted, status_code=400
+                )
+            pending[key] = value.strip()
+
+        # Перехресна перевірка: 0 ≤ review_band_low ≤ confidence_threshold ≤ 1.
+        merged = {**current, **pending}
+        low, high = merged.get("review_band_low"), merged.get("confidence_threshold")
+        if low is not None and high is not None:
+            try:
+                if float(low) > float(high):
+                    return _render_settings(
+                        request,
+                        error="Нижня межа review-смуги не може бути більшою за "
+                              "поріг автоліда — інакше review-смуга порожня, а "
+                              "частина знахідок зникає мовчки",
+                        overrides=submitted,
+                        status_code=400,
+                    )
+            except ValueError:
+                pass
+
+        for key, value in pending.items():
             conn.execute(
                 "UPDATE settings SET value = %s, updated_at = now(), "
                 "updated_by = 'admin-ui' WHERE key = %s AND value IS DISTINCT FROM %s",
                 (value, key, value),
             )
         conn.commit()
-    return RedirectResponse("/settings?message=saved", status_code=303)
+    return RedirectResponse("/settings?message=Збережено", status_code=303)
 
 
 # ── Items & runs ───────────────────────────────────────────────────
 
 
 @app.get("/items", response_class=HTMLResponse)
-def items_page(request: Request, status: str = "", source_id: int = 0, page: int = 0):
+def items_page(
+    request: Request,
+    status: str = "",
+    source_id: int = 0,
+    q: str = "",
+    page: int = 0,
+):
+    # Дефолт «усі» НЕ змінюється (розділ 4.3): `done` не означає ліда (F5), а
+    # зміна дефолту тихо перевизначила б сенс наявних посилань /items?status=.
     where, params = [], []
     if status:
         where.append("i.status = %s")
@@ -271,6 +783,9 @@ def items_page(request: Request, status: str = "", source_id: int = 0, page: int
     if source_id:
         where.append("i.source_id = %s")
         params.append(source_id)
+    if q:
+        where.append("i.title ILIKE %s")
+        params.append(f"%{q}%")
     clause = ("WHERE " + " AND ".join(where)) if where else ""
 
     with db() as conn:
@@ -290,22 +805,43 @@ def items_page(request: Request, status: str = "", source_id: int = 0, page: int
         request,
         "items.html",
         {
-            "items": rows, "status": status, "source_id": source_id,
-            "page": page, "source_options": source_options,
+            "nav": "items", "items": rows, "status": status, "source_id": source_id,
+            "q": q, "page": page, "source_options": source_options,
         },
     )
 
 
 @app.get("/runs", response_class=HTMLResponse)
-def runs_page(request: Request):
+def runs_page(request: Request, mode: str = "", limit: int = 50):
+    limit = 200 if limit == 200 else 50
+    where = "WHERE mode = %s" if mode else ""
     with db() as conn:
         rows = conn.execute(
-            "SELECT * FROM worker_runs ORDER BY started_at DESC LIMIT 50"
+            f"""
+            SELECT *, extract(epoch FROM (finished_at - started_at))::int AS duration_s
+              FROM worker_runs {where}
+             ORDER BY started_at DESC LIMIT {limit}
+            """,
+            (mode,) if mode else (),
         ).fetchall()
-    return templates.TemplateResponse(request, "runs.html", {"runs": rows})
+        modes = conn.execute(
+            "SELECT DISTINCT mode FROM worker_runs ORDER BY mode"
+        ).fetchall()
+    return templates.TemplateResponse(
+        request,
+        "runs.html",
+        {"nav": "runs", "runs": rows, "mode": mode, "limit": limit, "modes": modes},
+    )
 
 
 # ── Knowledge base ─────────────────────────────────────────────────
+
+
+# Сентинели підсвітки — керуючі символи, а не «»: `ts_headline` мусить бути
+# екранований разом із текстом поста (він може містити літеральний <script>),
+# тож теги <mark> підставляє фільтр `hl` уже ПІСЛЯ екранування. Бонус:
+# перестають ламатися легітимні лапки «» в українських постах.
+HEADLINE_OPTS = "MaxWords=35, MinWords=15, StartSel=\x02, StopSel=\x03"
 
 
 @app.get("/kb", response_class=HTMLResponse)
@@ -314,7 +850,8 @@ def kb_page(request: Request, q: str = "", forum: str = ""):
         forums = conn.execute(
             """
             SELECT f.*, count(DISTINCT t.id) AS topics, count(p.id) AS posts,
-                   max(t.bumped_at) AS newest_activity
+                   max(t.bumped_at) AS newest_activity,
+                   extract(day FROM now() - max(t.bumped_at))::int AS stale_days
               FROM kb.forums f
               LEFT JOIN kb.topics t ON t.forum_slug = f.forum_slug
               LEFT JOIN kb.posts p ON p.topic_ref = t.id
@@ -329,12 +866,13 @@ def kb_page(request: Request, q: str = "", forum: str = ""):
                 SELECT t.forum_slug, t.title, t.category_name,
                        t.url || '/' || p.post_number AS post_url,
                        p.author, p.posted_at,
-                       -- «»-markers, not <b>: raw_text can contain literal
-                       -- '<script>' (forum code blocks, entities decoded at
-                       -- ingest), so the template must autoescape the snippet.
+                       -- Керуючі сентинели, не <b>: raw_text може містити
+                       -- літеральний '<script>' (блоки коду на форумі,
+                       -- сутності розкодовані на інжесті), тож шаблон
+                       -- зобов'язаний екранувати сніпет — це робить фільтр hl.
                        ts_headline('english', p.raw_text,
                                    websearch_to_tsquery('english', %(q)s),
-                                   'MaxWords=35, MinWords=15, StartSel=«, StopSel=»') AS snippet
+                                   %(opts)s) AS snippet
                   FROM kb.posts p JOIN kb.topics t ON t.id = p.topic_ref
                  WHERE p.body_tsv @@ websearch_to_tsquery('english', %(q)s)
                    AND (%(forum)s = '' OR t.forum_slug = %(forum)s)
@@ -342,7 +880,7 @@ def kb_page(request: Request, q: str = "", forum: str = ""):
                                      websearch_to_tsquery('english', %(q)s)) DESC
                  LIMIT 25
                 """,
-                {"q": q, "forum": forum},
+                {"q": q, "forum": forum, "opts": HEADLINE_OPTS},
             ).fetchall()
 
         recent_queries = conn.execute(

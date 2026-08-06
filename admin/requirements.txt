@@ -2,3 +2,6 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 jinja2==3.1.5
 python-multipart==0.0.20
+# Підпис сесійного cookie (admin/auth.py). Рівно одна нова залежність на всю
+# авторизацію: TimestampSigner дає підпис + вік токена без БД на гарячому шляху.
+itsdangerous==2.2.0

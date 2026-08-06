@@ -126,6 +126,28 @@ jobs:
           "
           done
 
+  tests:
+    name: Dashboard auth is fail-closed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # admin.app imports worker.fetchers / worker.http, so the worker pins are
+      # part of the test environment. No Postgres here on purpose: the auth
+      # tests never reach a handler that touches the database.
+      - name: Install admin + worker dependencies
+        run: |
+          pip install -r worker/requirements.txt \
+                      -r admin/requirements.txt \
+                      -r admin/requirements-dev.txt
+
+      - name: pytest
+        run: pytest admin/tests -q
+
   images:
     name: Docker images build
     runs-on: ubuntu-latest
@@ -135,8 +157,13 @@ jobs:
         service: [worker, admin, mcp]
     steps:
       - uses: actions/checkout@v4
+      # All three Dockerfiles take the REPO ROOT as their build context, the
+      # same way compose invokes them. `docker build ./<svc>` was building with
+      # the service directory as context, so admin/ (COPY worker/requirements.txt)
+      # and mcp/ (COPY mcp/requirements.txt) failed outright — this job has been
+      # red, which is why "just add smoke tests to CI" never helped.
       - name: Build ${{ matrix.service }}
-        run: docker build -t rfp-${{ matrix.service }}:ci ./${{ matrix.service }}
+        run: docker build -f ${{ matrix.service }}/Dockerfile -t rfp-${{ matrix.service }}:ci .
 
   compose:
     name: Compose files parse

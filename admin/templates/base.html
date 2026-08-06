@@ -1,82 +1,107 @@
+{#- Каркас дашборда v2 (розділ 2 специфікації).
+    Рівно два контентні слоти — controls і data, — і controls рендериться
+    фізично вище: «керування зверху» стає властивістю успадкування шаблонів,
+    а не дисципліни рев'ю.
+
+    ТИМЧАСОВО тут живе ще й {% block content %} — крок 2 міняє CSS і каркас,
+    а 9 старих шаблонів переходять на controls/data аж на кроці 3. Без цього
+    застосунок лежав би між двома комітами. Крок 3 видаляє і блок content,
+    і NAV-фолбек нижче (коли app.py почне передавати NAV/NAV_GROUPS).
+
+    `csrf` у _csrf.html приходить із context processor auth.template_context,
+    тож партіал працює на будь-якій сторінці без правок хендлера.
+-#}
+{%- set nav_groups = NAV_GROUPS if NAV_GROUPS is defined else [
+      ("work", "Робота"), ("cfg", "Налаштування"), ("sys", "Система")] -%}
+{#- Джерело правди для навігації — NAV в app.py (розділ 2.3). Список нижче
+    вмикається лише доти, доки app.py його не передає. -#}
+{%- set nav_items = NAV if NAV is defined else [
+      {"id": "dashboard", "href": "/",         "label": "Огляд",         "group": "work"},
+      {"id": "items",     "href": "/items",    "label": "Знахідки",      "group": "work"},
+      {"id": "kb",        "href": "/kb",       "label": "База знань",    "group": "work"},
+      {"id": "sources",   "href": "/sources",  "label": "Джерела",       "group": "cfg"},
+      {"id": "keywords",  "href": "/keywords", "label": "Ключові слова", "group": "cfg"},
+      {"id": "settings",  "href": "/settings", "label": "Параметри",     "group": "cfg"},
+      {"id": "runs",      "href": "/runs",     "label": "Історія збору", "group": "sys"}] -%}
 <!doctype html>
-<html lang="en">
+<html lang="uk">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}RFP Tracker{% endblock %} · Admin</title>
-<style>
-  :root {
-    --bg: #0f1419; --panel: #1a2129; --border: #2b3540; --text: #d9e1e8;
-    --muted: #8a99a8; --accent: #4da3ff; --ok: #3fb96b; --warn: #e0a63d;
-    --bad: #e05d5d; --seed: #7d8ca0;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
-         background: var(--bg); color: var(--text); }
-  nav { display: flex; gap: 4px; align-items: center; padding: 10px 20px;
-        background: var(--panel); border-bottom: 1px solid var(--border);
-        position: sticky; top: 0; }
-  nav .brand { font-weight: 700; margin-right: 16px; color: var(--accent); }
-  nav a { color: var(--muted); text-decoration: none; padding: 6px 12px; border-radius: 6px; }
-  nav a:hover, nav a.active { color: var(--text); background: var(--border); }
-  main { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
-  h1 { font-size: 20px; margin: 0 0 16px; }
-  h2 { font-size: 15px; margin: 28px 0 10px; color: var(--muted);
-       text-transform: uppercase; letter-spacing: .05em; }
-  table { width: 100%; border-collapse: collapse; background: var(--panel);
-          border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border);
-           vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
-  tr:last-child td { border-bottom: none; }
-  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-          padding: 14px 18px; min-width: 130px; }
-  .card .num { font-size: 26px; font-weight: 700; }
-  .card .lbl { color: var(--muted); font-size: 12px; text-transform: uppercase; }
-  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
-  .b-pending { background: #3d3313; color: var(--warn); }
-  .b-done { background: #14331f; color: var(--ok); }
-  .b-dead { background: #3a1717; color: var(--bad); }
-  .b-seeded, .b-filtered { background: #232b34; color: var(--seed); }
-  .b-on { background: #14331f; color: var(--ok); }
-  .b-off { background: #232b34; color: var(--seed); }
-  .b-quarantine { background: #3a1717; color: var(--bad); }
-  .b-rfp { background: #16283d; color: var(--accent); }
-  .b-funding { background: #33213d; color: #c08fe8; }
-  form.inline { display: inline; }
-  button, input, select, textarea {
-    font: inherit; color: var(--text); background: var(--bg);
-    border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
-  button { cursor: pointer; background: var(--border); }
-  button:hover { border-color: var(--accent); }
-  button.small { padding: 2px 10px; font-size: 12px; }
-  .msg { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
-  .msg.ok { background: #14331f; color: var(--ok); }
-  .msg.err { background: #3a1717; color: var(--bad); }
-  .muted { color: var(--muted); }
-  .grid-form { display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px;
-               max-width: 720px; background: var(--panel); padding: 16px;
-               border: 1px solid var(--border); border-radius: 8px; }
-  .grid-form textarea { font-family: ui-monospace, monospace; min-height: 90px; }
-  a { color: var(--accent); }
-  .wrap { overflow-x: auto; }
-  code { background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
-</style>
+<title>{% block title %}RFP Tracker{% endblock %} · RFP Tracker</title>
+<link rel="stylesheet" href="/assets/app.css?v={{ asset_v | default(0) }}">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="mask-icon" href="/assets/favicon.svg" color="#10B981">
+<meta name="theme-color" content="#0B1014">
 </head>
-<body>
-<nav>
-  <span class="brand">RFP Tracker</span>
-  <a href="/">Dashboard</a>
-  <a href="/sources">Sources</a>
-  <a href="/keywords">Keywords</a>
-  <a href="/settings">Settings</a>
-  <a href="/items">Items</a>
-  <a href="/runs">Runs</a>
-  <a href="/kb">KB</a>
-</nav>
-<main>
-{% block content %}{% endblock %}
-</main>
+<body class="app{% block body_class %}{% endblock %}">
+<a class="skip" href="#main">До вмісту</a>
+<input type="checkbox" id="nav-toggle" hidden>
+
+<aside class="sidebar">
+  <a class="brand" href="/">
+    <img class="brand__mark" src="/assets/logo-mark.svg" alt="" width="30" height="22">
+    <span class="brand__name">RFP&nbsp;Tracker</span>
+  </a>
+
+  <nav class="nav" aria-label="Основна навігація">
+    {% for group, label in nav_groups %}
+      <p class="nav__group">{{ label }}</p>
+      {% for it in nav_items if it.group == group %}
+        <a class="nav__item{{ ' is-active' if nav == it.id }}" href="{{ it.href }}"
+           {% if nav == it.id %}aria-current="page"{% endif %}>{{ it.label }}
+           {% if it.soon %}<span class="badge b-soon">скоро</span>{% endif %}</a>
+      {% endfor %}
+    {% endfor %}
+    {% if N8N_URL %}
+    <p class="nav__group">Зовнішнє</p>
+    <a class="nav__item nav__item--ext" href="{{ N8N_URL }}" target="_blank"
+       rel="noopener noreferrer" aria-label="n8n, відкриється у новій вкладці">
+       n8n <span aria-hidden="true">↗</span></a>
+    {% endif %}
+  </nav>
+
+  <div class="sidebar__foot">
+    <div class="session" id="session-timer"><span class="session__dot"></span>
+      <span class="session__val">--:--</span></div>
+    <form method="post" action="/logout">{% include "_csrf.html" %}
+      <button class="btn btn--ghost btn--block">Вийти</button></form>
+  </div>
+</aside>
+
+<div class="shell">
+  <header class="topbar">
+    <label class="topbar__burger" for="nav-toggle" aria-label="Меню">☰</label>
+    <div class="topbar__title">
+      {% if self.h1() | trim %}<h1>{% block h1 %}{% endblock %}</h1>{% endif %}
+      {% if self.sub() | trim %}<p class="topbar__sub">{% block sub %}{% endblock %}</p>{% endif %}
+    </div>
+    <div class="topbar__meta">
+      {% if mock_n8n %}<span class="badge b-warn">MOCK n8n</span>{% endif %}
+      {% block topbar_actions %}{% endblock %}
+    </div>
+  </header>
+
+  <main id="main" class="content{% block content_mod %}{% endblock %}">
+    {% if message %}<div class="alert alert--ok" role="status">{{ message }}</div>{% endif %}
+    {% if error %}<div class="alert alert--err" role="alert">{{ error }}</div>{% endif %}
+
+    {#- :empty тут не годиться — він відвалюється на єдиному пробільному
+        текстовому вузлі, тобто {% block controls %}\n{% endblock %} дав би
+        порожню рамку. -#}
+    {% if self.controls() | trim %}
+    <section class="controls" aria-label="Керування">{% block controls %}{% endblock %}</section>
+    {% endif %}
+    <section class="data">{% block data %}{% endblock %}</section>
+
+    {#- ТИМЧАСОВО: сумісність зі старими шаблонами. Видаляється на кроці 3. -#}
+    {% if self.content() | trim %}
+    <section class="data">{% block content %}{% endblock %}</section>
+    {% endif %}
+  </main>
+</div>
+
+<label class="scrim" for="nav-toggle" aria-hidden="true"></label>
+<script src="/assets/app.js?v={{ asset_v | default(0) }}" defer></script>
 </body>
 </html>

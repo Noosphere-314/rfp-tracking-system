@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="401" height="296" viewBox="53 108 401 296">
+  <defs>
+    <linearGradient id="rfpGrad" gradientUnits="userSpaceOnUse" x1="56" y1="108" x2="460" y2="404">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(53,108)">
+    <rect x="0"   y="0"   width="88" height="88" rx="10" fill="url(#rfpGrad)"/>
+    <rect x="104" y="0"   width="88" height="88" rx="10" fill="url(#rfpGrad)" opacity="0.62"/>
+    <rect x="208" y="0"   width="88" height="88" rx="10" fill="url(#rfpGrad)" opacity="0.32"/>
+    <rect x="0"   y="104" width="88" height="88" rx="10" fill="url(#rfpGrad)" opacity="0.62"/>
+    <rect x="104" y="104" width="88" height="88" rx="10" fill="url(#rfpGrad)" opacity="0.40"/>
+    <rect x="0"   y="208" width="88" height="88" rx="10" fill="url(#rfpGrad)" opacity="0.32"/>
+    <path d="M 336 44 L 392 44 M 372 24 L 394 44 L 372 64" stroke="url(#rfpGrad)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+</svg>
