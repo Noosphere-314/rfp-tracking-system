@@ -307,6 +307,11 @@
       if (form.dataset.chatBusy === "1") return;
       var text = textarea.value.trim();
       if (!text) return;
+      // FormData — СТРОГО до disabled: вимкнені поля не серіалізуються
+      // (стандарт HTML), і POST полетить без message → 422. Знайдено лише
+      // в живому браузері 2026-08-07 — curl і TestClient ліплять тіло самі
+      // й повз розмітку, тому жоден бекенд-тест цього не бачить.
+      var body = new FormData(form);
       form.dataset.chatBusy = "1";
       textarea.disabled = true;
 
@@ -320,7 +325,6 @@
       list.appendChild(pending);
       scrollDown();
 
-      var body = new FormData(form);
       fetch("/chat/send", {
         method: "POST",
         credentials: "same-origin",

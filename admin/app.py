@@ -19,6 +19,7 @@ Pipedrive, Claude і n8n. Публічно цей маршрут закрити�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -49,10 +50,16 @@ WEBHOOK_SECRET = os.environ.get("N8N_WEBHOOK_SECRET", "")
 
 STATIC = Path(__file__).parent / "static"
 
-# Кеш-бастинг: один stat на імпорті → ?v= у base.html і login.html. Без нього
-# правка CSS не доїжджає до браузерів, які тримають старий файл у кеші.
+# Кеш-бастинг: хеш ВМІСТУ обох асетів на імпорті → ?v= у base.html і
+# login.html. Було mtime лише app.css — і js-only правка (фікс FormData
+# 2026-08-07) не міняла версію, тож браузери законно виконували старий
+# app.js попри свіжий деплой. Вміст, а не mtime: docker COPY і git clone
+# виставляють mtime непередбачувано, а хеш бреше тільки якщо збрехали файли.
 try:
-    ASSET_V = int((STATIC / "app.css").stat().st_mtime)
+    _asset_hash = hashlib.sha1()
+    for _asset_name in ("app.css", "app.js"):
+        _asset_hash.update((STATIC / _asset_name).read_bytes())
+    ASSET_V: int | str = _asset_hash.hexdigest()[:10]
 except OSError:  # ассетів немає — краще 0, ніж 500 на кожній сторінці
     ASSET_V = 0
 
