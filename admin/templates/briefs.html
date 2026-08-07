@@ -1,10 +1,16 @@
 {% extends "base.html" %}
-{#- Список бріфів (розділ 4.10, новий). Досі до бріфа вів лише редірект одразу
-    після генерації — згенерований учора бріф знайти було неможливо.
-    Контекст маршруту `briefs_page`: briefs, ecosystems, ecosystem, tier.
-    Значення фільтрів у URL лишаються англійськими (?tier=llm) — інваріант
-    локалізації: переклад тільки в презентації, англійський текст — прямо в
-    розмітці другим аргументом t(), українська зі словника admin/i18n.py. -#}
+{#- Список бріфів (розділ 4.10 + розширення «lifecycle»). Досі до бріфа вів
+    лише редірект одразу після генерації — згенерований учора бріф знайти
+    було неможливо.
+    Контекст маршруту `briefs_page`: briefs, ecosystems, ecosystem, tier,
+    archived. Значення фільтрів у URL лишаються англійськими (?tier=llm) —
+    інваріант локалізації: переклад тільки в презентації, англійський текст —
+    прямо в розмітці другим аргументом t(), українська зі словника
+    admin/i18n.py.
+
+    Заархівовані ховаються за замовчуванням (archived=0 з app.py) — та сама
+    логіка, що й enabled/quarantined на /sources: архів прибирає з-перед очей,
+    не видаляє. -#}
 {% block title %}{{ t("pg.briefs.h1", "Briefs") }}{% endblock %}
 {% block h1 %}{{ t("pg.briefs.h1", "Briefs") }}{% endblock %}
 {% block sub %}{{ t("pg.briefs.sub", "Ecosystem briefings assembled from the forum archive") }}{% endblock %}
@@ -29,9 +35,16 @@
       {% endfor %}
     </select>
   </div>
+  {% if archived %}<input type="hidden" name="archived" value="1">{% endif %}
   <button class="btn btn--primary">{{ t("act.filter", "Filter") }}</button>
-  {% if ecosystem or tier %}<a class="btn btn--ghost" href="/briefs">{{ t("act.reset", "Reset") }}</a>{% endif %}
+  {% if ecosystem or tier %}<a class="btn btn--ghost" href="/briefs{{ '?archived=1' if archived }}">{{ t("act.reset", "Reset") }}</a>{% endif %}
   <span class="toolbar__spacer"></span>
+  {% set archive_qs = (('ecosystem=' ~ ecosystem | urlencode ~ '&') if ecosystem) ~ (('tier=' ~ tier | urlencode ~ '&') if tier) %}
+  {% if archived %}
+  <a class="btn btn--ghost" href="/briefs?{{ archive_qs }}archived=0">{{ t("pg.briefs.hide_archived", "Hide archived") }}</a>
+  {% else %}
+  <a class="btn btn--ghost" href="/briefs?{{ archive_qs }}archived=1">{{ t("pg.briefs.show_archived", "Show archived") }}</a>
+  {% endif %}
 </form>
 {% endblock %}
 
@@ -56,7 +69,10 @@
           <td class="cell--num"><a href="/briefs/{{ b.id }}">{{ b.id }}</a></td>
           <td class="muted cell--nowrap">{{ b.created_at.strftime('%Y-%m-%d %H:%M') if b.created_at else '—' }}</td>
           <td class="cell--nowrap">{{ b.ecosystem }}</td>
-          <td><a href="/briefs/{{ b.id }}">{{ b.title | truncate(80) }}</a></td>
+          <td>
+            <a href="/briefs/{{ b.id }}">{{ b.title | truncate(80) }}</a>
+            {% if b.archived_at %}<span class="badge b-neutral">{{ t("st.archived", "archived") }}</span>{% endif %}
+          </td>
           <td class="cell--nowrap">
             <span class="badge {{ 'b-on' if b.tier == 'llm' else 'b-neutral' }}">{{ TIER_UA.get(b.tier, b.tier) }}</span>
           </td>

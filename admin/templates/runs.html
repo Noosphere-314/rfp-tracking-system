@@ -100,7 +100,20 @@
                 {%- elif n % 10 in [2, 3, 4] and n % 100 not in [12, 13, 14] %} {{ t("pg.runs.err_x24", "errors") }}
                 {%- else %} {{ t("pg.runs.err_many", "errors") }}{% endif %}
               </summary>
-              <ul>{% for f in fails %}<li class="muted">{{ f }}</li>{% endfor %}</ul>
+              {#- Детермінована діагностика (розділ C): DIAG_RULES в app.py
+                  мапить сирий текст помилки на diag-ключ через `diag_key`
+                  (чиста функція, юніт-тестована окремо), а t("diag." ~ key, …)
+                  бере переклад із i18n.UK з англійським дефолтом
+                  DIAG_ADVICE_EN — той самий принцип, що й SETTING_META вище. -#}
+              <ul>
+                {% for f in fails %}
+                {% set dkey = f | diag_key %}
+                <li class="muted">
+                  {{ f }}
+                  <div class="field__hint">{{ t("diag." ~ dkey, DIAG_ADVICE_EN[dkey]) }}</div>
+                </li>
+                {% endfor %}
+              </ul>
             </details>
             {% else %}<span class="muted">—</span>{% endif %}
           </td>

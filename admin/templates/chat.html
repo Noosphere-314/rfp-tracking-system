@@ -17,7 +17,19 @@
     розмітка нижче для цього й тримає #chat-list/#chat-empty стабільними id.
 
     Двомовність: англійський текст — другим аргументом t(), українська зі
-    словника admin/i18n.py (pg.chat.*). -#}
+    словника admin/i18n.py (pg.chat.*).
+
+    Розділ D («звязка чату зі щоденною роботою»):
+      D1 — приклади питань на порожньому стані нижче. Текст ПИТАННЯ (те, що
+           реально піде в композер і в чат-бекенд) лишається англійським
+           ЗАВЖДИ — той самий інваріант, що й у _ask_ai_question (app.py):
+           stub-рівень відмовляється шукати за не-латинським запитом.
+           Перекладається лише ВИДИМИЙ підпис кнопки (окремий {{ t(...) }} із
+           тим самим англійським текстом за замовчуванням) — сама ask-фраза в
+           href/data-fill НЕ проходить через t().
+      D2 — ask (app.py: chat_page) префилить textarea нижче МІЖ тегами:
+           автоескейпінг Jinja вже покриває XSS, без |safe.
+      D4 — forum_chips (app.py) — «All» + enabled-форуми з kb.forums. -#}
 {% block title %}{{ t("pg.chat.h1", "AI chat") }}{% endblock %}
 {% block h1 %}{{ t("pg.chat.h1", "AI chat") }}{% endblock %}
 {% block sub %}{{ t("pg.chat.sub", "Ask the knowledge base in plain language") }}{% endblock %}
@@ -33,6 +45,24 @@
 {% set empty_href = "/kb" %}
 {% set empty_link = t("pg.chat.kb_link", "Search the knowledge base") %}
 {% include "_empty.html" %}
+
+{#- D1 — 4 приклади питань. `ask` — завжди англійська фраза (і в href, і в
+    data-fill), `label_key` перекладає лише те, що людина БАЧИТЬ на кнопці;
+    без JS кнопка — звичайне посилання /chat?ask=…, з JS (app.js, розділ 8)
+    клік заповнює композер тим самим `ask` і фокусить textarea, замість
+    переходу. -#}
+{% set chat_examples = [
+     ("pg.chat.example.1", "What dev tooling grants were discussed on Optimism this quarter?"),
+     ("pg.chat.example.2", "Which ecosystems currently have open RFPs for oracle integrations?"),
+     ("pg.chat.example.3", "Summarize recent forum discussion about security audit funding."),
+     ("pg.chat.example.4", "What's a typical grant size for indexing infrastructure proposals?"),
+   ] %}
+<div class="chat__examples" role="group" aria-label="{{ t('pg.chat.examples_label', 'Try asking') }}">
+  {% for label_key, ask_text in chat_examples %}
+  <a class="btn btn--ghost btn--block" href="/chat?ask={{ ask_text | urlencode }}"
+     data-fill="{{ ask_text }}">{{ t(label_key, ask_text) }}</a>
+  {% endfor %}
+</div>
 </div>
 
 <div class="chat__list" id="chat-list"{% if not messages %} hidden{% endif %}>
@@ -76,6 +106,20 @@
   <form class="chat__newchat" method="post" action="/chat/new">{% include "_csrf.html" %}
     <button class="btn btn--ghost btn--sm" type="submit">{{ t("pg.chat.new_chat", "New chat") }}</button>
   </form>
+
+  {#- D4 — форумні чипи. «All» веде на голий /chat (без ask). Кожен форумний
+      чип без JS — посилання на приклад, уже прив'язаний до цього форуму
+      (app.py: _forum_chip_href); з JS (app.js) клік ДОДАЄ " in <Forum>" до
+      поточного тексту композера, замість переходу — щоб не втратити
+      чернетку, яку людина вже почала друкувати. -#}
+  <div class="chips chat__forumchips" role="group"
+       aria-label="{{ t('pg.chat.forum_chips_label', 'Scope the next question to a forum') }}">
+    <a class="chip" href="/chat" data-forum="">{{ t("f.forum.any", "all forums") }}</a>
+    {% for fc in forum_chips %}
+    <a class="chip" href="{{ fc.href }}" data-forum="{{ fc.label }}">{{ fc.label }}</a>
+    {% endfor %}
+  </div>
+
   <form class="chat__composer" method="post" action="/chat/send"
         data-busy="{{ t('pg.chat.sending', 'Sending…') }}"
         data-error="{{ t('pg.chat.error', 'Could not send the message — try again') }}"
@@ -83,8 +127,10 @@
         data-who="{{ who }}">
     {% include "_csrf.html" %}
     <label class="visually-hidden" for="chat-input">{{ t("f.message", "Message") }}</label>
+    {#- D2 — `ask` (app.py: chat_page) префилить чернетку МІЖ тегами; сама
+        сторінка не сабмітить форму сама — жодного autofocus/autosubmit. -#}
     <textarea id="chat-input" name="message" maxlength="4000" required
-              placeholder="{{ t('pg.chat.ph', 'e.g. which dev tooling grants were discussed in Optimism this quarter?') }}"></textarea>
+              placeholder="{{ t('pg.chat.ph', 'e.g. which dev tooling grants were discussed in Optimism this quarter?') }}">{{ ask }}</textarea>
     <button class="btn btn--primary" type="submit">{{ t("act.send", "Send") }}</button>
   </form>
 </div>

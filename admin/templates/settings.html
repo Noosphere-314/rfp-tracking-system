@@ -5,7 +5,9 @@
     прив'язана HTML5-атрибутом form="settings-form".
 
     Контекст дає _render_settings: groups = [(gid, label, [item…])], де в item
-    крім рядка таблиці settings є label / hint / kind із SETTING_META, і
+    крім рядка таблиці settings є label / help / reco / kind із SETTING_META
+    (розділ A: help — що робить ключ і що буде, якщо його підняти/опустити;
+    reco — коротке рекомендоване значення, окрема пігулка під help), і
     band = {low, high} для смуги подвійного порога. -#}
 {% block title %}{{ t("pg.settings.h1", "Settings") }}{% endblock %}
 {% block h1 %}{{ t("pg.settings.h1", "Settings") }}{% endblock %}
@@ -28,6 +30,21 @@
 {% endblock %}
 
 {% block data %}
+{#- Розгортний вступ (розділ A): plain <details>, без жодного JS — сторінка
+    залишається зрозумілою й із вимкненим app.js. Закритий за замовчуванням,
+    щоб не займати екран у людей, які вже знають, що тут і як. -#}
+<details class="disclosure">
+  <summary>{{ t("pg.settings.explain.summary", "What do these settings do?") }}</summary>
+  <div class="disclosure__body">
+    <p>{{ t("pg.settings.explain.body",
+             "Each setting below has a short explanation under its field, and — where "
+             "one makes sense — a recommended value or range shown as a small pill. "
+             "Most settings take effect on the very next worker or n8n run, no "
+             "redeploy needed. A few keys are not read by any component yet; their "
+             "explanation says so plainly instead of describing behavior that doesn't exist.") }}</p>
+  </div>
+</details>
+
 <form id="settings-form" method="post" action="/settings/save">
   {% include "_csrf.html" %}
 
@@ -48,7 +65,12 @@
           <tr>
             <td>
               <label class="field__label" for="set-{{ s.key }}">{{ s.label }}</label>
-              {% if s.hint %}<div class="field__hint">{{ s.hint }}</div>{% endif %}
+              {% if s.help %}<div class="field__hint">{{ s.help }}</div>{% endif %}
+              {% if s.reco %}
+              <div class="field__hint">
+                <span class="badge b-info">{{ t("pg.settings.reco_label", "Suggested") }}: {{ s.reco }}</span>
+              </div>
+              {% endif %}
               <code>{{ s.key }}</code>
             </td>
             <td>

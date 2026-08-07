@@ -6,6 +6,14 @@
 # insurance in the design — and it is only insurance once a restore has been
 # tested, so run scripts/restore-test.sh at least once before go-live.
 #
+# Decision (DEVLOG 2026-08-07, trap #28): git was the wrong transport for
+# n8n workflow backups. This script used to `git commit` the nightly export
+# straight into n8n/workflows/ on the server; the moment anyone pushed from a
+# laptop that history diverged from origin, and every following
+# `git pull --ff-only` on the box failed — it bit twice in one week. The
+# server must never create local commits. Workflow snapshots now go to a
+# plain, untracked, timestamped directory instead (see step 2 below).
+#
 # Cron (on the host):  15 3 * * *  /opt/rfp/scripts/backup.sh >> /var/log/rfp-backup.log 2>&1
 set -euo pipefail
 
@@ -33,18 +41,30 @@ $COMPOSE exec -T postgres \
     | gzip > "$DUMP"
 echo "database dump: $DUMP ($(du -h "$DUMP" | cut -f1))"
 
-# 2. n8n workflows as JSON. This doubles as version history: the export is
-#    committed to git, which is the closest thing CE has to workflow diffs.
-$COMPOSE exec -T n8n \
-    n8n export:workflow --all --separate --output=/backup/workflows >/dev/null
-$COMPOSE exec -T n8n \
-    n8n export:credentials --all --output=/backup/credentials.json >/dev/null
+# 2. n8n workflows + credentials as JSON, point-in-time snapshot.
+#    The n8n container only has ./n8n bind-mounted as /backup (docker-compose.yml),
+#    so the export has to land inside the repo tree first. It goes to a
+#    dot-prefixed staging dir — never n8n/workflows/, that path is git-tracked
+#    source, not a backup target — and is moved out immediately to a plain,
+#    untracked, timestamped directory. Nothing here ever touches git.
+N8N_WF_BACKUP_DIR="${N8N_WF_BACKUP_DIR:-/opt/rfp/backups/n8n-workflows}"
+N8N_WF_KEEP="${N8N_WF_KEEP:-14}"
+STAGING="n8n/.export-$STAMP"
+mkdir -p "$STAGING/workflows"
 
-if [ -d .git ]; then
-    git add n8n/workflows >/dev/null 2>&1 || true
-    git -c user.email=backup@localhost -c user.name="backup" \
-        commit -q -m "n8n workflow export $STAMP" n8n/workflows 2>/dev/null || true
-fi
+$COMPOSE exec -T n8n \
+    n8n export:workflow --all --separate --output="/backup/.export-$STAMP/workflows" >/dev/null
+$COMPOSE exec -T n8n \
+    n8n export:credentials --all --output="/backup/.export-$STAMP/credentials.json" >/dev/null
+
+mkdir -p "$N8N_WF_BACKUP_DIR"
+mv "$STAGING" "$N8N_WF_BACKUP_DIR/$STAMP"
+echo "n8n workflow snapshot: $N8N_WF_BACKUP_DIR/$STAMP"
+
+# Keep only the newest N8N_WF_KEEP snapshot dirs — count-based, mirrors the
+# mtime-based prune below in spirit (one run/night, so "newest 14 dirs" and
+# "newest 14 days" land on the same set).
+ls -1dt "$N8N_WF_BACKUP_DIR"/*/ 2>/dev/null | tail -n +$((N8N_WF_KEEP + 1)) | xargs -r rm -rf --
 
 # 3. Off-box copy. Restoring from a backup that lived on the box that died is
 #    not restoring.

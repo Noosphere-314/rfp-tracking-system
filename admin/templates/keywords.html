@@ -17,6 +17,39 @@
 {% block sub %}{{ t("pg.keywords.sub", "The regexes that decide which findings reach the classifier at all") }}{% endblock %}
 
 {% block controls %}
+{#- Пояснювальний блок (розділ B, запит Миколи: «надто незрозуміла, це
+    ключовий розділ»). Короткий рядок завжди видно; довша частина з
+    прикладами й попередженням — у <details> нижче, той самий компонент
+    .disclosure, що й на /kb і /sources. -#}
+<p class="muted">
+  {{ t("pg.keywords.explain.intro",
+       "Include patterns decide what reaches the classifier at all; exclude patterns "
+       "then cut findings out of what include already let through — an exclude always "
+       "wins over an include. This filter runs before the classifier, and changes take "
+       "effect on the next hourly worker run, not immediately.") }}
+</p>
+<details class="disclosure">
+  <summary>{{ t("pg.keywords.explain.summary", "How include/exclude interact — examples") }}</summary>
+  <div class="disclosure__body">
+    <p>{{ t("pg.keywords.explain.order",
+             "Order of operations for every finding: exclude patterns are checked "
+             "first — any match there drops the finding immediately, no matter what "
+             "else matched. Only if nothing excluded it does the finding need to "
+             "match at least one include pattern to continue to the classifier.") }}</p>
+    <ul>
+      <li>{{ t("pg.keywords.explain.ex1", 'include “\\y(grant|grants?)\\y” — lets through any finding that mentions a grant.') }}</li>
+      <li>{{ t("pg.keywords.explain.ex2", 'exclude “\\yairdrop\\y” — drops a finding even if it also matched an include pattern above.') }}</li>
+      <li>{{ t("pg.keywords.explain.ex3", 'include “\\yhackathon\\y” + exclude “\\ycancelled\\y” — hackathon posts get through, but a post about a cancelled hackathon does not.') }}</li>
+    </ul>
+    <p class="field__hint field__hint--bad">
+      {{ t("pg.keywords.explain.warn",
+           "Careful with broad excludes: a single common word (like \"test\" or "
+           "\"update\") can silently drop real leads, with no visible sign that "
+           "anything was filtered out. Prefer specific phrases over single words.") }}
+    </p>
+  </div>
+</details>
+
 <form class="toolbar" method="post" action="/keywords/add">
   {% include "_csrf.html" %}
   <label class="field">

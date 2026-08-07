@@ -227,6 +227,15 @@ img,svg{max-width:100%}
 .chat__composer{display:flex; align-items:flex-end; gap:var(--sp-3)}
 .chat__composer textarea{flex:1; min-height:44px; resize:vertical}
 
+/* D1: приклади питань на порожньому стані чату — вертикальний стовпчик
+   повноширинних ghost-кнопок під .empty вище, а не .chips (той пасує
+   коротким лейблам, тут — цілі речення). */
+.chat__examples{
+  display:flex; flex-direction:column; gap:var(--sp-2);
+  max-width:520px; margin:var(--sp-5) auto 0;
+}
+.chat__examples .btn{text-align:left}
+
 .with-rail{display:flex; align-items:flex-start; gap:var(--sp-5)}
 .with-rail > *:first-child{flex:1 1 auto; min-width:0}
 .rail{
@@ -396,8 +405,16 @@ details.disclosure > summary::before{
 details.disclosure[open] > summary::before{transform:rotate(90deg)}
 .disclosure__body{padding:0 var(--sp-4) var(--sp-4)}
 
+/* .prose — тіло бріфа (brief.html), рендерене через md_lite (admin/app.py):
+   справжні <h3>/<ul>/<p>/<strong>/<em>/<a>, не preformatted-текст, тож читана
+   міра (74ch) і вертикальні відступи між блоками — тут, а не в конкретних
+   тегах (ті самі h1..h4{margin:0} і ul{margin:0 0 var(--sp-3)} з розділу 2
+   лишаються загальними — тут лише простір МІЖ блоками прози). */
 .prose{font-size:var(--fs-lg); line-height:1.7; max-width:74ch}
-.prose--raw{white-space:pre-wrap; word-break:break-word}
+.prose h3{margin-top:var(--sp-5)}
+.prose h3:first-child{margin-top:0}
+.prose p,.prose ul{margin:0 0 var(--sp-4)}
+.prose > :last-child{margin-bottom:0}
 
 .meta{display:flex; flex-wrap:wrap; gap:var(--sp-2); align-items:center;
   font-size:var(--fs-sm); color:var(--text-dim)}
@@ -550,3 +567,22 @@ form.inline,.inline{display:inline}
 .chat__controls{display:flex; flex-direction:column; gap:var(--sp-2)}
 .chat__newchat{align-self:flex-end}
 .chat__composer textarea:disabled{opacity:.6}
+
+/* ─────────────────────  13. Друк бріфа (4.8)  ─────────────────────────── */
+/* «Зберегти як PDF» = window.print() (app.js, data-print) — чистий білий
+   аркуш, а не темна тема кабінету: сайдбар/тулбар/кнопки/бейджі-керування
+   ховаються, лишається заголовок екосистеми, дата і сама проза. */
+@media print{
+  .sidebar,.topbar,.controls,.scrim,.session-banner{display:none !important}
+  .app{display:block}
+  .content,.content--full{
+    padding:0; margin:0; max-width:none; height:auto; overflow:visible;
+  }
+  body{background:#fff; color:#000}
+  .panel{background:none; border:0; border-radius:0}
+  .panel__foot{background:none; color:#000}
+  .badge{display:none}
+  .prose{color:#000; max-width:none}
+  .prose a{color:#000; text-decoration:underline}
+  a{color:#000}
+}

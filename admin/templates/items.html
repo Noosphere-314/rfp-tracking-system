@@ -1,44 +1,75 @@
 {% extends "base.html" %}
-{#- «Знахідки» (розділ 4.3). Контекст дає items_page() у admin/app.py:
-    items, status, source_id, q, page, source_options.
+{#- «Знахідки» (розділ 4.3 + розширення «фільтри й outcomes»). Контекст дає
+    items_page() у admin/app.py: items, status, q, ecosystem, lane,
+    min_confidence, period, outcome, page, ecosystem_options, filters_active,
+    qs_no_page.
 
     Дефолт «усі» НЕ змінюється: `done` не означає ліда (F5), а зміна дефолту
     тихо перевизначила б сенс наявних посилань /items?status= — закладки і
     посилання з Telegram почали б показувати інше, ніж учора.
 
-    Значення статусів в URL лишаються англійськими (?status=done) — інваріант
-    локалізації; українською лише підписи. -#}
+    Значення фільтрів в URL лишаються англійськими (?status=done) — інваріант
+    локалізації; українською лише підписи. Один компактний рядок фільтрів
+    (селекти + один текстовий інпут + Apply) замінює колишню пару
+    «чипси статусу» + «форма джерела»: команда попросила лишити сторінку
+    простою, а не додавати другий ряд керування під кожен новий фільтр. -#}
 {% block title %}{{ t("pg.items.h1", "Findings") }}{% endblock %}
 {% block h1 %}{{ t("pg.items.h1", "Findings") }}{% endblock %}
 {% block sub %}{{ t("pg.items.sub", "Everything the worker saw in the sources, and what happened to it next") }}{% endblock %}
 
-{#- Хвіст запиту без `status`: чипси міняють лише статус, решту фільтрів
-    зберігають. -#}
-{%- set tail = '&source_id=' ~ source_id ~ (('&q=' ~ q|urlencode) if q else '') %}
-
 {% block controls %}
 <div class="toolbar">
-  <div class="chips" role="group" aria-label="{{ t('f.status_filter', 'Filter by status') }}">
-    <a class="chip" href="/items?status={{ tail }}"
-       aria-current="{{ 'true' if not status else 'false' }}">{{ t("st.any", "all") }}</a>
-    {% for st in ITEM_STATUSES %}
-    <a class="chip" href="/items?status={{ st }}{{ tail }}"
-       aria-current="{{ 'true' if status == st else 'false' }}">{{ STATUS_UA.get(st, st) }}</a>
-    {% endfor %}
-  </div>
-</div>
-
-<div class="toolbar">
   <form class="toolbar" method="get" action="/items">
-    {#- Статус тримає чипсова панель вище — переносимо його через форму, щоб
-        фільтр за джерелом не скидав обраний статус. -#}
-    <input type="hidden" name="status" value="{{ status }}">
     <div class="field">
-      <label class="field__label" for="f-source">{{ t("f.source", "Source") }}</label>
-      <select id="f-source" name="source_id">
-        <option value="0">{{ t("f.all_sources", "all sources") }}</option>
-        {% for s in source_options %}
-        <option value="{{ s.id }}" {{ 'selected' if source_id == s.id }}>{{ s.name }}</option>
+      <label class="field__label" for="f-status">{{ t("f.status", "Status") }}</label>
+      <select id="f-status" name="status">
+        <option value="">{{ t("st.any", "all") }}</option>
+        {% for st in ITEM_STATUSES %}
+        <option value="{{ st }}" {{ 'selected' if status == st }}>{{ STATUS_UA.get(st, st) }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label class="field__label" for="f-ecosystem">{{ t("f.ecosystem", "Ecosystem") }}</label>
+      <select id="f-ecosystem" name="ecosystem">
+        <option value="">{{ t("st.any", "all") }}</option>
+        {% for e in ecosystem_options %}
+        <option value="{{ e }}" {{ 'selected' if ecosystem == e }}>{{ e }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label class="field__label" for="f-lane">{{ t("f.lane", "Lane") }}</label>
+      <select id="f-lane" name="lane">
+        <option value="">{{ t("st.any", "all") }}</option>
+        {% for ln in ['rfp', 'funding'] %}
+        <option value="{{ ln }}" {{ 'selected' if lane == ln }}>{{ LANE_UA.get(ln, ln) }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label class="field__label" for="f-conf">{{ t("f.min_confidence", "Min. confidence") }}</label>
+      <select id="f-conf" name="min_confidence">
+        <option value="">{{ t("st.any", "all") }}</option>
+        {% for c in ['0.5', '0.7', '0.9'] %}
+        <option value="{{ c }}" {{ 'selected' if min_confidence == c }}>&ge; {{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label class="field__label" for="f-period">{{ t("f.period", "Period") }}</label>
+      <select id="f-period" name="period">
+        <option value="">{{ t("st.any", "all") }}</option>
+        <option value="7d" {{ 'selected' if period == '7d' }}>{{ t("f.period.7d", "last 7 days") }}</option>
+        <option value="30d" {{ 'selected' if period == '30d' }}>{{ t("f.period.30d", "last 30 days") }}</option>
+      </select>
+    </div>
+    <div class="field">
+      <label class="field__label" for="f-outcome">{{ t("f.outcome", "Outcome") }}</label>
+      <select id="f-outcome" name="outcome">
+        <option value="">{{ t("st.any", "all") }}</option>
+        {% for oc in ['won', 'lost', 'open'] %}
+        <option value="{{ oc }}" {{ 'selected' if outcome == oc }}>{{ OUTCOME_UA.get(oc, oc) }}</option>
         {% endfor %}
       </select>
     </div>
@@ -48,12 +79,16 @@
     </div>
     <button class="btn btn--primary" type="submit">{{ t("act.filter", "Filter") }}</button>
   </form>
+</div>
 
+<div class="toolbar">
+  {% if filters_active %}
+  <p class="muted">{{ t("msg.filters_active", "Filters active") }} — <a href="/items">{{ t("act.reset", "Reset") }}</a></p>
+  {% endif %}
   <span class="toolbar__spacer"></span>
-
   <p class="pager">
     {% if page > 0 %}
-    <a href="/items?status={{ status|urlencode }}{{ tail }}&amp;page={{ page - 1 }}">‹ {{ t("act.newer", "newer") }}</a>
+    <a href="/items?{{ qs_no_page }}{{ '&' if qs_no_page }}page={{ page - 1 }}">‹ {{ t("act.newer", "newer") }}</a>
     {% endif %}
     {% if items %}
       {{ page * 50 + 1 }}–{{ page * 50 + items | length }}
@@ -61,7 +96,7 @@
       0
     {% endif %}
     {% if items | length == 50 %}
-    <a href="/items?status={{ status|urlencode }}{{ tail }}&amp;page={{ page + 1 }}">{{ t("act.older", "older") }} ›</a>
+    <a href="/items?{{ qs_no_page }}{{ '&' if qs_no_page }}page={{ page + 1 }}">{{ t("act.older", "older") }} ›</a>
     {% endif %}
   </p>
 </div>
@@ -74,8 +109,10 @@
       <thead>
         <tr>
           <th>{{ t("f.status", "Status") }}</th><th>{{ t("f.title", "Title") }}</th>
+          <th>{{ t("f.category", "Category") }}</th><th>{{ t("f.confidence", "Confidence") }}</th>
           <th>{{ t("f.source", "Source") }}</th><th>{{ t("f.attempts", "Attempts") }}</th>
           <th>{{ t("f.first_seen", "First seen") }}</th><th>{{ t("f.delivered", "Delivered") }}</th>
+          <th>{{ t("f.outcome", "Outcome") }}</th>
           <th><span class="visually-hidden">{{ t("f.actions", "Actions") }}</span></th>
         </tr>
       </thead>
@@ -83,7 +120,16 @@
         {% for i in items %}
         <tr>
           <td><span class="badge b-{{ i.status }}">{{ STATUS_UA.get(i.status, i.status) }}</span></td>
-          <td><a href="{{ i.url }}" target="_blank" rel="noopener noreferrer">{{ i.title or i.item_uid[:16] }}</a></td>
+          <td>
+            <a href="{{ i.url }}" target="_blank" rel="noopener noreferrer">{{ i.title or i.item_uid[:16] }}</a>
+            {% if i.canonical_project %}<div class="muted">{{ i.canonical_project }}</div>{% endif %}
+          </td>
+          <td>
+            {% if i.category %}
+            <span class="badge {{ {'RFP': 'b-rfp', 'FUNDING': 'b-funding', 'GRANT': 'b-on'}.get(i.category, 'b-neutral') }}">{{ i.category }}</span>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="cell--num">{{ '%.2f' | format(i.confidence) if i.confidence is not none else '—' }}</td>
           <td class="muted">{{ i.source_name }}</td>
           <td class="cell--num">{{ i.attempts }}</td>
           <td class="muted cell--nowrap">{{ i.first_seen.strftime('%Y-%m-%d %H:%M') }}</td>
@@ -101,22 +147,55 @@
               <span class="muted">—</span>
             {% endif %}
           </td>
-          <td>
+          <td class="cell--nowrap">
+            {% if i.delivered_at %}
+              {% if i.outcome %}
+              <span class="badge {{ 'b-on' if i.outcome == 'won' else 'b-dead' }}">{{ OUTCOME_UA.get(i.outcome, i.outcome) }}</span>
+              <form class="inline" method="post" action="/items/{{ i.item_uid }}/outcome">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="qs" value="{{ request.url.query }}">
+                <input type="hidden" name="outcome" value="clear">
+                <button class="btn btn--sm btn--ghost" type="submit">{{ t("act.clear", "clear") }}</button>
+              </form>
+              {% else %}
+              <form class="inline" method="post" action="/items/{{ i.item_uid }}/outcome">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="qs" value="{{ request.url.query }}">
+                <input type="hidden" name="outcome" value="won">
+                <button class="btn btn--sm" type="submit">{{ t("act.won", "Won") }}</button>
+              </form>
+              <form class="inline" method="post" action="/items/{{ i.item_uid }}/outcome">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="qs" value="{{ request.url.query }}">
+                <input type="hidden" name="outcome" value="lost">
+                <button class="btn btn--sm" type="submit">{{ t("act.lost", "Lost") }}</button>
+              </form>
+              {% endif %}
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td class="cell--nowrap">
             <form class="inline" method="post" action="/items/{{ i.item_uid }}/brief"
                   data-busy="{{ t('msg.brief_busy', 'Building the brief, up to 5 min…') }}">
               {% include "_csrf.html" %}
               <button class="btn btn--sm" type="submit"
                       title="{{ t('act.brief.title', 'Build a brief from the knowledge base: a search across the forum archive, up to 5 minutes') }}">{{ t("act.brief", "brief") }}</button>
             </form>
+            {#- «Ask AI» (розділ D3): питання (англійською, зібране в
+                _ask_ai_question у app.py) вже готове в i.ask_ai_href — тут
+                лише посилання, нуль логіки в шаблоні. -#}
+            <a class="btn btn--sm btn--ghost" href="{{ i.ask_ai_href }}"
+               title="{{ t('act.ask_ai.title', 'Ask the KB chat about similar funding for this finding') }}">{{ t("act.ask_ai", "Ask AI") }}</a>
           </td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="7">
+          <td colspan="10">
             <div class="empty">
               <div class="empty__title">{{ t("msg.nothing_found", "Nothing found") }}</div>
               <div class="empty__hint">
-                {% if status or source_id or q %}
+                {% if filters_active %}
                 {{ t("msg.drop_filters", "Try dropping some of the filters —") }}
                 <a href="/items">{{ t("msg.show_all_items", "show all findings") }}</a>.
                 {% else %}

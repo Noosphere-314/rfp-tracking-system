@@ -50,9 +50,24 @@ class _Cursor:
 
 
 class _Conn:
-    def __init__(self, rows: list[dict] | None = None, sink: list | None = None):
+    """Перший execute() у запиті бачить `rows` (сумісність з тестами, писаними
+    до розділу D4: там був рівно один SELECT на /chat). GET /chat відтоді
+    робить ДРУГИЙ SELECT — форумні чипи (kb.forums) — тож кожен наступний
+    виклик за замовчуванням отримує порожній список, а не ті самі `rows`:
+    інакше рядки повідомлень (id/role/content/…) підставлялися б замість
+    форумних (forum_slug) і падали б KeyError. `extra_rows` дозволяє новим
+    тестам задати результат саме для другого (і далі) виклику за індексом."""
+
+    def __init__(
+        self,
+        rows: list[dict] | None = None,
+        sink: list | None = None,
+        extra_rows: dict[int, list[dict]] | None = None,
+    ):
         self.rows = rows or []
         self.sink = sink if sink is not None else []
+        self.extra_rows = extra_rows or {}
+        self._call_index = 0
 
     def __enter__(self):
         return self
@@ -62,14 +77,17 @@ class _Conn:
 
     def execute(self, sql, params=None):
         self.sink.append((sql, params))
-        return _Cursor(self.rows, self.sink)
+        idx = self._call_index
+        self._call_index += 1
+        result_rows = self.rows if idx == 0 else self.extra_rows.get(idx, [])
+        return _Cursor(result_rows, self.sink)
 
     def commit(self):
         pass
 
 
-def _fake_db(monkeypatch, rows=None, sink=None):
-    conn = _Conn(rows, sink)
+def _fake_db(monkeypatch, rows=None, sink=None, extra_rows=None):
+    conn = _Conn(rows, sink, extra_rows)
     monkeypatch.setattr(admin_app, "db", lambda: conn)
     return conn
 
@@ -164,6 +182,83 @@ def test_chat_page_shows_stub_tier_chip(client, monkeypatch):
     )
     html = client.get("/chat").text
     assert "keyword tier" in html  # pg.chat.stub_chip, дефолт en
+
+
+# ── GET /chat?ask=…: префил композера (розділ D2) ────────────────────
+
+
+def test_chat_ask_param_prefills_the_composer_textarea(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    html = client.get("/chat", params={"ask": "which grants funded oracle work?"}).text
+    assert (
+        '<textarea id="chat-input" name="message" maxlength="4000" required'
+        in html
+    )
+    assert "which grants funded oracle work?</textarea>" in html
+
+
+def test_chat_ask_param_is_html_escaped_against_xss(client, monkeypatch):
+    """Прямий тест на ін'єкцію: ask=<script>… має вийти escaped-текстом
+    усередині textarea, а не виконуваним тегом — autoescape Jinja, без |safe."""
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    payload = "<script>alert(1)</script>"
+    html = client.get("/chat", params={"ask": payload}).text
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
+def test_chat_ask_param_is_truncated_to_4000_chars(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    html = client.get("/chat", params={"ask": "x" * 5000}).text
+    assert "x" * 4001 not in html
+    assert "x" * 4000 in html
+
+
+def test_chat_page_without_ask_param_has_empty_textarea_body(client, monkeypatch):
+    """Дефолт (без ?ask=) лишає textarea порожньою — жодного авто-заповнення,
+    коли людина просто відкрила /chat."""
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    html = client.get("/chat").text
+    assert "</textarea>" in html
+    body_start = html.index('id="chat-input"')
+    tail = html[body_start:]
+    assert tail.split(">", 1)[1].split("</textarea>", 1)[0] == ""
+
+
+# ── GET /chat: форумні чипи (розділ D4) ───────────────────────────────
+
+
+def test_chat_page_renders_all_chip_and_enabled_forum_chips(client, monkeypatch):
+    _login(client)
+    _fake_db(
+        monkeypatch,
+        rows=[],
+        extra_rows={1: [{"forum_slug": "optimism"}, {"forum_slug": "arbitrum"}]},
+    )
+
+    html = client.get("/chat").text
+    assert 'data-forum=""' in html  # чип "All"
+    assert 'data-forum="Optimism"' in html
+    assert 'data-forum="Arbitrum"' in html
+    # No-JS fallback href — ask= уже прив'язаний до конкретного форуму.
+    assert "/chat?ask=Which%20dev%20tooling%20grants%20were%20discussed%20in%20Optimism" in html
+
+
+def test_chat_page_forum_chips_empty_when_no_forums_enabled(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[], extra_rows={1: []})
+
+    html = client.get("/chat").text
+    assert 'data-forum=""' in html  # "All" завжди присутній
+    assert "chat__forumchips" in html
 
 
 # ── POST /chat/send: валідація ──────────────────────────────────────

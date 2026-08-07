@@ -26,7 +26,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import psycopg
 import regex
@@ -123,6 +123,10 @@ LANE_UA = {"rfp": "RFP", "funding": "фандинг"}
 KIND_UA = {"include": "пропускає", "exclude": "відсікає"}
 MODE_UA = {"run": "звичайний", "seed": "засів"}
 TIER_UA = {"llm": "LLM", "basic": "базовий"}
+# Win/lost-фідбек на /items (розділ «Знахідки», задача розширення). 'open' —
+# лише значення ФІЛЬТРА (доставлено, вердикту ще нема); чипа на рядку для
+# нього немає — рядок без вердикту показує самі кнопки Won/Lost.
+OUTCOME_UA = {"won": "виграно", "lost": "програно", "open": "очікує"}
 
 
 def hl(value: str) -> Markup:
@@ -144,9 +148,12 @@ _URL_RE = re.compile(r'https?://[^\s<>"\']+')
 
 
 def linkify(value: str) -> Markup:
-    """Відповідь AI-чату (розділ 4.9): markdown НЕ рендериться (те саме
-    рішення, що й для brief.html — власний рендерер [текст](url) був би
-    XSS-поверхнею), але голий URL у відповіді моделі має бути клікабельним.
+    """Відповідь AI-чату (розділ 4.9): markdown НЕ рендериться (чат — живий
+    діалог, а не документ, і сирий URL у відповіді моделі — єдине, що
+    потребує підсвітки), але голий URL має бути клікабельним. Для brief.html
+    — окремий, ширший рендерер `md_lite` нижче: бріф читають і зберігають,
+    тож форматування (заголовки, списки, посилання) там виправдане, а тут —
+    зайве.
 
     Порядок «екранувати → підставити теги» — той самий принцип, що й у hl():
     спершу ВЕСЬ текст втрачає html-сенс, і лише потім підрядки, що після
@@ -163,8 +170,133 @@ def linkify(value: str) -> Markup:
     )
 
 
+# ── md_lite: безпечний підмножина-markdown для brief.html ────────────
+#
+# Той самий принцип «спершу escape() ВСЬОГО, потім підставляємо теги», що й у
+# hl()/linkify() вище — і причина та сама: brief_md — вихід LLM (kbmcp), тобто
+# недовірений текст, який може містити буквальний `<script>` чи посилання на
+# `javascript:...`. Один `escape()` на вході прибирає РІВНО загрозу «сирий
+# HTML проліз» — після нього в тексті фізично не лишається жодного `<`/`>`,
+# отже жоден наступний регексп не може відтворити тег, якого не було в нашому
+# власному шаблоні заміни. Далі рендеряться ЛИШЕ перелічені нижче конструкції;
+# усе інше лишається escaped-текстом як є (без сюрпризів у вигляді розкиданих
+# `**`/`[...]`, які «майже» схожі на markdown).
+#
+# Свідомо НЕ підтримується: вкладені *bold*/*italic*, нумеровані списки,
+# таблиці, зображення, будь-який сирий HTML — це «lite», а не CommonMark.
+#
+# `##`/`###` — ОБИДВА рівні, перевірено на живих даних (mcp/briefing.py):
+# basic-рівень пише РІВНО один `## KB brief: …` на бріф, LLM-рівень (system
+# prompt там-таки) — кілька `### Розділ` без жодного `##`. Оскільки рівні
+# ніколи не змішуються в одному бріфі, обидва мапляться в один <h3> — під
+# заголовком екосистеми (`<h2>`) на самій сторінці (brief.html) різниці не
+# видно, а окремий <h2>/<h3> тут дав би розбіжну ієрархію без жодної користі.
+_MD_HEADING_RE = re.compile(r"^#{2,3} (.*)$")
+_MD_BULLET_RE = re.compile(r"^- (.*)$")
+_MD_INLINE_RE = re.compile(
+    r"\[(?P<label>[^\[\]]{1,200})\]\((?P<href>https://[^\s()<>]+)\)"
+    r"|\*\*(?P<bold>[^*\n]+)\*\*"
+    r"|\*(?P<italic>[^*\n]+)\*"
+    # `_italic_` — теж живі дані: mcp/briefing.py закриває кожен basic-бріф
+    # рядком `_Auto-generated from the forum archive (…)_`. Межі слова
+    # (`(?<!\w)`/`(?!\w)`) обов'язкові: без них `ANTHROPIC_API_KEY` у ТІЙ
+    # самій нотатці сам стає парою підкреслень і розвалюється на
+    # `ANTHROPIC<em>API</em>KEY` — знайдено наживо на реальному бріфі з
+    # docker compose, не вигадано. З межами слова snake_case ідентифікатор
+    # просто не збігається як роздільник (безпечний відкат до літерального
+    # тексту), а справжній `_italic_` — так.
+    r"|(?<!\w)_(?P<italic_u>\S(?:[^_\n]*\S)?)_(?!\w)"
+    r"|(?P<url>https?://[^\s<>\"']+)"
+)
+
+
+def _md_inline(escaped_line: str) -> str:
+    """Інлайн-розмітка ВСЕРЕДИНІ одного рядка, який уже пройшов escape().
+
+    Один комбінований регексп з альтернативами замість кількох послідовних
+    `.sub()` — інакше перший прохід (скажімо, bare-URL autolink) вставив би
+    `<a href="...">`, і другий прохід (bold) побачив би вже готовий тег і міг
+    би зламати його чи задвоїти посилання всередині власного `<a>`. Порядок
+    альтернатив важливий: markdown-посилання `[label](https://...)` — ПЕРЕД
+    голим `https://` нижче, інакше URL усередині дужок з'їсть саму
+    альтернативу посилання.
+    """
+
+    def repl(m: re.Match) -> str:
+        if m.group("label") is not None:
+            return (
+                f'<a href="{m.group("href")}" target="_blank" rel="noopener">'
+                f'{m.group("label")}</a>'
+            )
+        if m.group("bold") is not None:
+            return f"<strong>{m.group('bold')}</strong>"
+        if m.group("italic") is not None:
+            return f"<em>{m.group('italic')}</em>"
+        if m.group("italic_u") is not None:
+            return f"<em>{m.group('italic_u')}</em>"
+        url = m.group("url")
+        return f'<a href="{url}" target="_blank" rel="noopener">{url}</a>'
+
+    return _MD_INLINE_RE.sub(repl, escaped_line)
+
+
+def md_lite(text: str) -> Markup:
+    """Безпечний підмножина-рендерер для `kb.briefs.brief_md` (розділ 4.8).
+
+    Підтримується: `##`/`### ` заголовки, `**bold**`, `*italic*`/`_italic_`,
+    `- ` списки, `[текст](https://...)` посилання (лише https —
+    javascript:/data: ніколи не стають клікабельними, бо просто не
+    збігаються з патерном), голі URL
+    автопосилаються, абзаци розділяються порожнім рядком. Жодного сирого
+    HTML і жодних зображень — свідомо (розділ 4.8, той самий compromise, що
+    в hl()/linkify() вище, лише ширший словник дозволених конструкцій).
+    """
+    escaped = str(escape(text or ""))
+    lines = escaped.split("\n")
+
+    html_parts: list[str] = []
+    para_buf: list[str] = []
+    list_buf: list[str] = []
+
+    def flush_para() -> None:
+        if para_buf:
+            html_parts.append(
+                "<p>" + "<br>".join(_md_inline(ln) for ln in para_buf) + "</p>"
+            )
+            para_buf.clear()
+
+    def flush_list() -> None:
+        if list_buf:
+            items = "".join(f"<li>{_md_inline(li)}</li>" for li in list_buf)
+            html_parts.append(f"<ul>{items}</ul>")
+            list_buf.clear()
+
+    for raw_line in lines:
+        line = raw_line.rstrip("\r")
+        heading = _MD_HEADING_RE.match(line)
+        bullet = _MD_BULLET_RE.match(line)
+        if heading:
+            flush_para()
+            flush_list()
+            html_parts.append(f"<h3>{_md_inline(heading.group(1))}</h3>")
+        elif bullet:
+            flush_para()
+            list_buf.append(bullet.group(1))
+        elif line.strip() == "":
+            flush_para()
+            flush_list()
+        else:
+            flush_list()
+            para_buf.append(line)
+    flush_para()
+    flush_list()
+
+    return Markup("".join(html_parts))
+
+
 templates.env.filters["hl"] = hl
 templates.env.filters["linkify"] = linkify
+templates.env.filters["md_lite"] = md_lite
 # Константи презентації — глобалами Jinja, а не context-процесором: вони
 # однакові для кожного запиту, а context-процесори Starlette перезаписують
 # контекст сторінки (`context.update(...)` після нього), тож усе, що маршрут
@@ -181,6 +313,7 @@ templates.env.globals.update(
     KIND_UA=KIND_UA,
     MODE_UA=MODE_UA,
     TIER_UA=TIER_UA,
+    OUTCOME_UA=OUTCOME_UA,
 )
 
 # Усі мутуючі маршрути — на одному роутері з `csrf_guard` (розділ 1.9, третій
@@ -638,58 +771,126 @@ SETTING_GROUPS = [
     ("volume", "Volume and limits"),
     ("channels", "Channels"),
     ("leads", "Leads"),
+    ("ai", "AI chat and briefs"),
     ("other", "Other"),
 ]
 
 # Підказки навмисно чесні (розділ 7.12): кілька ключів зараз не читає ніхто,
 # і підказка, що описує неіснуючу поведінку, гірша за її відсутність.
+#
+# Кожен запис несе ДВІ різні за призначенням підказки (запит Миколи: «нічого
+# не ясно, потрібні підказки і рекомендації», розділ A):
+#   help — що робить ключ і що станеться, якщо його підняти/опустити;
+#   reco — коротке рекомендоване значення чи діапазон, окремо від help, щоб
+#          його можна було показати як самостійну пігулку, а не ховати в
+#          середині речення.
 SETTING_META = {
     "confidence_threshold": {
         "group": "classify", "label": "Auto-lead threshold", "type": "float",
-        "hint": "0…1. Above the threshold a lead is created automatically. Read by n8n (rfp-main).",
+        "help": "Confidence score above which a finding becomes a lead automatically, "
+                "with no human review. Raising it cuts false positives at the cost of "
+                "missing some real leads; lowering it catches more leads at the cost "
+                "of noise reaching the team. Read by n8n (rfp-main).",
+        "reco": "0.7–0.8 is a reasonable start — tune it using Won/Lost outcomes on the Findings page.",
     },
     "review_band_low": {
         "group": "classify", "label": "Review band, lower bound", "type": "float",
-        "hint": "0…1, not above the auto-lead threshold. Anything in between goes to the review channel.",
+        "help": "Lower edge of the manual-review band: findings scoring between this "
+                "value and the auto-lead threshold are queued for a human instead of "
+                "being auto-approved or silently dropped. Raising it shrinks the "
+                "review band; lowering it grows the review queue.",
+        "reco": "Keep it comfortably below the auto-lead threshold — 0.3–0.5 is typical.",
     },
     "classifier_prompt_version": {
         "group": "classify", "label": "Prompt version", "type": "text",
-        "hint": "Not in use yet: in STUB mode the classifier writes prompt_version itself.",
+        "help": "Free-text label for which classifier prompt produced a verdict — "
+                "useful for audits once the real classifier is live. In STUB mode the "
+                "classifier ignores this and writes its own placeholder value.",
+        "reco": "Leave it as-is until the classifier is wired to read it.",
     },
     "max_leads_per_run": {
         "group": "volume", "label": "Max leads per run", "type": "int",
         "min": 1, "max": 500,
-        "hint": "1…500. Not in use yet — no component reads this key.",
+        "help": "Upper bound on how many leads a single worker run may create. Not in "
+                "use yet — no component reads this key, so changing it has no effect today.",
+        "reco": "Leave the default (25) — revisit once a component reads this key.",
     },
     "lead_floor_7d": {
         "group": "volume", "label": "Minimum leads per 7 days", "type": "int",
         "min": 0, "max": 100,
-        "hint": "0…100. Fewer than that raises an alert (read by n8n rfp-digest).",
+        "help": "Minimum number of leads expected in a rolling 7-day window; n8n's "
+                "digest job alerts when the real count falls under it — often the "
+                "first sign a source went quiet, before anything actually errors. "
+                "Raise it to get alerted sooner, lower it (or 0) to quiet the alert.",
+        "reco": "3–5 works for a small source list; raise it as more sources come online.",
     },
     "source_dark_days": {
         "group": "volume", "label": "Days of source silence before an alert", "type": "int",
         "min": 1, "max": 365,
-        "hint": "1…365. Read by the worker on every run — a non-numeric value stops the run mid-cycle.",
+        "help": "Days a source can go silent (no new item) before it's flagged as gone "
+                "dark. The worker reads this on every run — a non-numeric value here "
+                "stops the run mid-cycle.",
+        "reco": "14 is a solid default; lower it for sources that post daily, raise it "
+                "for slow-moving ones.",
     },
     "alert_channel": {
         "group": "channels", "label": "Alerts channel", "type": "channel",
-        "hint": "Starts with #. Not in use yet: Slack nodes are disabled, notifications go to Telegram.",
+        "help": "Slack channel name for operational alerts (source failures, dark "
+                "sources). Not in use yet — Slack nodes are disabled, notifications "
+                "currently go to Telegram instead.",
+        "reco": "Leave the default unless Slack nodes get re-enabled.",
     },
     "review_channel": {
         "group": "channels", "label": "Review channel", "type": "channel",
-        "hint": "Starts with #. Not in use yet (Slack nodes are disabled).",
+        "help": "Slack channel name for findings that land in the review band "
+                "(between the two thresholds above). Not in use yet (Slack nodes are disabled).",
+        "reco": "Leave the default unless Slack nodes get re-enabled.",
     },
     "digest_channel": {
         "group": "channels", "label": "Digest channel", "type": "channel",
-        "hint": "Starts with #. Not in use yet (Slack nodes are disabled).",
+        "help": "Slack channel name for the periodic digest of everything that wasn't "
+                "auto-delivered as a lead. Not in use yet (Slack nodes are disabled).",
+        "reco": "Leave the default unless Slack nodes get re-enabled.",
     },
     "lead_title_template": {
         "group": "leads", "label": "Lead title template", "type": "text",
-        "hint": "Placeholders {label}, {ecosystem}, {title}. Not in use yet.",
+        "help": "Template for the lead's title downstream, with placeholders {label}, "
+                "{ecosystem}, {title}. Not in use yet — no component reads this key today.",
+        "reco": "Leave the default; revisit once lead titles are templated.",
     },
     "chat_model": {
-        "group": "other", "label": "Chat model", "type": "text",
-        "hint": "Anthropic model id for the KB chat; applies without redeploy.",
+        "group": "ai", "label": "Chat model", "type": "text",
+        "help": "Anthropic model id used by the LLM tier of the KB chat (dashboard and "
+                "Telegram). Takes effect on the very next message — no redeploy needed. "
+                "An unknown model id makes every chat request fail.",
+        "reco": "claude-sonnet-5 is a good cost/quality balance; use claude-opus-5 only "
+                "if answers need to be noticeably sharper.",
+    },
+    "chat_daily_token_budget": {
+        "group": "ai", "label": "Chat daily token budget", "type": "int",
+        "min": 1000, "max": 5_000_000,
+        "help": "Global daily cap on tokens_in + tokens_out across ALL chat sessions "
+                "combined (web and Telegram, not per session). Once the day's usage "
+                "passes this number, chat answers quietly degrade to the keyword tier "
+                "until midnight instead of failing outright. Raising it keeps "
+                "LLM-quality answers flowing longer each day at higher cost; lowering "
+                "it saves cost at the price of an earlier fallback.",
+        "reco": "300000 is the current default — raise it if the team routinely hits "
+                "the keyword-tier fallback before end of day.",
+    },
+    "brief_model": {
+        "group": "ai", "label": "Brief model", "type": "text",
+        "help": "Anthropic model id used by the LLM tier when generating a brief from "
+                "the knowledge base. Takes effect without a redeploy; an unknown model "
+                "id makes brief generation fail.",
+        "reco": "claude-opus-5 is the current default — briefs are infrequent enough "
+                "that the stronger model is worth the extra cost.",
+    },
+    "brief_language": {
+        "group": "ai", "label": "Brief language", "type": "text",
+        "help": "Output language for generated briefs, handed to the sales team. Only "
+                "affects the text inside generated briefs, not the dashboard UI language.",
+        "reco": "'en' unless the team reading the briefs prefers another language.",
     },
 }
 
@@ -763,7 +964,8 @@ def _render_settings(
         # Ключ, якого нема в мапі, лишається видимим звичайним текстовим полем:
         # нова міграція не має робити налаштування невидимим.
         item["label"] = tr(f"set.{row['key']}.label", meta.get("label", row["key"]))
-        item["hint"] = tr(f"set.{row['key']}.hint", meta.get("hint", "")) if meta.get("hint") else ""
+        item["help"] = tr(f"set.{row['key']}.help", meta.get("help", "")) if meta.get("help") else ""
+        item["reco"] = tr(f"set.{row['key']}.reco", meta.get("reco", "")) if meta.get("reco") else ""
         item["kind"] = meta.get("type", "text")
         values[row["key"]] = item["value"]
         grouped.setdefault(meta.get("group", "other"), []).append(item)
@@ -856,50 +1058,240 @@ async def save_settings(request: Request):
 
 # ── Items & runs ───────────────────────────────────────────────────
 
+# Фіксовані опції — рендеряться як <select>, тож значення з довільного тексту
+# формою не приходять; будь-яке інше значення в query-рядку просто ігнорується
+# (не 400 — старе посилання з відкликаною опцією має показати «без фільтра»,
+# а не зламатись).
+CONFIDENCE_OPTIONS = ("0.5", "0.7", "0.9")
+PERIOD_OPTIONS = ("7d", "30d")
+OUTCOME_OPTIONS = ("won", "lost", "open")
+
+
+def _ilike_term(raw: str) -> str:
+    """Екранує `%`/`_` (і сам `\\`) ПЕРЕД тим, як обгорнути в `%…%` — інакше
+    заголовок із буквальним `%` чи `_` тихо перетворює пошук на неочікуваний
+    wildcard-збіг. Postgres LIKE/ILIKE за замовчуванням і так використовує
+    `\\` як escape-символ, тож окремий `ESCAPE '\\'` у запиті не потрібен."""
+    escaped = raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _ask_ai_question(title: str | None, ecosystem: str | None, item_uid: str) -> str:
+    """Англійське питання для «Ask AI» на /items (розділ D3) — прив'язане до
+    конкретної знахідки, а не голе посилання на /chat.
+
+    Будується тут, а не в шаблоні: шаблон лишається чистою презентацією, а
+    обрізання довгого заголовка — логіка, не розмітка. Англійською навмисно
+    (той самий інваріант, що й приклади в chat.html): чат-бекенд відмовляється
+    шукати за не-латинським запитом (комміт «Stub chat: refuse non-Latin
+    questions»), тож питання, зібране з українського заголовка знахідки,
+    мусить лишатися латиницею — сама структура речення вже така.
+    """
+    label = (title or item_uid[:16]).strip()
+    if len(label) > 100:
+        label = label[:99].rstrip() + "…"
+    eco = ecosystem or "this ecosystem"
+    return (
+        f'What has {eco} funded similar to "{label}"? '
+        "Who decides and what are typical amounts?"
+    )
+
 
 @app.get("/items", response_class=HTMLResponse)
 def items_page(
     request: Request,
     status: str = "",
-    source_id: int = 0,
     q: str = "",
+    ecosystem: str = "",
+    lane: str = "",
+    min_confidence: str = "",
+    period: str = "",
+    outcome: str = "",
     page: int = 0,
 ):
-    # Дефолт «усі» НЕ змінюється (розділ 4.3): `done` не означає ліда (F5), а
-    # зміна дефолту тихо перевизначила б сенс наявних посилань /items?status=.
+    """Знахідки (розділ 4.3, розширення «фільтри + outcomes»).
+
+    Дефолт «усі» НЕ змінюється (F5, той самий інваріант, що й раніше): коли
+    жоден параметр не заданий, WHERE лишається порожнім і запит — той самий,
+    що й до цієї зміни, тож наявні закладки/посилання з Telegram (`?status=`)
+    показують те саме, що й учора.
+    """
     where, params = [], []
     if status:
         where.append("i.status = %s")
         params.append(status)
-    if source_id:
-        where.append("i.source_id = %s")
-        params.append(source_id)
     if q:
         where.append("i.title ILIKE %s")
-        params.append(f"%{q}%")
+        params.append(_ilike_term(q))
+    if ecosystem:
+        where.append("s.ecosystem = %s")
+        params.append(ecosystem)
+    if lane:
+        where.append("s.lane = %s")
+        params.append(lane)
+    if min_confidence in CONFIDENCE_OPTIONS:
+        where.append("i.confidence >= %s")
+        params.append(float(min_confidence))
+    if period == "7d":
+        where.append("i.first_seen > now() - interval '7 days'")
+    elif period == "30d":
+        where.append("i.first_seen > now() - interval '30 days'")
+    if outcome == "won":
+        where.append("i.outcome = 'won'")
+    elif outcome == "lost":
+        where.append("i.outcome = 'lost'")
+    elif outcome == "open":
+        where.append("i.delivered_at IS NOT NULL AND i.outcome IS NULL")
     clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+    # Хвіст запиту БЕЗ page — для лінків «новіші/старіші» і для «Скинути».
+    # Лише активні фільтри: порожній параметр не повинен смітити URL.
+    active_filters = {
+        k: v
+        for k, v in {
+            "status": status, "q": q, "ecosystem": ecosystem, "lane": lane,
+            "min_confidence": min_confidence, "period": period, "outcome": outcome,
+        }.items()
+        if v
+    }
+    qs_no_page = urlencode(active_filters)
 
     with db() as conn:
         rows = conn.execute(
             f"""
-            SELECT i.*, s.name AS source_name FROM seen_items i
-              JOIN sources s ON s.id = i.source_id {clause}
+            SELECT i.*, s.name AS source_name, s.ecosystem AS source_ecosystem
+              FROM seen_items i JOIN sources s ON s.id = i.source_id {clause}
              ORDER BY i.first_seen DESC LIMIT 50 OFFSET %s
             """,
             (*params, page * 50),
         ).fetchall()
-        source_options = conn.execute(
-            "SELECT id, name FROM sources ORDER BY name"
+        ecosystem_options = conn.execute(
+            "SELECT DISTINCT ecosystem FROM sources ORDER BY ecosystem"
         ).fetchall()
+
+    # «Ask AI» (розділ D3): питання будується тут, не в шаблоні — див. docstring
+    # _ask_ai_question. quote(..., safe="") замість urlencode(), бо це один
+    # рядок тексту, а не словник пар ключ=значення.
+    for row in rows:
+        row["ask_ai_href"] = "/chat?ask=" + quote(
+            _ask_ai_question(row["title"], row["source_ecosystem"], row["item_uid"]),
+            safe="",
+        )
 
     return templates.TemplateResponse(
         request,
         "items.html",
         {
-            "nav": "items", "items": rows, "status": status, "source_id": source_id,
-            "q": q, "page": page, "source_options": source_options,
+            "nav": "items", "items": rows,
+            "status": status, "q": q, "ecosystem": ecosystem, "lane": lane,
+            "min_confidence": min_confidence, "period": period, "outcome": outcome,
+            "page": page,
+            "ecosystem_options": [r["ecosystem"] for r in ecosystem_options],
+            "filters_active": bool(active_filters),
+            "qs_no_page": qs_no_page,
         },
     )
+
+
+@mutations.post("/items/{item_uid}/outcome")
+def set_item_outcome(request: Request, item_uid: str, outcome: str = Form(...), qs: str = Form("")):
+    """Won/Lost/«очистити» на /items (розділ 4.3). Без цього зворотного
+    зв'язку нема на чому калібрувати confidence_threshold/review_band_low —
+    команда бачить лише «лід створено», а не «лід був вартий створення».
+
+    `qs` — поточний рядок запиту сторінки /items (hidden-поле форми, розділ
+    4.3): PRG повертає туди ж, звідки прийшли, а не на дефолтний /items без
+    фільтрів — інакше кожен клік Won/Lost «загублював» би застосовані фільтри.
+    """
+    if outcome not in ("won", "lost", "clear"):
+        raise HTTPException(400, "outcome must be 'won', 'lost' or 'clear'")
+
+    with db() as conn:
+        if outcome == "clear":
+            conn.execute(
+                "UPDATE seen_items SET outcome = NULL, outcome_by = NULL, "
+                "outcome_at = NULL WHERE item_uid = %s",
+                (item_uid,),
+            )
+        else:
+            conn.execute(
+                "UPDATE seen_items SET outcome = %s, outcome_by = %s, outcome_at = now() "
+                "WHERE item_uid = %s",
+                (outcome, auth.actor(request), item_uid),
+            )
+        conn.commit()
+
+    # `qs` — тільки рядок запиту (без "?"), тож ціль завжди лишається на
+    # /items незалежно від того, що прийшло у формі — відкритого редіректу
+    # тут немає навіть у теорії. \r\n на випадок ручного/зіпсованого POST.
+    safe_qs = qs.replace("\r", "").replace("\n", "")[:2000]
+    target = f"/items?{safe_qs}" if safe_qs else "/items"
+    return RedirectResponse(target, status_code=303)
+
+
+# ── Collection log — деталізована діагностика (розділ C) ─────────────
+#
+# «Що робити з помилками», детерміновано: список рядків worker_runs.detail
+# ->'failures' (worker/pipeline.py: f"{source.name}: {ExcType} — {exc}") —
+# сирий текст винятку, зрозумілий інженеру, але не тому, хто веде дашборд.
+# ШІ-діагностика — пізніше; тут — чисті регекси без БД і без мережі, тож їх
+# легко юніт-тестувати (admin/tests) і легко розширювати новим правилом.
+#
+# Порядок ПРАВИЛ важливий: перший збіг перемагає (diagnose_error нижче йде
+# зверху вниз), тож специфічніші коди (429/401/403/404) стоять ПЕРЕД
+# загальнішими патернами (timeout, format) — інакше рядок на кшталт
+# "GET ... returned 404 (timeout waiting for retry)" міг би впасти не в те
+# правило залежно від порядку.
+DIAG_RULES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b429\b|rate[- ]?limit", re.IGNORECASE), "rate_limited"),
+    (re.compile(r"\b401\b|\b403\b", re.IGNORECASE), "auth"),
+    (re.compile(r"\b404\b", re.IGNORECASE), "not_found"),
+    (re.compile(r"\btimeout\b|connecttimeout|readtimeout|writetimeout|pooltimeout",
+                re.IGNORECASE), "timeout"),
+    (re.compile(r"gaierror|name resolution|name or service not known|"
+                r"nodename nor servname|temporary failure in name resolution",
+                re.IGNORECASE), "dns"),
+    (re.compile(r"ssrfblocked|непублічну адресу", re.IGNORECASE), "ssrf"),
+    (re.compile(r"jsondecodeerror|json\.decoder|invalid json|expecting value|"
+                r"unexpected format", re.IGNORECASE), "format"),
+    (re.compile(r"\bquarantined\b|consecutive failures", re.IGNORECASE), "quarantined"),
+]
+DIAG_FALLBACK = "generic"
+
+# Англійська тут (як і в SETTING_META вище) — дефолт для t(), українська —
+# ключем diag.<key> в i18n.UK.
+DIAG_ADVICE_EN: dict[str, str] = {
+    "rate_limited": "Source is rate-limiting us; the worker already backs off — if "
+                     "it persists for days, lower this source's frequency or check "
+                     "API key limits.",
+    "auth": "Key or access problem — check this source's credential in .env.",
+    "not_found": "Source URL changed — re-verify it via the Sources page test-fetch.",
+    "timeout": "Source is slow or unreachable right now — usually transient.",
+    "dns": "Domain doesn't resolve — the source may be dead, or this is a "
+           "temporary DNS hiccup.",
+    "ssrf": "URL resolves to a private, non-public address — deliberately blocked "
+            "(SSRF guard), not a bug to retry.",
+    "format": "Source changed its response format — the config mapping needs an update.",
+    "quarantined": "Source auto-paused after repeated failures — fix the cause, "
+                    "then re-enable it from the Sources page.",
+    DIAG_FALLBACK: "Re-run the test-fetch on the Sources page to see the current error live.",
+}
+
+
+def diagnose_error(text: str) -> str:
+    """→ diag key для одного рядка з worker_runs.detail['failures'].
+
+    Чиста функція без БД (юніт-тестується напряму): перше правило, що
+    збіглося, перемагає — див. коментар над DIAG_RULES про порядок.
+    """
+    for pattern, key in DIAG_RULES:
+        if pattern.search(text):
+            return key
+    return DIAG_FALLBACK
+
+
+templates.env.filters["diag_key"] = diagnose_error
+templates.env.globals["DIAG_ADVICE_EN"] = DIAG_ADVICE_EN
 
 
 @app.get("/runs", response_class=HTMLResponse)
@@ -1064,13 +1456,20 @@ def generate_brief(item_uid: str):
 
 
 @app.get("/briefs", response_class=HTMLResponse)
-def briefs_page(request: Request, ecosystem: str = "", tier: str = ""):
-    """Список бріфів (розділ 4.10).
+def briefs_page(request: Request, ecosystem: str = "", tier: str = "", archived: int = 0):
+    """Список бріфів (розділ 4.10, розширення «lifecycle»).
 
     Досі до бріфа вів лише редірект одразу після генерації — згенерований учора
     бріф знайти було неможливо.
+
+    Заархівовані ховаються за замовчуванням (`archived=0`): архів — те саме
+    «прибрати з-перед очей», що й `enabled=false` на /sources, а не видалення,
+    тож список без перемикача лишається таким, яким команда його й звикла
+    бачити.
     """
     where, params = [], []
+    if not archived:
+        where.append("archived_at IS NULL")
     if ecosystem:
         where.append("ecosystem = %s")
         params.append(ecosystem)
@@ -1081,7 +1480,7 @@ def briefs_page(request: Request, ecosystem: str = "", tier: str = ""):
 
     with db() as conn:
         briefs = conn.execute(
-            f"SELECT id, ecosystem, title, tier, model, item_uid, created_at "
+            f"SELECT id, ecosystem, title, tier, model, item_uid, created_at, archived_at "
             f"FROM kb.briefs {clause} ORDER BY created_at DESC LIMIT 50",
             params,
         ).fetchall()
@@ -1098,6 +1497,7 @@ def briefs_page(request: Request, ecosystem: str = "", tier: str = ""):
             "ecosystems": [r["ecosystem"] for r in ecosystems],
             "ecosystem": ecosystem,
             "tier": tier,
+            "archived": bool(archived),
         },
     )
 
@@ -1112,6 +1512,65 @@ def view_brief(request: Request, brief_id: int):
         raise HTTPException(404, "brief not found")
     return templates.TemplateResponse(
         request, "brief.html", {"nav": "briefs", "brief": brief}
+    )
+
+
+@mutations.post("/briefs/{brief_id}/archive")
+def archive_brief(brief_id: int):
+    with db() as conn:
+        conn.execute(
+            "UPDATE kb.briefs SET archived_at = now() WHERE id = %s AND archived_at IS NULL",
+            (brief_id,),
+        )
+        conn.commit()
+    return RedirectResponse(f"/briefs/{brief_id}", status_code=303)
+
+
+@mutations.post("/briefs/{brief_id}/unarchive")
+def unarchive_brief(brief_id: int):
+    with db() as conn:
+        conn.execute(
+            "UPDATE kb.briefs SET archived_at = NULL WHERE id = %s", (brief_id,)
+        )
+        conn.commit()
+    return RedirectResponse(f"/briefs/{brief_id}", status_code=303)
+
+
+@mutations.post("/briefs/{brief_id}/delete")
+def delete_brief(brief_id: int):
+    """Безповоротно (розділ 4.8): підтвердження — на клієнті через
+    `data-confirm` (app.js, той самий ідіом, що й вимкнення джерела/форуму).
+    """
+    with db() as conn:
+        conn.execute("DELETE FROM kb.briefs WHERE id = %s", (brief_id,))
+        conn.commit()
+    return RedirectResponse("/briefs", status_code=303)
+
+
+_FILENAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+@app.get("/briefs/{brief_id}/download")
+def download_brief(brief_id: int):
+    """`.md` як вкладення (розділ 4.8) — без цього єдиний спосіб дістати
+    текст бріфа офлайн був би «Копіювати» кнопкою в буфер обміну.
+    """
+    with db() as conn:
+        brief = conn.execute(
+            "SELECT title, brief_md FROM kb.briefs WHERE id = %s", (brief_id,)
+        ).fetchone()
+    if not brief:
+        raise HTTPException(404, "brief not found")
+
+    # Ім'я файлу — з title, але санітизоване вайтлістом: заголовок бріфа може
+    # містити будь-що (лапки, слеші, кирилицю), а Content-Disposition ламається
+    # на символах поза latin-1 і небезпечний на символах на кшталт `"`/`/`.
+    stem = _FILENAME_UNSAFE_RE.sub("-", brief["title"] or "").strip("-")[:80]
+    filename = f"{stem or f'brief-{brief_id}'}.md"
+    return Response(
+        content=brief["brief_md"],
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -1156,17 +1615,45 @@ def _chat_backend(payload: dict) -> dict:
     return response.json()
 
 
+# Англійський шаблон питання під форумний чип (розділ D4). Одна коротка фраза,
+# англійською навмисно (той самий інваріант, що й _ask_ai_question вище):
+# stub-рівень чату відмовляється шукати за не-латинським запитом, тож ask=…
+# із чипа має лишатися латиницею незалежно від мови кабінету.
+CHAT_FORUM_ASK_EN = "Which dev tooling grants were discussed in {forum} this quarter?"
+
+
+def _forum_chip_href(display: str) -> str:
+    return "/chat?ask=" + quote(CHAT_FORUM_ASK_EN.format(forum=display), safe="")
+
+
 @app.get("/chat", response_class=HTMLResponse)
-def chat_page(request: Request, error: str = ""):
-    """AI-чат над базою знань (розділ 4.9, задача #30)."""
+def chat_page(request: Request, error: str = "", ask: str = ""):
+    """AI-чат над базою знань (розділ 4.9, задача #30; розділ D — «Ask AI»
+    з /items, приклади й форумні чипи на порожньому стані).
+
+    `ask` (розділ D2) лише ПРЕФІЛИТЬ композер на сервері — жодного
+    автосабміту: людина сама вирішує, надсилати питання чи спершу
+    відредагувати. Обрізання до 4000 — той самий ліміт, що й у POST
+    /chat/send (SETTING нижче в шаблоні валідує довжину ще раз на відправці,
+    тут це лише страховка від абсурдно довгого query-параметра). Textarea в
+    chat.html підставляє значення між тегами — автоескейпінг Jinja вже
+    покриває XSS, окремого екранування тут не треба.
+    """
     who = auth.session_who(request)
     session_key = f"web:{_chat_key(request)}"
+    ask = ask[:4000]
 
     with db() as conn:
         rows = conn.execute(
             "SELECT id, role, who, content, tier, model, created_at "
             "FROM kb.chat_messages WHERE session_key = %s ORDER BY id LIMIT 200",
             (session_key,),
+        ).fetchall()
+        # Форумні чипи (розділ D4): лише enabled=true, ORDER BY forum_slug —
+        # forum_slug UNIQUE (migrations/004_kb_schema.sql), тож DISTINCT тут
+        # не потрібен. Дешево: та сама таблиця, що й на /kb, без JOIN.
+        forum_rows = conn.execute(
+            "SELECT forum_slug FROM kb.forums WHERE enabled = true ORDER BY forum_slug"
         ).fetchall()
 
     # Останній рядок — user: відповідь, можливо, ще генерується (POST
@@ -1175,6 +1662,12 @@ def chat_page(request: Request, error: str = ""):
     # не спінер із поллінгом — автополінг заборонений (app.js, розділ 0):
     # він тихо продовжував би сесію без участі людини.
     thinking = bool(rows) and rows[-1]["role"] == "user"
+
+    forum_chips = [
+        {"label": r["forum_slug"].capitalize(),
+         "href": _forum_chip_href(r["forum_slug"].capitalize())}
+        for r in forum_rows
+    ]
 
     return templates.TemplateResponse(
         request,
@@ -1185,6 +1678,8 @@ def chat_page(request: Request, error: str = ""):
             "messages": rows,
             "thinking": thinking,
             "error": error,
+            "ask": ask,
+            "forum_chips": forum_chips,
         },
     )
 

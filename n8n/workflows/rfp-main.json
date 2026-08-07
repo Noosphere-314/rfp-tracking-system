@@ -387,9 +387,9 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE public.seen_items SET status = 'done', delivered_at = now() WHERE item_uid = $1",
+        "query": "UPDATE public.seen_items SET status = 'done', delivered_at = now(), category = $2, confidence = $3, canonical_project = $4 WHERE item_uid = $1",
         "options": {
-          "queryReplacement": "={{ $('Unwrap payload').first().json.item_uid }}"
+          "queryReplacement": "={{ [ $('Unwrap payload').first().json.item_uid, $('Parse verdict').first().json.category, $('Parse verdict').first().json.confidence, $('Parse verdict').first().json.canonical_project ] }}"
         }
       },
       "id": "pg-done",
@@ -635,9 +635,9 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE public.seen_items SET status = 'done' WHERE item_uid = $1",
+        "query": "UPDATE public.seen_items SET status = 'done', category = $2, confidence = $3, canonical_project = $4 WHERE item_uid = $1",
         "options": {
-          "queryReplacement": "={{ $('Unwrap payload').first().json.item_uid }}"
+          "queryReplacement": "={{ [ $('Unwrap payload').first().json.item_uid, $('Parse verdict').first().json.category, $('Parse verdict').first().json.confidence, $('Parse verdict').first().json.canonical_project ] }}"
         }
       },
       "id": "mark-nolead-v1",

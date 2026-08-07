@@ -159,6 +159,14 @@
     });
   });
 
+  /* ── 5a. Друк у PDF (сторінка бріфа) ──────────────────────────────────
+     Без цього блоку кнопка «Зберегти як PDF» — прогресивне покращення, якого
+     нема: без JS сторінку однаково можна роздрукувати через Ctrl/Cmd+P
+     браузера, друковані стилі (@media print, app.css) працюють незалежно. */
+  document.querySelectorAll("[data-print]").forEach(function (btn) {
+    btn.addEventListener("click", function () { window.print(); });
+  });
+
   /* ── 5. Копіювання (сторінка бріфа) ───────────────────────────────────── */
   document.querySelectorAll("[data-copy]").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -217,6 +225,33 @@
     var textarea = form.querySelector("textarea[name=message]");
     var button = form.querySelector("button[type=submit]");
     var URL_RE = /https?:\/\/[^\s<>"']+/g;
+
+    /* D1 — приклади питань на порожньому стані: без JS це звичайні
+       <a href="/chat?ask=…">, з JS клік лише заповнює композер і фокусить
+       його, замість переходу — саме "заповнює", а не "надсилає" (розділ D1:
+       автосабміту нема). textarea.value — властивість, не innerHTML, тож
+       XSS-поверхні тут немає навіть попри те, що текст іде з data-атрибута. */
+    document.querySelectorAll("#chat-empty [data-fill]").forEach(function (link) {
+      link.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        textarea.value = link.dataset.fill;
+        textarea.focus();
+      });
+    });
+
+    /* D4 — форумні чипи над композером: без JS це посилання на приклад,
+       уже підставлений під конкретний форум (app.py: _forum_chip_href), з
+       JS клік ДОДАЄ " in <Forum>" до вже набраного тексту, а не переходить —
+       інакше чернетка людини губилася б при переході на голий /chat. Чип
+       "All" (data-forum="") нічого не дописує — лише фокусить textarea. */
+    document.querySelectorAll(".chat__forumchips [data-forum]").forEach(function (chip) {
+      chip.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        var forum = chip.dataset.forum;
+        if (forum) textarea.value = textarea.value + " in " + forum;
+        textarea.focus();
+      });
+    });
 
     function scrollDown() {
       if (dataBox) dataBox.scrollTop = dataBox.scrollHeight;

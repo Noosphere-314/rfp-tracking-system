@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{#- Бріф (розділ 4.8). Markdown НЕ рендериться: `brief_md` — вихід LLM, тож
-    власний рендерер із підтримкою [текст](url) був би XSS-поверхнею
-    (`[клац](javascript:…)`). Тіло лишається як є, під autoescape, з
-    `white-space: pre-wrap` через .prose--raw. Це рішення специфікації, а не
-    недоробка: рендер Markdown — окремий крок з окремим рев'ю.
+{#- Бріф (розділ 4.8 + розширення «readable + lifecycle»). `brief_md` — вихід
+    LLM, тобто недовірений текст: рендериться через `md_lite` (admin/app.py) —
+    escape-FIRST рендерер безпечної підмножини markdown, той самий принцип,
+    що й у `hl()`/`linkify()` (розділ 4.7/4.9). Сирий HTML і `javascript:`-URL
+    ніколи не проходять — `md_lite` побудований так, що вони фізично не
+    можуть стати тегом/href.
 
     Двомовність: англійський текст — другим аргументом t(), українська зі
     словника. Тіло бріфа, назва екосистеми, модель і item_uid — дані. -#}
@@ -21,8 +22,31 @@
     <span>{{ t("pg.brief.h1", "Brief") }} #{{ brief.id }}</span>
   </nav>
   <span class="toolbar__spacer"></span>
-  {#- Сенс бріфа — вставити його в Telegram/CRM, тому копіювання і є головна
-      дія сторінки. Обробник у app.js (data-copy → селектор джерела). -#}
+  <a class="btn" href="/briefs/{{ brief.id }}/download">{{ t("act.download", "Download .md") }}</a>
+  {#- window.print() — CSP-safe обробник у app.js (data-print), без інлайн-JS.
+      Друковані стилі — @media print у app.css: сайдбар/тулбар/кнопки ховаються,
+      лишається лише .prose. -#}
+  <button class="btn" type="button" data-print>{{ t("act.print", "Save as PDF") }}</button>
+  {% if brief.archived_at %}
+  <form class="inline" method="post" action="/briefs/{{ brief.id }}/unarchive">
+    {% include "_csrf.html" %}
+    <button class="btn" type="submit">{{ t("act.unarchive", "Unarchive") }}</button>
+  </form>
+  {% else %}
+  <form class="inline" method="post" action="/briefs/{{ brief.id }}/archive">
+    {% include "_csrf.html" %}
+    <button class="btn" type="submit">{{ t("act.archive", "Archive") }}</button>
+  </form>
+  {% endif %}
+  <form class="inline" method="post" action="/briefs/{{ brief.id }}/delete"
+        data-confirm="{{ t('msg.confirm_delete_brief', 'Delete this brief? This cannot be undone.') }}">
+    {% include "_csrf.html" %}
+    <button class="btn btn--danger" type="submit">{{ t("act.delete", "Delete") }}</button>
+  </form>
+  {#- Сенс бріфа — вставити його в Telegram/CRM, тому копіювання лишається
+      головною дією сторінки. Обробник у app.js (data-copy → селектор
+      джерела); копіюється видимий текст рендеру (innerText), без markdown-
+      синтаксису. -#}
   <button class="btn btn--primary" type="button" data-copy="#brief-body">{{ t("act.copy", "Copy") }}</button>
 </div>
 {% endblock %}
@@ -36,11 +60,12 @@
     {% if brief.tokens_in %}
     <span class="badge">{{ brief.tokens_in }}→{{ brief.tokens_out }} {{ t("f.tokens", "tokens") }}</span>
     {% endif %}
+    {% if brief.archived_at %}<span class="badge b-neutral">{{ t("st.archived", "archived") }}</span>{% endif %}
     <span class="toolbar__spacer"></span>
     <span class="muted">{{ brief.created_at.strftime('%Y-%m-%d %H:%M') if brief.created_at else '—' }}</span>
   </div>
   <div class="panel__body">
-    <div class="prose prose--raw" id="brief-body">{{ brief.brief_md }}</div>
+    <div class="prose" id="brief-body">{{ brief.brief_md | md_lite }}</div>
   </div>
   {% if brief.item_uid %}
   <div class="panel__foot">

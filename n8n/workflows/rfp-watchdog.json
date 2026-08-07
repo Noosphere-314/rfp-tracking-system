@@ -1,0 +1,171 @@
+{
+  "name": "rfp-watchdog",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "wd-cron-1",
+      "name": "Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT coalesce(extract(epoch FROM (now() - max(started_at)))/3600.0, 999) AS hours_since_run, (SELECT count(*) FROM public.seen_items WHERE status='pending') AS pending_backlog FROM public.worker_runs;",
+        "options": {}
+      },
+      "id": "wd-pg-1",
+      "name": "Check worker health",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "aGuV5tIZpbOq5Lbj",
+          "name": "Postgres account"
+        }
+      },
+      "notes": "Dead man's switch (reliability, 2026-08-07). coalesce(...,999) навмисний: порожня public.worker_runs (щойно піднятий стек, жодного прогону ще не було) мусить одразу бити тривогу, а не мовчати через NULL з max(). Усі ідентифікатори public.-кваліфіковані — n8n тримає ВЛАСНУ таблицю settings у своїй схемі, і некваліфіковані імена вже раз різались об це (search_path trap, 2026-08-06)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.hours_since_run }}",
+              "rightValue": 2.5,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "wd-if-1",
+      "name": "Worker silent?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        460,
+        0
+      ],
+      "notes": "Поріг 2.5 год при годинному циклі воркера: покриває одну пропущену ітерацію плюс запас на джиттер, без фальшивих тривог на кожен звичайний прогін. HEALTHCHECKS_URL і SLACK_WEBHOOK_URL у проді порожні й лишаються опціональними — цей watchdog самодостатній, тримається лише на Postgres + Telegram credentials, які вже налаштовані."
+    },
+    {
+      "parameters": {
+        "chatId": "-1004424509619",
+        "text": "={{ '🚨 Worker silent for ' + $json.hours_since_run + ' h (last run > 2.5h ago). Pending backlog: ' + $json.pending_backlog + '. Check: docker compose -f docker-compose.yml logs worker' }}",
+        "additionalFields": {}
+      },
+      "id": "wd-tg-group-1",
+      "name": "Telegram: watchdog (група)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        -100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "BknL5zHv5PjAaBh1",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "8325998119",
+        "text": "={{ '🚨 Worker silent for ' + $json.hours_since_run + ' h (last run > 2.5h ago). Pending backlog: ' + $json.pending_backlog + '. Check: docker compose -f docker-compose.yml logs worker' }}",
+        "additionalFields": {}
+      },
+      "id": "wd-tg-dm-1",
+      "name": "Telegram: watchdog (DM)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "BknL5zHv5PjAaBh1",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Hourly": {
+      "main": [
+        [
+          {
+            "node": "Check worker health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check worker health": {
+      "main": [
+        [
+          {
+            "node": "Worker silent?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker silent?": {
+      "main": [
+        [
+          {
+            "node": "Telegram: watchdog (група)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram: watchdog (DM)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "laFwaTnkdoxiNplM"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "active": true,
+  "id": "rfpwatchdog0001"
+}
