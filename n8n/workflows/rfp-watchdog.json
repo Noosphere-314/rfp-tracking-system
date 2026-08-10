@@ -93,7 +93,10 @@
           "id": "BknL5zHv5PjAaBh1",
           "name": "Telegram account"
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -114,7 +117,10 @@
           "id": "BknL5zHv5PjAaBh1",
           "name": "Telegram account"
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     }
   ],
   "connections": {
