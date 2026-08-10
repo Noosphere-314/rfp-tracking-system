@@ -496,3 +496,33 @@ def test_dispatch_tool_unknown_name_returns_error_json():
 
     payload = json.loads(chat._dispatch_tool("mystery_tool", {}))
     assert "error" in payload
+
+
+# ── Отруєння історії stub-ерою (знайдено наживо 2026-08-10) ──────────
+
+
+def test_drop_stub_pairs_removes_stub_answer_with_its_question():
+    """Модель читала у власній історії stub-банери «AI tier is not enabled»
+    і відповідала «доступу нема» ВЖЕ МАЮЧИ доступ. Stub-пара (питання +
+    keyword-відповідь) викидається цілком — інакше ламається чергування."""
+    rows = [
+        {"role": "user", "content": "old q", "tier": None},
+        {"role": "assistant", "content": "🔎 Keyword mode — not enabled", "tier": "stub"},
+        {"role": "user", "content": "real q", "tier": None},
+        {"role": "assistant", "content": "real answer", "tier": "llm"},
+    ]
+    out = chat._drop_stub_pairs(rows)
+    assert [(r["role"], r["content"]) for r in out] == [
+        ("user", "real q"), ("assistant", "real answer"),
+    ]
+
+
+def test_drop_stub_pairs_handles_orphan_stub_and_keeps_llm_only_history():
+    rows = [
+        {"role": "assistant", "content": "orphan stub", "tier": "stub"},
+        {"role": "user", "content": "q", "tier": None},
+        {"role": "assistant", "content": "a", "tier": "llm"},
+    ]
+    out = chat._drop_stub_pairs(rows)
+    assert [(r["role"]) for r in out] == ["user", "assistant"]
+    assert chat._drop_stub_pairs([]) == []

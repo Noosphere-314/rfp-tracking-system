@@ -256,14 +256,46 @@ def _load_history(storage_key: str, before_id: int) -> list[dict]:
     with kbtools._db() as conn:
         rows = conn.execute(
             """
-            SELECT role, content FROM kb.chat_messages
+            SELECT role, content, tier FROM kb.chat_messages
              WHERE session_key = %s AND id < %s
              ORDER BY id DESC LIMIT %s
             """,
             (storage_key, before_id, MAX_HISTORY_ROWS),
         ).fetchall()
     rows = list(reversed(rows))  # DESC fetch → chronological order
-    return _repair_window(rows)
+    return _repair_window(_drop_stub_pairs(rows))
+
+
+def _drop_stub_pairs(rows: list[dict]) -> list[dict]:
+    """Викидає з вікна історії stub-відповіді РАЗОМ із питаннями до них.
+
+    Знайдено на живих людях 2026-08-10: після ввімкнення ключа модель
+    прочитала у власній історії stub-банери «AI tier is not enabled» і на
+    питання «ти маєш доступ до Anthropic?» упевнено відповіла «ні» —
+    отруєння контексту власним же минулим. Stub-пари для LLM-рівня не
+    несуть нічого, крім дезінформації і зайвих токенів (це дампи keyword-
+    пошуку); питання без своєї відповіді лишати теж не можна — ламається
+    чергування ролей, тому пара викидається цілком.
+    """
+    out: list[dict] = []
+    i = 0
+    while i < len(rows):
+        row = rows[i]
+        nxt = rows[i + 1] if i + 1 < len(rows) else None
+        if (
+            row["role"] == "user"
+            and nxt is not None
+            and nxt["role"] == "assistant"
+            and nxt.get("tier") == "stub"
+        ):
+            i += 2
+            continue
+        if row["role"] == "assistant" and row.get("tier") == "stub":
+            i += 1
+            continue
+        out.append(row)
+        i += 1
+    return out
 
 
 # ── Stub tier — deterministic keyword search ────────────────────────
