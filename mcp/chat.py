@@ -62,11 +62,19 @@ _CHAT_SYSTEM = """You are a bid-research analyst for a Web3 development agency,
 answering teammates' questions over an archive of DAO governance forum
 discussions (Optimism, Arbitrum, Lido, and others).
 
+You are the live AI tier of this system, running on Claude via the Anthropic
+API (the model id is chosen in the dashboard settings). If asked whether the
+AI/Anthropic integration is enabled, confirm it is — you are it. Earlier
+keyword-mode messages may exist in old conversations; they predate the key.
+
 Work like an analyst:
 - Call search_kb with 2-3 differently-phrased queries (synonyms matter: forum
   vocabulary like RetroPGF, mission, ARFC, temp check) before concluding the
   archive has nothing on a topic.
 - Read promising topics in full with get_topic before citing them.
+- list_findings shows what OUR pipeline collected (internal findings with
+  classifier verdicts) — use it for questions about our own leads/findings,
+  not the public forum archive.
 - Every factual claim MUST cite its source. End every answer with a numbered
   "Sources:" list of the bare post URLs you relied on.
 - If the archive genuinely has nothing on the question, say so honestly — do
@@ -80,6 +88,24 @@ _TELEGRAM_SYSTEM = (
     "Output is plain-text Telegram: no markdown syntax at all, bare URLs on "
     "their own lines."
 )
+
+_WEB_SEARCH_SYSTEM_LINE = (
+    "You may also use web_search for facts newer than the archive; prefer "
+    "the archive for anything it covers, and cite web sources separately."
+)
+
+# Server-side tool (runs on Anthropic's infra — no local dispatch, see
+# _dispatch_tool's docstring). type=web_search_20260318: current per the
+# Anthropic docs as of this writing (platform.claude.com/docs/en/agents-and-
+# tools/tool-use/web-search-tool) — adds dynamic filtering (20260209) AND
+# response_inclusion control; the docs' own examples default to it over the
+# older _20250305/_20260209 variants. Gated behind settings.chat_web_search
+# (migrations/009) — appended to the tools list only when 'on'.
+_WEB_SEARCH_TOOL = {
+    "type": "web_search_20260318",
+    "name": "web_search",
+    "max_uses": 3,
+}
 
 _TOOLS = [
     {
@@ -116,6 +142,30 @@ _TOOLS = [
                 "max_posts": {"type": "integer"},
             },
             "required": ["forum", "topic_id"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "name": "list_findings",
+        "description": (
+            "Shows what OUR pipeline collected — internal findings/leads with "
+            "classifier verdicts (agent 2.0), NOT the public forum archive. "
+            "Use it for questions about our own leads/findings."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ecosystem": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "done", "filtered"],
+                },
+                "days": {"type": "integer"},
+                "min_confidence": {"type": "number"},
+                "limit": {"type": "integer"},
+            },
+            "required": [],
             "additionalProperties": False,
         },
         "strict": True,
@@ -185,6 +235,11 @@ def _setting(conn, key: str, default: str) -> str:
 def _chat_model_setting() -> str:
     with kbtools._db() as conn:
         return _setting(conn, "chat_model", "claude-sonnet-5")
+
+
+def _web_search_enabled() -> bool:
+    with kbtools._db() as conn:
+        return _setting(conn, "chat_web_search", "off") == "on"
 
 
 def _daily_budget_exceeded() -> bool:
@@ -391,16 +446,30 @@ def _dispatch_tool(name: str, tool_input: dict) -> str:
             offset=tool_input.get("offset", 0),
             max_posts=max_posts,
         )
+    elif name == "list_findings":
+        result = kbtools.findings_impl(
+            ecosystem=tool_input.get("ecosystem"),
+            status=tool_input.get("status"),
+            days=tool_input.get("days", 14),
+            min_confidence=tool_input.get("min_confidence"),
+            limit=tool_input.get("limit", 10),
+        )
     else:
         result = {"error": f"unknown tool {name}"}
     return json.dumps(result, ensure_ascii=False)
 
 
-def _llm_reply(messages: list[dict], model: str, channel: str) -> tuple[str, int, int]:
+def _llm_reply(
+    messages: list[dict], model: str, channel: str, web_search: bool = False,
+) -> tuple[str, int, int]:
     """Manual tool-use loop (bounded, no beta dependency) — mechanics copied
     from briefing._llm_brief. Raises on any SDK/network problem or on
     exhausting the iteration cap without an answer; the caller (answer())
-    catches this and falls back to the stub tier."""
+    catches this and falls back to the stub tier.
+
+    web_search=False is the default so direct callers (and existing tests)
+    keep today's exact behavior; answer() passes the live settings.chat_web_search
+    value in."""
     import anthropic  # лінивий імпорт, як і в briefing.py — не всім деплоям
     # потрібен цей SDK (stub-only сетапи не мають ANTHROPIC_API_KEY узагалі).
 
@@ -408,6 +477,10 @@ def _llm_reply(messages: list[dict], model: str, channel: str) -> tuple[str, int
 
     system = [{"type": "text", "text": _CHAT_SYSTEM,
                "cache_control": {"type": "ephemeral"}}]
+    tools = list(_TOOLS)
+    if web_search:
+        tools.append(_WEB_SEARCH_TOOL)
+        system.append({"type": "text", "text": _WEB_SEARCH_SYSTEM_LINE})
     if channel == "telegram":
         system.append({"type": "text", "text": _TELEGRAM_SYSTEM})
 
@@ -420,7 +493,7 @@ def _llm_reply(messages: list[dict], model: str, channel: str) -> tuple[str, int
             model=model,
             max_tokens=1500,
             system=system,
-            tools=_TOOLS,
+            tools=tools,
             messages=messages,
         )
         last_response = response
@@ -461,6 +534,102 @@ def _llm_reply(messages: list[dict], model: str, channel: str) -> tuple[str, int
         if text:
             return text, tokens_in, tokens_out
     raise RuntimeError("chat: tool-use loop hit MAX_TOOL_ITERATIONS without an answer")
+
+
+# ── Keywords advice (agent 2.0 — POST /keywords-advice) ─────────────
+
+
+_KEYWORDS_ADVICE_PROMPT = """You help maintain the regex pre-filter (public.keywords) \
+for a Web3 RFP/funding-opportunity tracking pipeline. Below is the filter's recent \
+performance: the current keywords, titles the pre-filter dropped in the last 14 \
+days (noise it let through to filtering), and the categories the LLM classifier \
+assigned to items that made it past the filter (status='done') in the same window.
+
+Current include/exclude keywords:
+{keywords}
+
+Titles filtered out by the pre-filter, last 14 days (sample):
+{filtered}
+
+Categories assigned to items that made it through, last 14 days (counts):
+{categories}
+
+Suggest concrete keyword changes:
+1. New INCLUDE candidates the filter is missing — based on what's making it \
+through and getting classified as FUNDING, what forum vocabulary should the \
+include list also catch?
+2. New EXCLUDE candidates — recurring noise/vocabulary in the filtered titles \
+above that's clogging the pipeline.
+3. Existing keywords that look too broad (matching a lot of unrelated noise) \
+and should be narrowed or dropped.
+
+Answer as short markdown: a numbered list, each item a concrete keyword/phrase \
+suggestion with a one-line reason. Name actual words, not general advice."""
+
+
+def keywords_advice() -> tuple[dict, int]:
+    """POST /keywords-advice (server.py) — one-shot LLM read of the keyword
+    filter's recent performance. Unlike answer(), this is a single Anthropic
+    call with no tools and no conversation history: the admin dashboard's
+    "suggest keyword changes" button, not a chat.
+
+    Same fail-closed contract as answer() (see its docstring): an unset
+    KB_MCP_TOKEN means server.py's Bearer middleware is off entirely, so this
+    must refuse on its own rather than serve free LLM calls to anyone who can
+    reach the port.
+    """
+    if not os.environ.get("KB_MCP_TOKEN", ""):
+        return {"ok": False, "error": "Chat is disabled: KB_MCP_TOKEN is not set."}, 403
+
+    if not ANTHROPIC_API_KEY:
+        return {"ok": False, "error": "AI tier is off — set ANTHROPIC_API_KEY."}, 503
+
+    with kbtools._db() as conn:
+        model = _setting(conn, "chat_model", "claude-sonnet-5")
+        keyword_rows = conn.execute(
+            "SELECT pattern, kind FROM keywords WHERE enabled AND valid "
+            "ORDER BY kind, pattern"
+        ).fetchall()
+        filtered_rows = conn.execute(
+            """
+            SELECT left(title, 80) AS title FROM seen_items
+             WHERE status = 'filtered' AND first_seen > now() - interval '14 days'
+             ORDER BY first_seen DESC LIMIT 60
+            """
+        ).fetchall()
+        category_rows = conn.execute(
+            """
+            SELECT category, count(*) AS n FROM seen_items
+             WHERE status = 'done' AND first_seen > now() - interval '14 days'
+             GROUP BY category ORDER BY n DESC
+            """
+        ).fetchall()
+
+    keywords_md = "\n".join(
+        f"- [{r['kind']}] {r['pattern']}" for r in keyword_rows
+    ) or "(none configured)"
+    filtered_md = "\n".join(
+        f"- {r['title']}" for r in filtered_rows if r["title"]
+    ) or "(none in the last 14 days)"
+    categories_md = "\n".join(
+        f"- {r['category'] or '(uncategorized)'}: {r['n']}" for r in category_rows
+    ) or "(none in the last 14 days)"
+
+    prompt = _KEYWORDS_ADVICE_PROMPT.format(
+        keywords=keywords_md, filtered=filtered_md, categories=categories_md,
+    )
+
+    import anthropic  # лінивий імпорт — той самий підхід, що й у _llm_reply
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    response = client.messages.create(
+        model=model,
+        max_tokens=1200,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    advice_md = "\n".join(b.text for b in response.content if b.type == "text")
+
+    return {"ok": True, "advice_md": advice_md, "model": model}, 200
 
 
 # ── Entry point ────────────────────────────────────────────────────
@@ -513,8 +682,9 @@ def answer(payload: dict) -> tuple[dict, int]:
     if ANTHROPIC_API_KEY and not budget_exceeded:
         try:
             model = _chat_model_setting()
+            web_search_on = _web_search_enabled()
             reply_md, tokens_in, tokens_out = _llm_reply(
-                anthropic_messages, model, channel
+                anthropic_messages, model, channel, web_search=web_search_on
             )
             tier, model_used = "llm", model
         except Exception:  # noqa: BLE001 — LLM trouble degrades, never 500s

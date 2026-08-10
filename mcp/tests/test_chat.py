@@ -32,8 +32,10 @@ import pytest  # noqa: E402
 import chat  # noqa: E402
 import kbtools  # noqa: E402
 from fakeanthropic import (  # noqa: E402
-    FakeResponse, install as install_fake_anthropic, text_block, tool_use_block,
+    FakeResponse, install as install_fake_anthropic, server_tool_use_block,
+    text_block, tool_use_block, web_search_tool_result_block,
 )
+from fakedb import make_db  # noqa: E402
 
 VALID_PAYLOAD = {
     "channel": "web",
@@ -57,6 +59,9 @@ def _stub_no_op_db(monkeypatch, *, budget_exceeded=False):
         chat, "_insert_message",
         lambda storage_key, channel, who, role, content, **kw: 1,
     )
+    # web_search — окрема settings-читалка (agent 2.0); тести, яким байдужий
+    # web_search, не мають торкатися БД заради неї.
+    monkeypatch.setattr(chat, "_web_search_enabled", lambda: False)
 
 
 # ── Fail-closed (KB_MCP_TOKEN unset) ────────────────────────────────
@@ -186,7 +191,7 @@ def test_user_row_persisted_before_llm_is_attempted(monkeypatch):
 
     monkeypatch.setattr(chat, "_insert_message", fake_insert)
 
-    def llm_sees_user_row_already_persisted(messages, model, channel):
+    def llm_sees_user_row_already_persisted(messages, model, channel, **kw):
         assert persisted_roles == ["user"], (
             "the user row must already be in the database before any LLM "
             "call is attempted"
@@ -526,3 +531,256 @@ def test_drop_stub_pairs_handles_orphan_stub_and_keeps_llm_only_history():
     out = chat._drop_stub_pairs(rows)
     assert [(r["role"]) for r in out] == ["user", "assistant"]
     assert chat._drop_stub_pairs([]) == []
+
+
+# ── Agent 2.0: identity line ────────────────────────────────────────
+
+
+def test_identity_line_present_in_system_prompt():
+    """Живий урок 2026-08-10 (_drop_stub_pairs): модель мусить знати, що
+    вона Й Є AI-рівнем — інакше на «ти маєш доступ до Anthropic?» відповідає
+    буквально «ні», бо ніколи не бачила прямого підтвердження."""
+    assert "live AI tier" in chat._CHAT_SYSTEM
+    assert "Anthropic" in chat._CHAT_SYSTEM
+    assert "predate the key" in chat._CHAT_SYSTEM
+
+
+def test_list_findings_system_line_present():
+    assert "list_findings" in chat._CHAT_SYSTEM
+    assert "not the public forum archive" in chat._CHAT_SYSTEM
+
+
+# ── Agent 2.0: web_search gated by settings ─────────────────────────
+
+
+def test_llm_reply_web_search_off_by_default(monkeypatch):
+    """Дефолт web_search=False (як і в answer(), коли _web_search_enabled()
+    поверне 'off') відтворює РІВНО сьогоднішню поведінку: жодного
+    server-tool у tools, жодного зайвого system-рядка."""
+    responses = [FakeResponse([text_block("ok")], "end_turn")]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    chat._llm_reply([{"role": "user", "content": "q"}], "m", "web")
+
+    tools = holder["client"].messages.calls[0]["tools"]
+    assert len(tools) == len(chat._TOOLS)
+    assert all(t["name"] != "web_search" for t in tools)
+    system = holder["client"].messages.calls[0]["system"]
+    assert len(system) == 1
+    assert chat._WEB_SEARCH_SYSTEM_LINE not in [b["text"] for b in system]
+
+
+def test_llm_reply_web_search_on_adds_server_tool_and_system_line(monkeypatch):
+    responses = [FakeResponse([text_block("ok")], "end_turn")]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    chat._llm_reply([{"role": "user", "content": "q"}], "m", "web", web_search=True)
+
+    tools = holder["client"].messages.calls[0]["tools"]
+    assert len(tools) == len(chat._TOOLS) + 1
+    assert tools[-1] == chat._WEB_SEARCH_TOOL
+    assert tools[-1]["type"] == "web_search_20260318"
+    assert tools[-1]["max_uses"] == 3
+    system = holder["client"].messages.calls[0]["system"]
+    assert chat._WEB_SEARCH_SYSTEM_LINE in [b["text"] for b in system]
+
+
+def test_llm_reply_web_search_on_telegram_keeps_both_extra_system_lines(monkeypatch):
+    responses = [FakeResponse([text_block("ok")], "end_turn")]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    chat._llm_reply(
+        [{"role": "user", "content": "q"}], "m", "telegram", web_search=True,
+    )
+
+    system_texts = [b["text"] for b in holder["client"].messages.calls[0]["system"]]
+    assert chat._WEB_SEARCH_SYSTEM_LINE in system_texts
+    assert chat._TELEGRAM_SYSTEM in system_texts
+
+
+def test_answer_reads_web_search_setting_and_passes_it_through(monkeypatch):
+    """answer() must ask _web_search_enabled() (not hardcode False) and pass
+    the result into _llm_reply — this is the only wiring test_llm_reply's
+    own unit tests can't cover, since they call _llm_reply directly."""
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(chat, "_web_search_enabled", lambda: True)
+
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False):
+        seen["web_search"] = web_search
+        return "answer", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+
+    body, status = chat.answer(VALID_PAYLOAD)
+
+    assert status == 200
+    assert seen["web_search"] is True
+
+
+# ── Agent 2.0: mixed content with a server-tool block ───────────────
+
+
+def test_llm_reply_mixed_server_tool_content_end_turn_does_not_crash(monkeypatch):
+    """server_tool_use/web_search_tool_result blocks must not break the
+    text-extraction pass (block.type != 'text' → skipped, exactly like
+    tool_use blocks already were before this change)."""
+    responses = [
+        FakeResponse(
+            [
+                text_block("Searching the web."),
+                server_tool_use_block("web_search", {"query": "optimism grants 2026"}),
+                web_search_tool_result_block(
+                    content=[{"type": "web_search_result", "url": "https://x", "title": "t"}],
+                ),
+                text_block("Found it.\n\nSources:\n1. https://x"),
+            ],
+            "end_turn",
+        ),
+    ]
+    install_fake_anthropic(monkeypatch, responses)
+
+    text, *_ = chat._llm_reply(
+        [{"role": "user", "content": "any recent news?"}], "m", "web", web_search=True,
+    )
+
+    assert text == "Searching the web.\nFound it.\n\nSources:\n1. https://x"
+
+
+def test_llm_reply_mixed_server_tool_and_client_tool_use_in_same_turn(monkeypatch):
+    """A response can carry BOTH a resolved server-tool pair (web_search) AND
+    a pending client tool_use (search_kb) in the same content list, with
+    stop_reason='tool_use' driven by the client tool alone. The dispatch
+    loop must only act on the tool_use block — server-tool blocks are
+    echoed back verbatim (their encrypted_content matters for replay) but
+    never locally dispatched."""
+    monkeypatch.setattr(
+        kbtools, "search_impl",
+        lambda query, **kw: {"post_hits": [], "topic_title_hits": [], "hint": "h"},
+    )
+    responses = [
+        FakeResponse(
+            [
+                text_block("Checking both."),
+                server_tool_use_block("web_search", {"query": "x"}, "srv_1"),
+                web_search_tool_result_block(id_="srv_1", content=[]),
+                tool_use_block("search_kb", {"query": "grants"}, "call_1"),
+            ],
+            "tool_use",
+        ),
+        FakeResponse([text_block("done")], "end_turn"),
+    ]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    text, *_ = chat._llm_reply(
+        [{"role": "user", "content": "q"}], "m", "web", web_search=True,
+    )
+
+    assert text == "done"
+    second_call_messages = holder["client"].messages.calls[1]["messages"]
+    tool_results = second_call_messages[-1]["content"]
+    # Лише клієнтський tool_use породив tool_result — server-tool блоки
+    # мовчки пропущені, не здиспетчерені.
+    assert len(tool_results) == 1
+    assert tool_results[0]["tool_use_id"] == "call_1"
+    # Асистентський хід, який пішов назад у messages, і досі несе
+    # server-tool блоки незмінними (потрібні для реплею на наступний хід).
+    assistant_turn = second_call_messages[-2]
+    assert assistant_turn["role"] == "assistant"
+    block_types = [b.type for b in assistant_turn["content"]]
+    assert "server_tool_use" in block_types
+    assert "web_search_tool_result" in block_types
+
+
+# ── list_findings dispatch ───────────────────────────────────────────
+
+
+def test_dispatch_tool_list_findings_calls_findings_impl_with_defaults(monkeypatch):
+    captured = {}
+
+    def fake_findings_impl(**kw):
+        captured.update(kw)
+        return {"findings": []}
+
+    monkeypatch.setattr(kbtools, "findings_impl", fake_findings_impl)
+
+    chat._dispatch_tool("list_findings", {"ecosystem": "Optimism"})
+
+    assert captured == {
+        "ecosystem": "Optimism", "status": None, "days": 14,
+        "min_confidence": None, "limit": 10,
+    }
+
+
+def test_dispatch_tool_list_findings_passes_through_all_fields(monkeypatch):
+    captured = {}
+
+    def fake_findings_impl(**kw):
+        captured.update(kw)
+        return {"findings": []}
+
+    monkeypatch.setattr(kbtools, "findings_impl", fake_findings_impl)
+
+    chat._dispatch_tool("list_findings", {
+        "ecosystem": "Arbitrum", "status": "done", "days": 30,
+        "min_confidence": 0.8, "limit": 5,
+    })
+
+    assert captured == {
+        "ecosystem": "Arbitrum", "status": "done", "days": 30,
+        "min_confidence": 0.8, "limit": 5,
+    }
+
+
+# ── /keywords-advice (chat.keywords_advice) ─────────────────────────
+
+
+def test_keywords_advice_fail_closed_when_token_unset(monkeypatch):
+    monkeypatch.delenv("KB_MCP_TOKEN", raising=False)
+    body, status = chat.keywords_advice()
+    assert status == 403
+    assert body == {"ok": False, "error": "Chat is disabled: KB_MCP_TOKEN is not set."}
+
+
+def test_keywords_advice_no_key_returns_503(monkeypatch):
+    assert chat.ANTHROPIC_API_KEY == ""  # module default, no key configured
+    body, status = chat.keywords_advice()
+    assert status == 503
+    assert body == {"ok": False, "error": "AI tier is off — set ANTHROPIC_API_KEY."}
+
+
+def test_keywords_advice_happy_path(monkeypatch):
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+
+    router = [
+        ("SELECT value FROM settings", [{"value": "claude-sonnet-5"}]),
+        ("FROM keywords", [{"pattern": "grant", "kind": "include"}]),
+        ("status = 'filtered'", [{"title": "unrelated noise thread"}]),
+        ("status = 'done'", [{"category": "FUNDING", "n": 3}]),
+    ]
+    db_factory, _calls = make_db(router)
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    responses = [FakeResponse(
+        [text_block("1. Add 'bounty' — recurring in FUNDING titles.")], "end_turn",
+    )]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    body, status = chat.keywords_advice()
+
+    assert status == 200
+    assert body["ok"] is True
+    assert body["model"] == "claude-sonnet-5"
+    assert "bounty" in body["advice_md"]
+
+    call = holder["client"].messages.calls[0]
+    assert call["model"] == "claude-sonnet-5"
+    assert call["max_tokens"] == 1200
+    assert "tools" not in call  # no-tools single call, per spec
+    prompt = call["messages"][0]["content"]
+    assert "[include] grant" in prompt
+    assert "unrelated noise thread" in prompt
+    assert "FUNDING: 3" in prompt

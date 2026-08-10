@@ -218,6 +218,21 @@ async def chat_route(request: Request) -> JSONResponse:
     return JSONResponse(result, status_code=status)
 
 
+@mcp.custom_route("/keywords-advice", methods=["POST"])
+async def keywords_advice_route(_request: Request) -> JSONResponse:
+    """HTTP entry for the admin dashboard's "suggest keyword changes" button.
+    The Bearer middleware below already covers this path — but only when a
+    token is configured; chat.keywords_advice adds its own fail-closed check
+    for the token-unset case (see chat.answer's docstring for why). No
+    request body — the advice is generated purely from current DB state."""
+    from starlette.concurrency import run_in_threadpool
+
+    import chat
+
+    result, status = await run_in_threadpool(chat.keywords_advice)
+    return JSONResponse(result, status_code=status)
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_request: Request) -> JSONResponse:
     from starlette.concurrency import run_in_threadpool

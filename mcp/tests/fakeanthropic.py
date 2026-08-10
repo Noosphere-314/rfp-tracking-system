@@ -23,6 +23,23 @@ def tool_use_block(name: str, input_: dict, id_: str = "tool_1") -> SimpleNamesp
     return SimpleNamespace(type="tool_use", name=name, input=input_, id=id_)
 
 
+# Форма server-tool блоків (web_search) за SDK-схемою: server_tool_use несе
+# name/input/id так само, як tool_use, але chat._llm_reply НІКОЛИ не диспетчерить
+# його локально (block.type != "tool_use" — фільтрується мовчки, див.
+# _llm_reply). web_search_tool_result — окремий тип із .content (список
+# результатів АБО об'єкт помилки — тут завжди список, помилковий кейс не
+# перевіряється).
+def server_tool_use_block(name: str, input_: dict, id_: str = "srvtool_1") -> SimpleNamespace:
+    return SimpleNamespace(type="server_tool_use", name=name, input=input_, id=id_)
+
+
+def web_search_tool_result_block(id_: str = "srvtool_1", content=None) -> SimpleNamespace:
+    return SimpleNamespace(
+        type="web_search_tool_result", tool_use_id=id_,
+        content=content if content is not None else [],
+    )
+
+
 class FakeResponse:
     def __init__(self, content, stop_reason, tokens_in=10, tokens_out=5):
         self.content = content

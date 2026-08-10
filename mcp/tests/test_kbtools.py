@@ -153,6 +153,115 @@ def test_topic_impl_returns_posts_with_citation_urls(monkeypatch):
     assert result["posts"][0]["cite"] == "https://gov.optimism.io/t/x/7/1"
 
 
+# ── findings_impl (agent 2.0 — internal pipeline data, not the archive) ──
+
+
+def test_findings_impl_shapes_result_and_qualifies_tables(monkeypatch):
+    row = {
+        "title": "Dev tooling RFP", "url": "https://x/1", "ecosystem": "Optimism",
+        "status": "done", "category": "FUNDING", "confidence": 0.9,
+        "delivered_at": None, "first_seen": None,
+    }
+    router = [("FROM public.seen_items", [row])]
+    db_factory, calls = make_db(router)
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    result = kbtools.findings_impl(ecosystem="Optimism")
+
+    assert result == {"findings": [{
+        "title": "Dev tooling RFP", "url": "https://x/1", "ecosystem": "Optimism",
+        "status": "done", "category": "FUNDING", "confidence": 0.9,
+        "delivered_at": None, "first_seen": None,
+    }]}
+    sql, params = calls[0]
+    # Fully-qualified per kbtools.py's own convention (kb.posts/kb.topics
+    # are always schema-qualified) — see findings_impl's docstring.
+    assert "public.seen_items" in sql
+    assert "public.sources" in sql
+    assert params["ecosystem"] == "Optimism"
+    assert params["days"] == 14      # default
+    assert params["limit"] == 10     # default
+    assert params["status"] is None
+    assert params["min_confidence"] is None
+
+
+def test_findings_impl_formats_timestamps(monkeypatch):
+    from datetime import datetime, timezone
+
+    when = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    row = {
+        "title": "T", "url": "https://x/1", "ecosystem": "Arbitrum",
+        "status": "pending", "category": None, "confidence": None,
+        "delivered_at": when, "first_seen": when,
+    }
+    router = [("FROM public.seen_items", [row])]
+    db_factory, _calls = make_db(router)
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    result = kbtools.findings_impl()
+
+    hit = result["findings"][0]
+    assert hit["delivered_at"] == when.isoformat()
+    assert hit["first_seen"] == when.isoformat()
+
+
+def test_findings_impl_clamps_days_above_90(monkeypatch):
+    captured = {}
+
+    def capture(params):
+        captured.update(params)
+        return []
+
+    router = [("FROM public.seen_items", capture)]
+    db_factory, _calls = make_db(router)
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    kbtools.findings_impl(days=365)
+
+    assert captured["days"] == 90
+
+
+def test_findings_impl_clamps_limit_above_20(monkeypatch):
+    captured = {}
+
+    def capture(params):
+        captured.update(params)
+        return []
+
+    router = [("FROM public.seen_items", capture)]
+    db_factory, _calls = make_db(router)
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    kbtools.findings_impl(limit=999)
+
+    assert captured["limit"] == 20
+
+
+def test_findings_impl_floors_days_and_limit_at_1(monkeypatch):
+    captured = {}
+
+    def capture(params):
+        captured.update(params)
+        return []
+
+    router = [("FROM public.seen_items", capture)]
+    db_factory, _calls = make_db(router)
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    kbtools.findings_impl(days=0, limit=0)
+
+    assert captured["days"] == 1
+    assert captured["limit"] == 1
+
+
+def test_findings_impl_empty_result(monkeypatch):
+    router = [("FROM public.seen_items", [])]
+    db_factory, _calls = make_db(router)
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    assert kbtools.findings_impl() == {"findings": []}
+
+
 def test_topic_impl_max_posts_is_clamped_to_200(monkeypatch):
     captured = {}
 

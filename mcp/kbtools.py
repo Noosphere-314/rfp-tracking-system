@@ -136,6 +136,63 @@ def search_impl(
     }
 
 
+def findings_impl(
+    ecosystem: str | None = None,
+    status: str | None = None,
+    days: int = 14,
+    min_confidence: float | None = None,
+    limit: int = 10,
+) -> dict:
+    """SQL core of the chat agent's list_findings tool (agent 2.0 — internal
+    pipeline data, NOT the kb.* forum archive: seen_items is our own
+    findings/leads with classifier verdicts, joined to sources for
+    ecosystem). Own short connection, no kb.query_log entry — that log is
+    scoped to archive tools (search_kb/get_topic/live_forum_search), and
+    seen_items/sources live outside the kb schema entirely.
+
+    Fully-qualifies public.seen_items/public.sources rather than relying on
+    the app role's default search_path (see mcp/chat.py:178-181 for why that
+    default is currently safe) — kbtools.py's own convention is to always
+    schema-qualify (kb.posts, kb.topics, kb.query_log), so new tables here
+    follow the same habit rather than being the one exception.
+    """
+    days = max(1, min(int(days), 90))
+    limit = max(1, min(int(limit), 20))
+    sql = """
+        SELECT i.title, i.url, s.ecosystem, i.status, i.category, i.confidence,
+               i.delivered_at, i.first_seen
+          FROM public.seen_items i
+          JOIN public.sources s ON s.id = i.source_id
+         WHERE i.first_seen >= now() - (%(days)s * interval '1 day')
+           AND (%(ecosystem)s::text IS NULL OR s.ecosystem = %(ecosystem)s)
+           AND (%(status)s::text IS NULL OR i.status = %(status)s)
+           AND (%(min_confidence)s::real IS NULL OR i.confidence >= %(min_confidence)s)
+         ORDER BY i.first_seen DESC
+         LIMIT %(limit)s
+    """
+    params = {
+        "days": days, "ecosystem": ecosystem, "status": status,
+        "min_confidence": min_confidence, "limit": limit,
+    }
+    with _db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return {
+        "findings": [
+            {
+                "title": r["title"],
+                "url": r["url"],
+                "ecosystem": r["ecosystem"],
+                "status": r["status"],
+                "category": r["category"],
+                "confidence": r["confidence"],
+                "delivered_at": r["delivered_at"].isoformat() if r["delivered_at"] else None,
+                "first_seen": r["first_seen"].isoformat() if r["first_seen"] else None,
+            }
+            for r in rows
+        ],
+    }
+
+
 def topic_impl(forum: str, topic_id: int, offset: int = 0, max_posts: int = 60) -> dict:
     """SQL core of get_topic. See server.py's @mcp.tool get_topic for the
     public tool contract (that docstring is what Claude reads)."""
