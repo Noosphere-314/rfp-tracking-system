@@ -634,7 +634,8 @@
       },
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 5000
+      "waitBetweenTries": 5000,
+      "disabled": true
     },
     {
       "parameters": {
@@ -906,7 +907,7 @@
       "main": [
         [
           {
-            "node": "Telegram review",
+            "node": "Mark handled (no lead)",
             "type": "main",
             "index": 0
           }
