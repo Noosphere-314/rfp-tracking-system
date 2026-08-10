@@ -1,5 +1,12 @@
 """Knowledge-base crawler — the "research mode" archive (KB-Module-Design.md).
 
+This module is the kind='discourse' crawler specifically — worker/main.py's
+KB_CRAWLERS registry (mirroring worker/fetchers/__init__.py's FETCHERS)
+dispatches kb.forums rows here by `kind`, and kind='snapshot' rows to
+worker/kb_snapshot.py instead. Both expose the same
+backfill(conn, client, forum, ...) / incremental(conn, client, forum)
+contract so main.py's dispatch loop never has to special-case either.
+
 Two modes, both sharing the pipeline's per-host token bucket so a forum never
 sees the RFP poller and the archiver as two separate aggressive clients:
 
@@ -11,6 +18,14 @@ sees the RFP poller and the archiver as two separate aggressive clients:
 Only robots.txt-allowed JSON endpoints are used: /categories.json,
 /c/<slug>/<id>.json, /t/<id>.json, /t/<id>/posts.json, /posts.json,
 /latest.json. Never /search or RSS (KB-Module-Design §3).
+
+kb.topics.topic_id is `text` (migration 008): Snapshot proposal ids are
+66-char hex hashes, not integers. Discourse ids are still plain ints at the
+source (Discourse's own JSON), but every value that reaches kb.topics.topic_id
+or a lookup keyed on it is normalised to `str` in this module — the DB always
+returns `str` for that column now, and a stray `int` key would silently never
+match a `str` key from the database, turning "topic already archived, skip
+it" into "re-crawl everything, every run" without raising anything.
 """
 
 from __future__ import annotations
@@ -36,6 +51,7 @@ class Forum:
     id: int
     forum_slug: str
     base_url: str
+    kind: str
     category_ids: list[int] | None
     backfill_done: bool
     backfill_cursor: dict[str, Any]
@@ -47,6 +63,9 @@ class Forum:
             id=row["id"],
             forum_slug=row["forum_slug"],
             base_url=row["base_url"].rstrip("/"),
+            # .get + fallback: defensive only — migration 008 backfills every
+            # existing row with DEFAULT 'discourse', so a NULL should not occur.
+            kind=row.get("kind") or "discourse",
             category_ids=row["category_ids"],
             backfill_done=row["backfill_done"],
             backfill_cursor=row["backfill_cursor"] or {},
@@ -97,7 +116,11 @@ def _upsert_topic(
         """,
         (
             forum.forum_slug,
-            topic["id"],
+            # topic_id колонка тепер text (міграція 008, під 66-символьні hex
+            # id Snapshot) — стрінгуємо тут один раз, незалежно від того, чи
+            # викликач уже передав str: bigint-id Discourse серіалізується
+            # без втрат, і INSERT/ON CONFLICT завжди б'ють по тому самому типу.
+            str(topic["id"]),
             topic.get("category_id"),
             category_name,
             topic.get("title") or topic.get("fancy_title") or f"topic {topic['id']}",
@@ -147,7 +170,7 @@ def crawl_topic(
     conn: psycopg.Connection,
     client: HttpClient,
     forum: Forum,
-    topic_id: int,
+    topic_id: int | str,
     category_name: str | None = None,
     listing_bumped_at: datetime | None = None,
 ) -> int:
@@ -232,7 +255,10 @@ def _categories(client: HttpClient, forum: Forum) -> list[dict]:
     return flat
 
 
-def _known_topics(conn: psycopg.Connection, forum: Forum) -> dict[int, datetime | None]:
+def _known_topics(conn: psycopg.Connection, forum: Forum) -> dict[str, datetime | None]:
+    # topic_id — text у БД (міграція 008), тож psycopg повертає str-ключі тут.
+    # Кожен виклик-майданчик нижче (backfill/incremental) звіряється з цим
+    # словником і зобов'язаний так само стрінгувати свій бік порівняння.
     return {
         row["topic_id"]: row["bumped_at"]
         for row in conn.execute(
@@ -314,7 +340,11 @@ def backfill(
                 if should_stop() or (max_topics and stats["topics_crawled"] >= max_topics):
                     interrupted = True
                     break
-                topic_id = topic["id"]
+                # str(): known (з _known_topics) — str-ключі, бо topic_id у БД
+                # тепер text; порівнювати int-id зі свіжого лістингу проти
+                # str-ключів завжди дало б "не знайдено" і перекроулило б
+                # заново геть усе на кожному прогоні.
+                topic_id = str(topic["id"])
                 bumped = _ts(topic.get("bumped_at"))
                 if topic_id in known and known[topic_id] and bumped and bumped <= known[topic_id]:
                     stats["skipped"] += 1
@@ -369,7 +399,7 @@ def incremental(
 ) -> dict[str, int]:
     """Hourly-friendly update: new posts + bumped topics since the watermark."""
     stats = {"topics_crawled": 0, "posts_stored": 0, "failed": 0}
-    changed: dict[int, datetime | None] = {}   # topic_id → listing bumped_at
+    changed: dict[str, datetime | None] = {}   # str(topic_id) → listing bumped_at
     newest_seen = forum.last_post_seen_at
 
     # New posts site-wide. One page spans days of activity on these forums, so
@@ -380,7 +410,7 @@ def incremental(
         if created and forum.last_post_seen_at and created <= forum.last_post_seen_at:
             continue
         if post.get("topic_id"):
-            changed.setdefault(post["topic_id"], None)
+            changed.setdefault(str(post["topic_id"]), None)
         if created and (newest_seen is None or created > newest_seen):
             newest_seen = created
 
@@ -389,9 +419,10 @@ def incremental(
     latest = client.get(f"{forum.base_url}/latest.json?order=activity", use_cache=False)
     for topic in ((latest.json().get("topic_list") or {}).get("topics")) or []:
         bumped = _ts(topic.get("bumped_at"))
-        stored = known.get(topic["id"])
+        # str(): known — str-ключі (topic_id text у БД, див. _known_topics).
+        stored = known.get(str(topic["id"]))
         if bumped and (stored is None or bumped > stored):
-            changed[topic["id"]] = bumped
+            changed[str(topic["id"])] = bumped
 
     for topic_id, listing_bumped in changed.items():
         try:

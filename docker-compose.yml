@@ -188,11 +188,16 @@ services:
       CHAT_TELEGRAM_TOKEN: ${CHAT_TELEGRAM_TOKEN:-}
       CHAT_TELEGRAM_ALLOWED_IDS: ${CHAT_TELEGRAM_ALLOWED_IDS:-}
       TZ: ${TZ:-Europe/Kyiv}
+      TGBOT_STATE_DIR: /data
     # окремий бот для AI-чату; порожній CHAT_TELEGRAM_TOKEN → сервіс спить
     # (навмисно, щоб не крутився в crash-loop).
+    volumes:
+      # Динамічний allowlist інвайтів (allowlist.json) переживає рестарти.
+      - tgbot_state:/data
 
 volumes:
   postgres_data:
   n8n_data:
   caddy_data:
   caddy_config:
+  tgbot_state:

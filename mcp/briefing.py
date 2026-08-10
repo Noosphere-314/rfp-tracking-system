@@ -53,6 +53,11 @@ def _forum_for(conn: psycopg.Connection, ecosystem: str) -> dict | None:
         SELECT forum_slug, base_url FROM kb.forums
          WHERE lower(coalesce(ecosystem, '')) = lower(%s)
             OR forum_slug = lower(%s)
+         -- 008: та сама екосистема тепер має і Discourse-, і snap-* рядок.
+         -- Бриф ґрунтується на форумних ДИСКУСІЯХ (голоси/аргументи), а не на
+         -- тілах пропозицій — Discourse свідомо першим; LIMIT 1 без цього
+         -- ORDER BY вибирав би рядок недетерміновано.
+         ORDER BY (kind = 'discourse') DESC
          LIMIT 1
         """,
         (ecosystem, ecosystem),

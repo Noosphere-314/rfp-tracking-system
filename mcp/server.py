@@ -78,7 +78,7 @@ def search_kb(
 
 
 @mcp.tool
-def get_topic(forum: str, topic_id: int, offset: int = 0, max_posts: int = 60) -> dict:
+def get_topic(forum: str, topic_id: int | str, offset: int = 0, max_posts: int = 60) -> dict:
     """Read a full thread from the archive, in post order, with citation URLs.
 
     Args:

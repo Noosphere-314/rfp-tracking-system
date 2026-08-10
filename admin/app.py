@@ -48,6 +48,13 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 MOCK_N8N = os.environ.get("MOCK_N8N", "").lower() in ("1", "true", "yes")
 WEBHOOK_SECRET = os.environ.get("N8N_WEBHOOK_SECRET", "")
 
+# kbmcp — тут, а не поруч із першим використанням: раніше жив біля
+# generate_brief (розділ «Briefing packs»), але тепер його читають три
+# незв'язані секції (keywords advice, briefs, AI-чат) — спільна конфігурація
+# належить головному конфіг-блоку, а не одній із трьох.
+KBMCP_URL = os.environ.get("KBMCP_URL", "http://kbmcp:8000")
+KB_MCP_TOKEN = os.environ.get("KB_MCP_TOKEN", "")
+
 STATIC = Path(__file__).parent / "static"
 
 # Кеш-бастинг: хеш ВМІСТУ обох асетів на імпорті → ?v= у base.html і
@@ -704,8 +711,19 @@ def add_source(
 # ── Keywords ───────────────────────────────────────────────────────
 
 
-@app.get("/keywords", response_class=HTMLResponse)
-def keywords_page(request: Request, message: str = "", error: str = ""):
+def _render_keywords(
+    request: Request,
+    *,
+    message: str = "",
+    error: str = "",
+    advice_md: str = "",
+    advice_model: str = "",
+    status_code: int = 200,
+):
+    """Одна точка рендеру /keywords — і GET, і POST /keywords/advice нижче
+    малюють ту саму сторінку (розділ A): порада від AI не має власного URL, і
+    жоден із двох хендлерів не повинен дублювати SELECT/розбивку на панелі.
+    """
     with db() as conn:
         rows = conn.execute("SELECT * FROM keywords ORDER BY kind, id").fetchall()
     # Дві протилежні за змістом сутності розводяться по двох панелях (розділ
@@ -721,8 +739,16 @@ def keywords_page(request: Request, message: str = "", error: str = ""):
             "exclude": [k for k in rows if k["valid"] and k["kind"] == "exclude"],
             "message": message,
             "error": error,
+            "advice_md": advice_md,
+            "advice_model": advice_model,
         },
+        status_code=status_code,
     )
+
+
+@app.get("/keywords", response_class=HTMLResponse)
+def keywords_page(request: Request, message: str = "", error: str = ""):
+    return _render_keywords(request, message=message, error=error)
 
 
 @mutations.post("/keywords/add")
@@ -755,6 +781,72 @@ def toggle_keyword(keyword_id: int):
         )
         conn.commit()
     return RedirectResponse("/keywords", status_code=303)
+
+
+def _keywords_advice_backend() -> dict:
+    """Виокремлено в окрему функцію (той самий прийом, що й `_chat_backend`
+    нижче) — саме для того, щоб тести підміняли її monkeypatch'ем, не
+    піднімаючи kbmcp і не ходячи в мережу. Порожнє тіло `{}`: kbmcp сам читає
+    поточні keywords/статистику знахідок із БД — запиту нема чого передавати.
+    """
+    import httpx
+
+    response = httpx.post(
+        f"{KBMCP_URL}/keywords-advice",
+        json={},
+        headers={"Authorization": f"Bearer {KB_MCP_TOKEN}"} if KB_MCP_TOKEN else {},
+        timeout=300,  # LLM-рівень легітимно триває хвилини — той самий контракт, що й /chat, /brief
+    )
+    return response.json()
+
+
+@mutations.post("/keywords/advice")
+def keywords_advice(request: Request):
+    """AI-помічник для ключових слів (розділ A): кнопка «Suggest keywords
+    (AI)» на /keywords викликає kbmcp, той дивиться на поточний список
+    include/exclude і на статистику знахідок і повертає готовий текст поради.
+
+    PRG тут СВІДОМО зламаний, на відміну від add_keyword/toggle_keyword вище:
+    порада — ефемерна відповідь LLM, а не стан, який варто зберігати. Ані
+    сесійного сховища, ані таблиці під це немає — і не мало б бути: сторінка
+    рендериться НАПРЯМУ з цього POST-хендлера (та сама _render_keywords, що й
+    у GET /keywords), з порадою прямо в контексті. Оновлення сторінки
+    природно її прибирає — це і є інтуїтивна семантика «згенерувати ще раз»,
+    а зберігати одноразову відповідь заради пережиття F5 — стан заради стану.
+    """
+    import httpx
+
+    tr = i18n.translator(i18n.lang_of(request))
+
+    try:
+        payload = _keywords_advice_backend()
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("kbmcp /keywords-advice unreachable: %s", exc)
+        return _render_keywords(
+            request,
+            error=tr(
+                "pg.keywords.advice_unreachable",
+                "Could not reach the AI advice backend — try again in a moment",
+            ),
+            status_code=502,
+        )
+
+    if not payload.get("ok"):
+        log.warning("kbmcp /keywords-advice returned an error: %s", payload.get("error"))
+        return _render_keywords(
+            request,
+            error=tr(
+                "pg.keywords.advice_error",
+                "Could not generate keyword suggestions right now — try again in a moment",
+            ),
+            status_code=503,
+        )
+
+    return _render_keywords(
+        request,
+        advice_md=payload.get("advice_md", ""),
+        advice_model=payload.get("model", ""),
+    )
 
 
 # ── Settings ───────────────────────────────────────────────────────
@@ -892,6 +984,17 @@ SETTING_META = {
                 "affects the text inside generated briefs, not the dashboard UI language.",
         "reco": "'en' unless the team reading the briefs prefers another language.",
     },
+    # З'являється рядком у `settings` після міграції 009 (kbmcp-сторона,
+    # паралельна робота) — до того просто не рендериться (SETTING_META з
+    # ключем без відповідного рядка в БД нікому не заважає).
+    "chat_web_search": {
+        "group": "ai", "label": "Chat web search", "type": "bool",
+        "help": "Allows the chat agent to also search the live internet, not just the "
+                "archived forums, when answering a question. Searches are billed "
+                "separately by Anthropic, on top of the usual per-message token cost.",
+        "reco": "Off until you want fresher-than-archive answers — most questions are "
+                "already covered by the forum archive.",
+    },
 }
 
 
@@ -926,6 +1029,9 @@ def validate_setting(key: str, value: str) -> tuple[bool, str]:
     elif kind == "channel":
         if not value.startswith("#"):
             return False, f"{label}: the channel name must start with #"
+    elif kind == "bool":
+        if value not in ("on", "off"):
+            return False, f"{label}: expected 'on' or 'off', got “{value}”"
     if not value:
         return False, f"{label}: empty value"
     return True, ""
@@ -1408,9 +1514,6 @@ def add_kb_forum(forum_slug: str = Form(...), base_url: str = Form(...)):
 
 # ── Briefing packs ─────────────────────────────────────────────────
 
-KBMCP_URL = os.environ.get("KBMCP_URL", "http://kbmcp:8000")
-KB_MCP_TOKEN = os.environ.get("KB_MCP_TOKEN", "")
-
 
 @mutations.post("/items/{item_uid}/brief")
 def generate_brief(item_uid: str):
@@ -1579,8 +1682,10 @@ def download_brief(brief_id: int):
 # Історію пише kbmcp, не admin (розділ 4.9): POST /chat/send нижче лише
 # проксує запит на {KBMCP_URL}/chat і читає готову відповідь — той самий
 # поділ ролей, що й у generate_brief вище для kb.briefs (пише kbmcp, admin
-# показує результат). Тому в цьому розділі рівно один SELECT і жодного
-# INSERT: права БД admin на kb.* — читання (див. kb_page, briefs_page).
+# показує результат). Тому тут лише SELECT з kb.chat_messages і жодного
+# INSERT туди — ОКРІМ /chat/save-brief нижче (розділ B): той пише не в
+# kb.chat_messages (це лишається виключно kbmcp), а в kb.briefs — ту саму
+# таблицю, яку archive_brief/delete_brief вище вже й так змінюють з admin.
 
 
 def _chat_key(request: Request) -> str:
@@ -1738,6 +1843,73 @@ def send_chat_message(request: Request, message: str = Form(...)):
             }
         )
     return RedirectResponse("/chat", status_code=303)
+
+
+@mutations.post("/chat/save-brief")
+def save_chat_message_as_brief(request: Request, message_id: int = Form(...)):
+    """«Save as brief» (розділ B) на бульбашці асистента LLM-рівня чату.
+
+    На відміну від /chat/send і /chat/new вище, тут ЄДИНИЙ INSERT в усьому
+    розділі AI-чату — і не в kb.chat_messages (той запис лишається виключно
+    за kbmcp), а в kb.briefs, ту саму таблицю, що archive_brief/delete_brief
+    вище вже редагують з admin. Сенс: репліка чату, варта того, щоб її
+    показати команді продажів, стає звичайним бріфом — тим самим, що й
+    кнопка на /items чи нода n8n — і потрапляє в спільний список /briefs,
+    архівується й завантажується тим самим механізмом.
+
+    Guard — рівно два, обидва обов'язкові:
+      1. role == 'assistant' і tier == 'llm': кнопка в chat.html рендериться
+         лише під такими бульбашками, але сама форма шле голий message_id —
+         без цієї перевірки підміна id в DevTools дала б зберегти чиєсь
+         питання (role='user') чи keyword-рівня відповідь без жодної LLM-
+         синтези за нею.
+      2. session_key рядка == сесія ЦЬОГО браузера ('web:' + sid, той самий
+         неймспейс, що читає chat_page): без цього підбір послідовних id дав
+         би зберегти чужу відповідь — телеграмну чи іншого члена команди.
+    Обидва провали віддають однаковий 404 «message not found», а не окремі
+    403/400: розрізняти для викликача немає сенсу — жодна з причин не є тим,
+    що людина виправляє повторним кліком.
+    """
+    session_key = f"web:{_chat_key(request)}"
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT session_key, role, tier, model, content FROM kb.chat_messages "
+            "WHERE id = %s",
+            (message_id,),
+        ).fetchone()
+        if (
+            not row
+            or row["role"] != "assistant"
+            or row["tier"] != "llm"
+            or row["session_key"] != session_key
+        ):
+            raise HTTPException(404, "message not found")
+
+        # Заголовок бріфа — з питання людини, що передувало цій відповіді
+        # (той самий session_key, менший id, роль user): «Chat answer» —
+        # чесний фолбек для найпершого рядка сесії, де попереднього
+        # повідомлення просто не існує.
+        preceding = conn.execute(
+            "SELECT content FROM kb.chat_messages "
+            "WHERE session_key = %s AND id < %s AND role = 'user' "
+            "ORDER BY id DESC LIMIT 1",
+            (session_key, message_id),
+        ).fetchone()
+        title = (preceding["content"][:90] if preceding else "") or "Chat answer"
+
+        brief = conn.execute(
+            """
+            INSERT INTO kb.briefs
+                (item_uid, ecosystem, title, brief_md, tier, model, tokens_in, tokens_out)
+            VALUES (NULL, 'chat', %s, %s, %s, %s, NULL, NULL)
+            RETURNING id
+            """,
+            (title, row["content"], row["tier"], row["model"]),
+        ).fetchone()
+        conn.commit()
+
+    return RedirectResponse(f"/briefs/{brief['id']}", status_code=303)
 
 
 @mutations.post("/chat/new")

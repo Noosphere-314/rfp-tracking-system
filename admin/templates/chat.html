@@ -84,6 +84,17 @@
       {% endif %}
       <span>{{ m.created_at.strftime('%H:%M') if m.created_at else '' }}</span>
     </div>
+    {#- Розділ B: «Save as brief» — лише на LLM-рівні (не stub: там немає
+        справжньої синтези над архівом, зберігати нічого). Форма шле лише
+        id рядка kb.chat_messages — app.py (save_chat_message_as_brief)
+        перевіряє role/tier/session_key сам, а не довіряє тому, що видно тут. -#}
+    {% if m.role == 'assistant' and m.tier == 'llm' %}
+    <form class="chat__savebrief" method="post" action="/chat/save-brief">
+      {% include "_csrf.html" %}
+      <input type="hidden" name="message_id" value="{{ m.id }}">
+      <button class="btn btn--sm btn--ghost" type="submit">{{ t("act.save_as_brief", "Save as brief") }}</button>
+    </form>
+    {% endif %}
   </div>
   {% endfor %}
   {#- Натяк «відповідь генерується», а не спінер: сторінка нічого не пінгує

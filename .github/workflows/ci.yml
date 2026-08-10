@@ -147,7 +147,7 @@ jobs:
                       -r mcp/requirements.txt
 
       - name: pytest
-        run: pytest admin/tests mcp/tests tgbot/tests -q
+        run: pytest admin/tests mcp/tests tgbot/tests worker/tests -q
 
   images:
     name: Docker images build

@@ -74,6 +74,19 @@
   <span class="field__hint">{{ t("pg.keywords.compile_hint", "The pattern is compiled on save — one that does not compile is rejected") }}</span>
 </form>
 
+{#- Розділ A: AI-помічник. Окрема форма, а не ще одна кнопка у формі додавання
+    вище — /keywords/advice не додає патерн, а лише генерує пораду, і PRG тут
+    навмисно зламаний (app.py: keywords_advice) — сторінка рендериться напряму
+    з POST-хендлера з advice_md у контексті, без редіректу. data-busy — той
+    самий універсальний обробник app.js (розділ 3), що й у /chat/send: жодного
+    нового JS для цієї кнопки не треба. -#}
+<form class="toolbar" method="post" action="/keywords/advice"
+      data-busy="{{ t('act.keywords_advice_busy', 'Asking AI…') }}">
+  {% include "_csrf.html" %}
+  <button class="btn" type="submit">{{ t("act.keywords_advice", "Suggest keywords (AI)") }}</button>
+  <span class="field__hint">{{ t("pg.keywords.advice_cost", "Calls the AI model — this has a real cost each time you click it.") }}</span>
+</form>
+
 <div class="toolbar">
   <div class="chips">
     {% if invalid %}
@@ -86,6 +99,23 @@
 {% endblock %}
 
 {% block data %}
+{#- Розділ A: результат /keywords/advice — ЗВЕРХУ, над невалідними, бо це
+    щойно натиснута дія, і людина чекає на неї очима саме тут. `advice_md`
+    рендериться через `md_lite` (той самий escape-first рендерер, що й
+    brief.html) — це необроблений вихід LLM, недовірений текст. Помилка
+    йде звичайним `error` (base.html) — окремого блоку під неї не треба. -#}
+{% if advice_md %}
+<section class="panel" id="advice">
+  <div class="panel__head">
+    <h2>{{ t("pg.keywords.advice_h", "AI suggestions") }}</h2>
+    {% if advice_model %}<span class="badge b-info">{{ advice_model }}</span>{% endif %}
+  </div>
+  <div class="panel__body">
+    <div class="prose">{{ advice_md | md_lite }}</div>
+  </div>
+</section>
+{% endif %}
+
 {#- Невалідні — ЗВЕРХУ й окремою секцією: вони мовчки не працюють, і поки
     причина не видно, патерн виглядає робочим. -#}
 {% if invalid %}

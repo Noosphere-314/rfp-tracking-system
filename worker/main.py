@@ -20,6 +20,7 @@ import signal
 import sys
 import time
 from types import FrameType
+from typing import Any
 
 from . import pipeline
 from .config import config
@@ -161,10 +162,30 @@ def cmd_verify(_args: argparse.Namespace) -> int:
     return 1 if any("missing required" in p or "unreachable" in p for p in problems) else 0
 
 
+def _kb_crawlers() -> dict[str, Any]:
+    """kb.forums.kind → crawler module, mirroring fetchers.FETCHERS
+    (worker/fetchers/__init__.py) but for the archive side.
+
+    Both modules expose backfill(conn, client, forum, ...) and
+    incremental(conn, client, forum), so the dispatch loops below never
+    special-case either kind. Unlike FETCHERS.get() (which raises for an
+    unknown source type — a form-editable `sources` row is validated on
+    read, A4), a kb.forums row with an unregistered kind is skipped with a
+    log line instead: 'site' (woof) is a real, intentionally-crawlerless
+    row already, and a future kind added to the CHECK constraint ahead of
+    its module landing must not take down every OTHER forum's crawl.
+    """
+    from . import kb, kb_snapshot
+
+    return {"discourse": kb, "snapshot": kb_snapshot}
+
+
 def cmd_kb_backfill(args: argparse.Namespace) -> int:
     """Resumable full archive. No config.validate(): the KB needs only the DB."""
     from . import kb
     from .http import HttpClient, SourceBlocked
+
+    crawlers = _kb_crawlers()
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
@@ -179,11 +200,18 @@ def cmd_kb_backfill(args: argparse.Namespace) -> int:
             for forum in forums:
                 if _stopping:
                     break
+                crawler = crawlers.get(forum.kind)
+                if crawler is None:
+                    log.info(
+                        "%s: kind %r has no crawler registered — skipped",
+                        forum.forum_slug, forum.kind,
+                    )
+                    continue
                 if forum.backfill_done and not args.again:
                     print(f"{forum.forum_slug}: backfill already done (use --again to re-walk)")
                     continue
                 try:
-                    stats = kb.backfill(
+                    stats = crawler.backfill(
                         conn, client, forum,
                         max_topics=args.max_topics,
                         should_stop=lambda: _stopping,
@@ -202,15 +230,24 @@ def cmd_kb_update(args: argparse.Namespace) -> int:
     from . import kb
     from .http import HttpClient
 
+    crawlers = _kb_crawlers()
+
     with connect() as conn:
         forums = kb.load_forums(conn, args.forum)
         with HttpClient(conn) as client:
             for forum in forums:
+                crawler = crawlers.get(forum.kind)
+                if crawler is None:
+                    log.info(
+                        "%s: kind %r has no crawler registered — skipped",
+                        forum.forum_slug, forum.kind,
+                    )
+                    continue
                 if not forum.backfill_done:
                     print(f"{forum.forum_slug}: skipped — backfill not finished yet")
                     continue
                 try:
-                    stats = kb.incremental(conn, client, forum)
+                    stats = crawler.incremental(conn, client, forum)
                     print(f"{forum.forum_slug}: {stats}")
                 except Exception as exc:  # noqa: BLE001
                     kb.record_failure(conn, forum, exc)

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from admin.tests.test_auth import WHO, _login, client  # noqa: E402,F401
 
 from admin import app as admin_app  # noqa: E402
-from admin.app import SETTING_GROUPS, SETTING_META  # noqa: E402
+from admin.app import SETTING_GROUPS, SETTING_META, validate_setting  # noqa: E402
 
 
 class _Cursor:
@@ -129,3 +129,37 @@ def test_settings_page_has_no_leftover_hint_key_rendering(client, monkeypatch):
     response = client.get("/settings")
     assert response.status_code == 200
     assert "set.chat_daily_token_budget.hint" not in response.text
+
+
+# ── chat_web_search (розділ C, з'являється після міграції 009) ───────────
+
+
+def test_chat_web_search_is_in_the_ai_group_with_help_and_reco():
+    meta = SETTING_META["chat_web_search"]
+    assert meta["group"] == "ai"
+    assert meta["label"] == "Chat web search"
+    assert meta["help"] and meta["reco"]
+
+
+def test_chat_web_search_validates_on_off_only():
+    assert validate_setting("chat_web_search", "on") == (True, "")
+    assert validate_setting("chat_web_search", "off") == (True, "")
+    ok, err = validate_setting("chat_web_search", "maybe")
+    assert ok is False
+    assert "on" in err and "off" in err
+
+
+def test_settings_page_renders_chat_web_search_when_present_in_db(client, monkeypatch):
+    """Ключ з'являється в БД лише після міграції 009 (kbmcp-сторона) — сторінка
+    має відрендерити його мітку/help/reco так само, як і будь-який інший
+    ключ групи 'ai', щойно рядок з'явиться в settings."""
+    _login(client)
+    conn = _Conn([_settings_row("chat_web_search", "off")])
+    monkeypatch.setattr(admin_app, "db", lambda: conn)
+
+    response = client.get("/settings")
+    assert response.status_code == 200
+    html = response.text
+    assert SETTING_META["chat_web_search"]["label"] in html
+    assert "billed separately by Anthropic" in html
+    assert "Suggested" in html and "fresher-than-archive" in html

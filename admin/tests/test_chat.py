@@ -465,3 +465,150 @@ def test_chat_new_redirects_and_rotates_cookie(client):
     assert response.headers["location"] == "/chat"
     after = response.cookies.get(auth.COOKIE_BASE)
     assert after and after != before
+
+
+# ── POST /chat/save-brief: «Save as brief» (розділ B) ─────────────────
+
+
+def _sid(client) -> str:
+    return auth.session_sid(
+        type("R", (), {"cookies": {auth.COOKIE_BASE: client.cookies[auth.COOKIE_BASE]}})()
+    )
+
+
+def test_save_chat_message_as_brief_happy_path_redirects_to_new_brief(client, monkeypatch):
+    """Три звернення до БД по черзі: (0) сам рядок, (1) попереднє питання
+    людини — заголовок бріфа, (2) INSERT ... RETURNING id. `_Conn.extra_rows`
+    індексує рівно за цим порядком викликів."""
+    _login(client)
+    session_key = f"web:{_sid(client)}"
+    sink: list = []
+    _fake_db(
+        monkeypatch,
+        rows=[{
+            "session_key": session_key, "role": "assistant", "tier": "llm",
+            "model": "claude-x", "content": "Here is the brief text.",
+        }],
+        sink=sink,
+        extra_rows={
+            1: [{"content": "What grants exist for oracle work?"}],
+            2: [{"id": 42}],
+        },
+    )
+    response = client.post(
+        "/chat/save-brief",
+        data={"message_id": "7", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/briefs/42"
+
+    insert_sql, insert_params = sink[2]
+    assert "INSERT INTO kb.briefs" in insert_sql
+    assert insert_params == (
+        "What grants exist for oracle work?",
+        "Here is the brief text.",
+        "llm",
+        "claude-x",
+    )
+
+
+def test_save_chat_message_as_brief_falls_back_to_chat_answer_title(client, monkeypatch):
+    """Найперший рядок сесії — попереднього user-повідомлення просто нема."""
+    _login(client)
+    session_key = f"web:{_sid(client)}"
+    sink: list = []
+    _fake_db(
+        monkeypatch,
+        rows=[{
+            "session_key": session_key, "role": "assistant", "tier": "llm",
+            "model": None, "content": "reply with no preceding question",
+        }],
+        sink=sink,
+        extra_rows={1: [], 2: [{"id": 5}]},
+    )
+    response = client.post(
+        "/chat/save-brief",
+        data={"message_id": "1", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    _, insert_params = sink[2]
+    assert insert_params[0] == "Chat answer"
+
+
+def test_save_chat_message_as_brief_rejects_another_sessions_message(client, monkeypatch):
+    """Guard 2 (розділ B docstring): session_key рядка ≠ сесія браузера —
+    ID-перебір не має давати доступ до чужих (телеграм чи іншого члена
+    команди) відповідей."""
+    _login(client)
+    _fake_db(
+        monkeypatch,
+        rows=[{
+            "session_key": "web:someone-elses-sid", "role": "assistant", "tier": "llm",
+            "model": "claude-x", "content": "not yours",
+        }],
+    )
+    response = client.post(
+        "/chat/save-brief",
+        data={"message_id": "7", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 404
+
+
+def test_save_chat_message_as_brief_rejects_non_assistant_role(client, monkeypatch):
+    """Guard 1: role='user' — форма шле лише message_id, тож підміна в
+    DevTools не має дати зберегти власне питання людини як «бріф»."""
+    _login(client)
+    session_key = f"web:{_sid(client)}"
+    _fake_db(
+        monkeypatch,
+        rows=[{
+            "session_key": session_key, "role": "user", "tier": None,
+            "model": None, "content": "my own question",
+        }],
+    )
+    response = client.post(
+        "/chat/save-brief",
+        data={"message_id": "3", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 404
+
+
+def test_save_chat_message_as_brief_rejects_stub_tier(client, monkeypatch):
+    """Guard 1, друга половина: tier='stub' — кнопка в chat.html не
+    рендериться під такими бульбашками, хендлер не повинен довіряти клієнту."""
+    _login(client)
+    session_key = f"web:{_sid(client)}"
+    _fake_db(
+        monkeypatch,
+        rows=[{
+            "session_key": session_key, "role": "assistant", "tier": "stub",
+            "model": None, "content": "keyword-tier reply",
+        }],
+    )
+    response = client.post(
+        "/chat/save-brief",
+        data={"message_id": "9", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 404
+
+
+def test_save_chat_message_as_brief_404_when_message_missing(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+    response = client.post(
+        "/chat/save-brief",
+        data={"message_id": "999", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 404

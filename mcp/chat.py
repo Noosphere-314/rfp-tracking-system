@@ -137,7 +137,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "forum": {"type": "string"},
-                "topic_id": {"type": "integer"},
+                "topic_id": {"type": ["integer", "string"]},
                 "offset": {"type": "integer"},
                 "max_posts": {"type": "integer"},
             },
@@ -442,7 +442,7 @@ def _dispatch_tool(name: str, tool_input: dict) -> str:
         max_posts = min(int(tool_input.get("max_posts", 60)), 60)
         result = kbtools.topic_impl(
             tool_input["forum"],
-            int(tool_input["topic_id"]),
+            str(tool_input["topic_id"]),  # 008: text-колонка, Snapshot-ід — hex
             offset=tool_input.get("offset", 0),
             max_posts=max_posts,
         )

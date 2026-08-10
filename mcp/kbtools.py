@@ -193,15 +193,17 @@ def findings_impl(
     }
 
 
-def topic_impl(forum: str, topic_id: int, offset: int = 0, max_posts: int = 60) -> dict:
+def topic_impl(forum: str, topic_id: int | str, offset: int = 0, max_posts: int = 60) -> dict:
     """SQL core of get_topic. See server.py's @mcp.tool get_topic for the
     public tool contract (that docstring is what Claude reads)."""
     max_posts = max(1, min(int(max_posts), 200))
     offset = max(0, int(offset))
     with _db() as conn:
         topic = conn.execute(
+            # topic_id у БД — text з міграції 008 (Snapshot-ід — hex-хеш);
+            # int-параметр проти text-колонки = помилка типів Postgres.
             "SELECT * FROM kb.topics WHERE forum_slug = %s AND topic_id = %s",
-            (forum, topic_id),
+            (forum, str(topic_id)),
         ).fetchone()
         if not topic:
             _log("get_topic", str(topic_id), forum, 0)

@@ -544,6 +544,11 @@ form.inline,.inline{display:inline}
 }
 .chat__msg--user .chat__meta{flex-direction:row-reverse}
 
+/* Розділ B: «Save as brief» — під .chat__meta, той самий відступ (--sp-1),
+   .inline тут не годиться (та задає display:inline, а формі треба лишатися
+   block-level, щоб успадкувати align-items:flex-start від .chat__msg--assistant). */
+.chat__savebrief{margin-top:var(--sp-1)}
+
 .chat__bubble--error{color:var(--bad); background:var(--bad-bg); border-color:#4A2229}
 
 /* Індикатор «друкує» — три крапки, анімовані через @keyframes: reduced-motion
