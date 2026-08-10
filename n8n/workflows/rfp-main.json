@@ -154,8 +154,7 @@
           "name": "Header Auth account"
         }
       },
-      "notes": "TODO: add structured output per current API docs ({is_rfp, confidence, category, canonical_project, canonical_title, reason}); verify cache hits via usage.cache_read_input_tokens (A9). Log verdict + prompt version to items_log.",
-      "disabled": true
+      "notes": "TODO: add structured output per current API docs ({is_rfp, confidence, category, canonical_project, canonical_title, reason}); verify cache hits via usage.cache_read_input_tokens (A9). Log verdict + prompt version to items_log."
     },
     {
       "parameters": {
@@ -248,8 +247,7 @@
           "name": "Header Auth account"
         }
       },
-      "notes": "No hallucinated deadlines in front of sales (A8): regex-corroborate deadline/budget downstream.",
-      "disabled": true
+      "notes": "No hallucinated deadlines in front of sales (A8): regex-corroborate deadline/budget downstream."
     },
     {
       "parameters": {
