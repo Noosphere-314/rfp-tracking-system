@@ -175,9 +175,9 @@ def _kb_crawlers() -> dict[str, Any]:
     row already, and a future kind added to the CHECK constraint ahead of
     its module landing must not take down every OTHER forum's crawl.
     """
-    from . import kb, kb_snapshot
+    from . import kb, kb_github, kb_snapshot
 
-    return {"discourse": kb, "snapshot": kb_snapshot}
+    return {"discourse": kb, "snapshot": kb_snapshot, "github": kb_github}
 
 
 def cmd_kb_backfill(args: argparse.Namespace) -> int:

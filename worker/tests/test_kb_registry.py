@@ -96,8 +96,11 @@ def test_backfill_skips_unregistered_kind_without_raising(monkeypatch, calls):
 
 
 def test_backfill_skips_future_unknown_kind_too(monkeypatch, calls):
-    # kind з CHECK-обмеження (migration 008), для якого ще нема модуля.
-    forums = [_forum("gh-something", "github")]
+    # 'site' — kind із CHECK-обмеження (008), для якого модуля СВІДОМО нема
+    # (woof-рядок заливається разовим скриптом). Раніше тут стояв 'github' і
+    # тест проходив лише випадково: конектор з'явився (K2), але без
+    # GITHUB_TOKEN у пісочниці повертався раніше, ніж торкався fake-conn.
+    forums = [_forum("woof-like", "site")]
     monkeypatch.setattr(kb, "load_forums", lambda conn, only_slug=None: forums)
     monkeypatch.setattr(main, "connect", _fake_connect)
 
