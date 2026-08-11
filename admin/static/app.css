@@ -704,7 +704,9 @@ form.inline,.inline{display:inline}
 .chat-col__head{flex:0 0 auto; display:flex; align-items:center; gap:var(--sp-3)}
 /* Кнопка «History» — лише мобільний тригер оверлея нижче; на десктопі
    панель і так завжди видима, тож дублювати кнопку нема сенсу. */
-.chat-col__histbtn{display:none}
+/* margin-left:auto — кнопка при ПРАВОМУ краї (явне побажання Миколи:
+   History «десь справа», з того самого боку, що й панель, яку вона відкриває). */
+.chat-col__histbtn{display:none; margin-left:auto}
 .chat__archived-banner{margin:0; flex:1 1 auto; display:flex; align-items:center; gap:var(--sp-3)}
 .chat-col__scroll{flex:1; min-height:0; overflow-y:auto}
 .chat-col__scroll > * + *{margin-top:var(--sp-4)}

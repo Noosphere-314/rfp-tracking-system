@@ -76,15 +76,18 @@
 
   <div class="chat-col">
     <div class="chat-col__head">
-      <label class="btn btn--ghost btn--sm chat-col__histbtn" for="chat-side-toggle">
-        {{ t("pg.chat.hist_open", "History") }}
-      </label>
       {%- if archived %}
       <div class="alert alert--info chat__archived-banner" role="status">
         <span>{{ t("pg.chat.archived_banner", "Archived conversation") }}</span>
         <a class="btn btn--sm" href="/chat">{{ t("pg.chat.back_to_current", "Back to current chat") }}</a>
       </div>
       {%- endif %}
+      {#- Кнопка ПІСЛЯ банера + margin-left:auto у CSS: Микола явно просив
+          History «десь справа» — панель історії теж праворуч, тож кнопка,
+          що її відкриває, має стояти з того самого боку. -#}
+      <label class="btn btn--ghost btn--sm chat-col__histbtn" for="chat-side-toggle">
+        {{ t("pg.chat.hist_open", "History") }}
+      </label>
     </div>
 
     {%- if archived and not messages %}
