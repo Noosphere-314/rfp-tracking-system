@@ -37,7 +37,7 @@ mkdir -p "$BACKUP_DIR"
 DUMP="$BACKUP_DIR/rfp-$STAMP.sql.gz"
 $COMPOSE exec -T postgres \
     pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists \
-    --exclude-table-data='kb.topics' --exclude-table-data='kb.posts' --exclude-table-data='kb.chat_messages' \
+    --exclude-table-data='kb.topics' --exclude-table-data='kb.posts' \
     | gzip > "$DUMP"
 echo "database dump: $DUMP ($(du -h "$DUMP" | cut -f1))"
 
