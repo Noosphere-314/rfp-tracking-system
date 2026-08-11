@@ -26,6 +26,11 @@ from psycopg.rows import dict_row
 
 log = logging.getLogger("kb-brief")
 
+# Дозволена форма model-override (див. make_brief): будь-який claude-* id —
+# admin шле лише значення зі свого select-а, але контракт відкритий і для
+# n8n, тож форму перевіряємо тут, а невалідну мовчки ігноруємо.
+_MODEL_RE = re.compile(r"claude-[a-z0-9.-]{3,40}")
+
 DATABASE_URL = os.environ["DATABASE_URL"]
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
@@ -378,9 +383,16 @@ def make_brief(
     title: str,
     body: str = "",
     item_uid: str | None = None,
+    model_override: str | None = None,
 ) -> dict:
     """Generate (and persist) a briefing pack. Never raises on LLM problems —
-    degrades to the basic tier; raises only if the ecosystem has no archive."""
+    degrades to the basic tier; raises only if the ecosystem has no archive.
+
+    `model_override` — вибір моделі на ОДИН виклик (запит Миколи 2026-08-11:
+    «вибирати глибину бріфа при його створенні»): admin шле значення зі
+    свого select-а. Валідовано формою claude-* — невалідне мовчки падає на
+    settings.brief_model, а не 500-ить (кривий override не вартий зламаного
+    бріфа)."""
     with _db() as conn:
         forum = _forum_for(conn, ecosystem)
         if not forum:
@@ -392,6 +404,8 @@ def make_brief(
             }
 
         model = _setting(conn, "brief_model", "claude-opus-5")
+        if model_override and _MODEL_RE.fullmatch(model_override):
+            model = model_override
         language = _setting(conn, "brief_language", "en")
         max_words = _brief_max_words(conn)
         slug = forum["forum_slug"]

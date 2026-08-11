@@ -1669,3 +1669,54 @@ def test_scope_system_line_present_only_with_forums(monkeypatch):
     chat._llm_reply([{"role": "user", "content": "q"}], "m", "web")
     plain_system = [b["text"] for b in holder["client"].messages.calls[0]["system"]]
     assert not any("archive scope" in t for t in plain_system)
+
+
+# ── Model-override для /chat-brief (вибір моделі при створенні звіту) ──
+
+
+def _brief_db(monkeypatch):
+    chat_rows = [
+        {"role": "user", "content": "q", "tier": None},
+        {"role": "assistant", "content": "a", "tier": "llm"},
+    ]
+
+    def settings_response(params):
+        if params[0] == "brief_model":
+            return [{"value": "claude-opus-5"}]
+        if params[0] == "brief_max_words":
+            return [{"value": "350"}]
+        return []
+
+    router = [
+        ("kb.chat_messages", chat_rows),
+        ("SELECT value FROM settings", settings_response),
+        ("INSERT INTO kb.briefs", [{"id": 1}]),
+    ]
+    db_factory, _calls = make_db(router)
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+
+def test_chat_brief_model_override_wins(monkeypatch):
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    _brief_db(monkeypatch)
+    holder = install_fake_anthropic(
+        monkeypatch, [FakeResponse([text_block("report")], "end_turn")]
+    )
+
+    chat.chat_brief({"channel": "web", "session_key": "s1",
+                     "model": "claude-sonnet-5"})
+
+    assert holder["client"].messages.calls[0]["model"] == "claude-sonnet-5"
+
+
+def test_chat_brief_invalid_model_override_falls_back_to_setting(monkeypatch):
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    _brief_db(monkeypatch)
+    holder = install_fake_anthropic(
+        monkeypatch, [FakeResponse([text_block("report")], "end_turn")]
+    )
+
+    chat.chat_brief({"channel": "web", "session_key": "s1",
+                     "model": "gpt-99'; DROP TABLE--"})
+
+    assert holder["client"].messages.calls[0]["model"] == "claude-opus-5"

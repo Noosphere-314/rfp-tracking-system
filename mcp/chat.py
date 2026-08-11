@@ -1162,6 +1162,13 @@ def chat_brief(payload: dict) -> tuple[dict, int]:
         model = _setting(conn, "brief_model", "claude-opus-5")
         max_words = _brief_max_words(conn)
 
+    # Опційний override моделі на ОДИН звіт (запит Миколи 2026-08-11:
+    # «вибирати модель при створенні бріфа») — та сама форма claude-*, що й
+    # у briefing.make_brief; невалідне значення мовчки ігнорується.
+    override = payload.get("model")
+    if isinstance(override, str) and re.fullmatch(r"claude-[a-z0-9.-]{3,40}", override):
+        model = override
+
     first_user_message = next((r["content"] for r in rows if r["role"] == "user"), "")
     title = first_user_message.strip()[:90]
     transcript = _format_transcript(rows)

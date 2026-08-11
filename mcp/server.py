@@ -193,6 +193,7 @@ async def brief_route(request: Request) -> JSONResponse:
         ecosystem, title,
         payload.get("body") or "",
         payload.get("item_uid"),
+        payload.get("model"),  # опційний override brief_model на ОДИН виклик
     )
     _log("brief_for_lead", title, ecosystem, 0 if result.get("error") else 1)
     status = 404 if result.get("error") else 200
