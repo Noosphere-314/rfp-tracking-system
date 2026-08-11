@@ -584,7 +584,7 @@ def test_llm_reply_web_search_on_adds_server_tool_and_system_line(monkeypatch):
     tools = holder["client"].messages.calls[0]["tools"]
     assert len(tools) == len(chat._TOOLS) + 1
     assert tools[-1] == chat._WEB_SEARCH_TOOL
-    assert tools[-1]["type"] == "web_search_20260318"
+    assert tools[-1]["type"] == "web_search_20260209"
     assert tools[-1]["max_uses"] == 3
     system = holder["client"].messages.calls[0]["system"]
     assert chat._WEB_SEARCH_SYSTEM_LINE in [b["text"] for b in system]
