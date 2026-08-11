@@ -1251,3 +1251,37 @@ def test_web_search_none_result_is_not_injected(monkeypatch):
     )
     main_call = holder["client"].messages.calls[1]
     assert len(main_call["messages"]) == 1, "нічого не мало додатись"
+
+
+# ── Економія токенів (2026-08-11) ────────────────────────────────────
+
+
+def test_rolling_cache_breakpoint_marks_only_the_latest_turn():
+    """Один рухомий брейкпойнт: попередні знімаються, інакше кеш дробиться
+    і впирається в ліміт API (4)."""
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "q"}]},
+        {"role": "user", "content": [{"type": "tool_result", "content": "a"}]},
+    ]
+    chat._roll_cache_breakpoint(messages)
+    assert messages[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    messages.append({"role": "user", "content": [{"type": "tool_result", "content": "b"}]})
+    chat._roll_cache_breakpoint(messages)
+    assert "cache_control" not in messages[1]["content"][-1], "старий має зніматись"
+    assert messages[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_loop_sets_cache_breakpoint_on_tool_results(monkeypatch):
+    responses = [
+        FakeResponse([tool_use_block("call_1", "search_kb", {"query": "x"})], "tool_use"),
+        FakeResponse([text_block("done")], "end_turn"),
+    ]
+    holder = install_fake_anthropic(monkeypatch, responses)
+    monkeypatch.setattr(chat, "_dispatch_tool", lambda name, inp: "{}")
+
+    chat._llm_reply([{"role": "user", "content": "q"}], "m", "web")
+
+    second_call = holder["client"].messages.calls[1]
+    last_block = second_call["messages"][-1]["content"][-1]
+    assert last_block.get("cache_control") == {"type": "ephemeral"}

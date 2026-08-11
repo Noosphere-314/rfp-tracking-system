@@ -71,7 +71,13 @@ Work like an analyst:
 - Call search_kb with 2-3 differently-phrased queries (synonyms matter: forum
   vocabulary like RetroPGF, mission, ARFC, temp check) before concluding the
   archive has nothing on a topic.
-- Read promising topics in full with get_topic before citing them.
+- search_kb already returns snippets with source URLs — answer from those
+  when they settle the question. Call get_topic ONLY when the snippets are
+  genuinely insufficient (you need the decision, the objection, or numbers
+  the snippet cut off): a full thread costs orders of magnitude more than a
+  search, and most questions never need one.
+- When you do open a thread, one is usually enough — resist reading several
+  in full to be thorough. Cite the snippet when it already proves the point.
 - list_findings shows what OUR pipeline collected (internal findings with
   classifier verdicts) — use it for questions about our own leads/findings,
   not the public forum archive.
@@ -553,6 +559,30 @@ def _dispatch_tool(name: str, tool_input: dict) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+def _roll_cache_breakpoint(messages: list[dict]) -> None:
+    """Ставить cache_control на останній блок останнього ходу, знімаючи
+    попередній (rolling breakpoint).
+
+    Навіщо: цикл інструментів пересилає ВСЮ накопичену історію кожної
+    ітерації. Без кешу восьма ітерація платить повну ціну за все, що
+    прочитала перша — саме тут і згорає бюджет на довгих розмовах. З
+    брейкпойнтом повтор коштує 0.1× (запис 1.25×, тобто окупається вже з
+    другої ітерації). Лишаємо рівно один рухомий брейкпойнт (+ статичний
+    на системному промпті) — ліміт API 4, і зайві лише дробили б кеш.
+    """
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    block.pop("cache_control", None)
+    for msg in reversed(messages):
+        content = msg.get("content")
+        if isinstance(content, list) and content and isinstance(content[-1], dict):
+            content[-1]["cache_control"] = {"type": "ephemeral"}
+            return
+
+
 def _web_research(client, messages: list[dict], model: str) -> str:
     """Один виклик Anthropic із САМИМ веб-пошуком (жодних локальних
     інструментів) → текст знайденого, або "" якщо не вийшло.
@@ -686,6 +716,7 @@ def _llm_reply(
                 results.append({"type": "tool_result", "tool_use_id": block.id,
                                  "content": f"tool error: {exc}", "is_error": True})
         messages.append({"role": "user", "content": results})
+        _roll_cache_breakpoint(messages)
 
     # Стеля ітерацій. Якщо останній хід усе ж лишив текст (модель могла
     # супроводжувати tool_use поясненням) — віддамо його; інакше падаємо

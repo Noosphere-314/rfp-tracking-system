@@ -193,9 +193,22 @@ def findings_impl(
     }
 
 
+# Бюджет ваги треду (2026-08-11). Стеля в ПОСТАХ не захищає гаманець:
+# RFP-тред Compound — 31 пост і 149 тис. токенів (пости-полотна), тобто
+# проходить крізь ліміт 60 і сам з'їдає десяту частину денного бюджету.
+# Тому ріжемо за СИМВОЛАМИ: ~4 символи на токен, отже 60k символів ≈ 15k
+# токенів на один виклик — вистачає прочитати суть будь-якої дискусії.
+MAX_TOPIC_CHARS = 60_000
+MAX_POST_CHARS = 6_000   # окремий пост довший за це — обрізаємо з позначкою
+
+
 def topic_impl(forum: str, topic_id: int | str, offset: int = 0, max_posts: int = 60) -> dict:
     """SQL core of get_topic. See server.py's @mcp.tool get_topic for the
-    public tool contract (that docstring is what Claude reads)."""
+    public tool contract (that docstring is what Claude reads).
+
+    Крім ліміту постів діє бюджет символів (MAX_TOPIC_CHARS): віддаємо
+    рівно стільки, скільки корисно прочитати, і чесно кажемо моделі, де
+    обірвали — вона може попросити продовження через offset."""
     max_posts = max(1, min(int(max_posts), 200))
     offset = max(0, int(offset))
     with _db() as conn:
@@ -218,23 +231,39 @@ def topic_impl(forum: str, topic_id: int | str, offset: int = 0, max_posts: int 
             (topic["id"], int(offset), max_posts),
         ).fetchall()
 
-    _log("get_topic", str(topic_id), forum, len(posts))
-    return {
+    out_posts = []
+    used = 0
+    truncated_at = None
+    for p in posts:
+        text = p["raw_text"] or ""
+        if len(text) > MAX_POST_CHARS:
+            text = text[:MAX_POST_CHARS] + " […post truncated]"
+        if used + len(text) > MAX_TOPIC_CHARS and out_posts:
+            truncated_at = p["post_number"]
+            break
+        used += len(text)
+        out_posts.append({
+            "n": p["post_number"],
+            "author": p["author"],
+            "at": p["posted_at"].isoformat() if p["posted_at"] else None,
+            "text": text,
+            "cite": f"{topic['url']}/{p['post_number']}",
+        })
+
+    _log("get_topic", str(topic_id), forum, len(out_posts))
+    result = {
         "title": topic["title"],
         "url": topic["url"],
         "category": topic["category_name"],
         "created_at": topic["created_at"].isoformat() if topic["created_at"] else None,
         "post_count": topic["post_count"],
-        "returned": len(posts),
+        "returned": len(out_posts),
         "offset": offset,
-        "posts": [
-            {
-                "n": p["post_number"],
-                "author": p["author"],
-                "at": p["posted_at"].isoformat() if p["posted_at"] else None,
-                "text": p["raw_text"],
-                "cite": f"{topic['url']}/{p['post_number']}",
-            }
-            for p in posts
-        ],
+        "posts": out_posts,
     }
+    if truncated_at is not None:
+        result["note"] = (
+            f"Size budget reached at post #{truncated_at}. Call get_topic again "
+            f"with offset={truncated_at - 1} only if the answer really needs more."
+        )
+    return result
