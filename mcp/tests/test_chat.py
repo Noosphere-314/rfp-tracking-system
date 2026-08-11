@@ -818,12 +818,19 @@ def test_llm_reply_mixed_server_tool_and_client_tool_use_in_same_turn(monkeypatc
     # мовчки пропущені, не здиспетчерені.
     assert len(tool_results) == 1
     assert tool_results[0]["tool_use_id"] == "call_1"
-    # Асистентський хід, який пішов назад у messages, і досі несе
-    # server-tool блоки незмінними (потрібні для реплею на наступний хід).
+    # НЕЗАВЕРШЕНИЙ server_tool_use вирізається з асистентського ходу
+    # (знайдено в проді 2026-08-11): лишити його = 400 "container_id is
+    # required…", а не відповісти на власний tool_use = 400 "tool_use ids
+    # were found without tool_result". Єдина форма, що задовольняє обидва
+    # правила — свої результати віддати, незавершений серверний виклик
+    # прибрати; веб-пошук модель повторює наступним ходом сама.
     assistant_turn = second_call_messages[-2]
     assert assistant_turn["role"] == "assistant"
     block_types = [b.type for b in assistant_turn["content"]]
-    assert "server_tool_use" in block_types
+    assert "server_tool_use" not in block_types
+    assert "tool_use" in block_types
+    # Готовий результат пошуку лишається — він уже завершений, вирізати його
+    # означало б викинути те, що модель щойно знайшла.
     assert "web_search_tool_result" in block_types
 
 
