@@ -318,6 +318,12 @@ label{cursor:pointer}
 .b-rfp,.b-info{--pill-fg:var(--info); --pill-bg:var(--info-bg)}
 .b-seeded,.b-filtered,.b-off,.b-soon,.b-neutral{--pill-fg:var(--neutral); --pill-bg:var(--neutral-bg)}
 .b-funding{--pill-fg:#C79BE8; --pill-bg:#241833}
+/* Розділ B1/B2: чип «LEAD»/бейдж NAV — прив'язаний до брендового акценту
+   (--brand-1), а не до семантичних --ok/--warn/--bad вище: «лід» тут не
+   статус (won/lost — те, вже покриває --ok/--bad на цій сторінці), а
+   окрема, наскрізна для всього дашборда категорія уваги, тому й колір —
+   той самий, що й акцентна рамка .item-row--lead нижче. */
+.b-lead{--pill-fg:var(--brand-1); --pill-bg:color-mix(in srgb, var(--brand-1) 18%, var(--surface-2))}
 
 .alert{
   padding:10px 14px; margin-bottom:var(--sp-4);
@@ -356,6 +362,12 @@ label{cursor:pointer}
 a.stat:hover{border-color:var(--brand-1); text-decoration:none}
 .stat__num{font-size:var(--fs-2xl); font-weight:700; line-height:1.1}
 .stat__lbl{margin-top:2px; font-size:var(--fs-sm); color:var(--text-dim)}
+/* Розділ B3: плитка «Нові ліди (24 год)» — та сама пара --brand-1, що й
+   .b-lead/.item-row--lead нижче, щоб три місця («NAV-бейдж», «рядок
+   знахідки», «плитка Огляду»), які показують одне й те саме число, читалися
+   як одна візуальна категорія. */
+.stat--lead{border-color:var(--brand-1)}
+.stat--lead .stat__num{color:var(--brand-1)}
 
 /* 3.7: sticky thead свідомо немає — overflow-x:auto і position:sticky
    взаємно виключні. Обгортка обов'язкова для КОЖНОЇ таблиці. */
@@ -376,6 +388,19 @@ tbody tr:hover{background:var(--surface-2)}
 .table--dense th,.table--dense td{padding:5px 10px; font-size:var(--fs-sm)}
 .cell--num{text-align:right}
 .cell--nowrap{white-space:nowrap}
+
+/* Розділ B1: рядок-лід на /items (items.html: delivered_at IS NOT NULL) —
+   акцентна ліва рамка + ледь помітний фон, обидва виведені з --brand-1, а
+   не захардкоджені кольори: якщо колись з'явиться друга тема поверх наявних
+   custom properties (файл поки свідомо однотемний, розділ 1), підсвітка
+   переїде сама, без правок розмітки. `:hover` окремим правилом — інакше
+   загальний `tbody tr:hover` вище (нижча специфічність, але йде пізніше
+   каскадом) перебив би підсвічений фон при наведенні. */
+.item-row--lead{
+  box-shadow:inset 3px 0 0 0 var(--brand-1);
+  background:color-mix(in srgb, var(--brand-1) 7%, transparent);
+}
+.item-row--lead:hover{background:color-mix(in srgb, var(--brand-1) 13%, transparent)}
 
 .chips{display:flex; flex-wrap:wrap; gap:var(--sp-2)}
 .chip{

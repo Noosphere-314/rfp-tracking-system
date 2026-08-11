@@ -107,6 +107,11 @@ def test_fail_closed_takes_priority_over_contract_validation(monkeypatch):
         ({"message": "   "}, "message is required"),
         ({"message": "x" * 4001}, "at most 4000"),
         ({"message": 123}, "message is required"),
+        ({"web": "yes"}, "web must be a boolean"),
+        ({"web": 1}, "web must be a boolean"),
+        ({"web": 0}, "web must be a boolean"),
+        ({"web": None}, "web must be a boolean"),  # present-but-null, not absent
+        ({"web": []}, "web must be a boolean"),
     ],
 )
 def test_contract_validation_400(monkeypatch, overrides, expected_snippet):
@@ -621,6 +626,133 @@ def test_answer_reads_web_search_setting_and_passes_it_through(monkeypatch):
     assert seen["web_search"] is True
 
 
+# ── A: per-request web flag (payload.web OR settings.chat_web_search) ──
+
+
+@pytest.mark.parametrize("web_value", [True, False])
+def test_web_true_and_false_pass_validation(monkeypatch, web_value):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "_stub_reply", lambda message: "ok")
+    payload = {**VALID_PAYLOAD, "web": web_value}
+    body, status = chat.answer(payload)
+    assert status == 200
+
+
+def test_web_true_enables_search_even_when_settings_off(monkeypatch):
+    """payload web=true must add the server tool even with chat_web_search
+    globally 'off' — and short-circuits the settings read entirely (the
+    payload already answers the question, no need to hit the DB for it)."""
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(chat, "_web_search_enabled", _raise)  # must not be called
+
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False):
+        seen["web_search"] = web_search
+        return "answer", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+
+    body, status = chat.answer({**VALID_PAYLOAD, "web": True})
+
+    assert status == 200
+    assert seen["web_search"] is True
+
+
+def test_web_absent_and_settings_off_disables_search(monkeypatch):
+    _stub_no_op_db(monkeypatch)  # _web_search_enabled → False
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False):
+        seen["web_search"] = web_search
+        return "answer", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+
+    body, status = chat.answer(VALID_PAYLOAD)  # no "web" key at all
+
+    assert status == 200
+    assert seen["web_search"] is False
+
+
+def test_web_false_and_settings_off_disables_search(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False):
+        seen["web_search"] = web_search
+        return "answer", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+
+    body, status = chat.answer({**VALID_PAYLOAD, "web": False})
+
+    assert status == 200
+    assert seen["web_search"] is False
+
+
+def test_web_false_but_settings_on_still_enables_search(monkeypatch):
+    """The OR is settings-inclusive, not payload-exclusive: an explicit
+    web=false in one request must not turn off a globally-enabled setting."""
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(chat, "_web_search_enabled", lambda: True)
+
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False):
+        seen["web_search"] = web_search
+        return "answer", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+
+    body, status = chat.answer({**VALID_PAYLOAD, "web": False})
+
+    assert status == 200
+    assert seen["web_search"] is True
+
+
+def test_response_contract_unchanged_with_web_flag(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(chat, "_llm_reply", lambda *a, **kw: ("answer", 5, 7))
+
+    body, status = chat.answer({**VALID_PAYLOAD, "web": True})
+
+    assert status == 200
+    assert set(body.keys()) == {"ok", "reply_md", "tier", "model", "tokens"}
+
+
+def test_llm_reply_web_search_on_adds_hint_line(monkeypatch):
+    responses = [FakeResponse([text_block("ok")], "end_turn")]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    chat._llm_reply([{"role": "user", "content": "q"}], "m", "web", web_search=True)
+
+    system_texts = [b["text"] for b in holder["client"].messages.calls[0]["system"]]
+    assert chat._WEB_SEARCH_HINT_LINE in system_texts
+
+
+def test_llm_reply_web_search_off_has_no_hint_line(monkeypatch):
+    responses = [FakeResponse([text_block("ok")], "end_turn")]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    chat._llm_reply([{"role": "user", "content": "q"}], "m", "web")
+
+    system_texts = [b["text"] for b in holder["client"].messages.calls[0]["system"]]
+    assert chat._WEB_SEARCH_HINT_LINE not in system_texts
+
+
 # ── Agent 2.0: mixed content with a server-tool block ───────────────
 
 
@@ -784,3 +916,333 @@ def test_keywords_advice_happy_path(monkeypatch):
     assert "[include] grant" in prompt
     assert "unrelated noise thread" in prompt
     assert "FUNDING: 3" in prompt
+
+
+# ── B: /chat-brief (chat.chat_brief) ─────────────────────────────────
+
+
+CHAT_BRIEF_PAYLOAD = {"channel": "web", "session_key": "sess-1"}
+
+
+def _chat_brief_settings_db(monkeypatch, model="claude-opus-5", max_words="350"):
+    """Fakes the `with kbtools._db() as conn: _setting(...); _brief_max_words(...)`
+    block inside chat_brief — same SQL text for both reads (SELECT value FROM
+    settings WHERE key = %s), branching by the key param is what fakedb's
+    callable-response form is for."""
+    def settings_response(params):
+        key = params[0]
+        if key == "brief_model":
+            return [{"value": model}]
+        if key == "brief_max_words":
+            return [{"value": max_words}]
+        return []
+
+    db_factory, calls = make_db([("SELECT value FROM settings", settings_response)])
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+    return calls
+
+
+def test_chat_brief_fail_closed_when_token_unset(monkeypatch):
+    monkeypatch.delenv("KB_MCP_TOKEN", raising=False)
+    body, status = chat.chat_brief(CHAT_BRIEF_PAYLOAD)
+    assert status == 403
+    assert body == {"ok": False, "error": "Chat is disabled: KB_MCP_TOKEN is not set."}
+
+
+def test_chat_brief_fail_closed_takes_priority_over_contract_validation(monkeypatch):
+    monkeypatch.setenv("KB_MCP_TOKEN", "")
+    body, status = chat.chat_brief({"garbage": True})
+    assert status == 403
+
+
+@pytest.mark.parametrize(
+    "overrides,expected_snippet",
+    [
+        ({"channel": "sms"}, "channel"),
+        ({"channel": None}, "channel"),
+        ({"session_key": ""}, "session_key is required"),
+        ({"session_key": None}, "session_key is required"),
+        ({"session_key": "a" * 161}, "at most 160"),
+        ({"session_key": "web:room1"}, "must not contain"),
+    ],
+)
+def test_chat_brief_contract_validation_400(monkeypatch, overrides, expected_snippet):
+    payload = {**CHAT_BRIEF_PAYLOAD, **overrides}
+    body, status = chat.chat_brief(payload)
+    assert status == 400
+    assert body["ok"] is False
+    assert expected_snippet in body["error"]
+
+
+def test_chat_brief_contract_ignores_who_and_message(monkeypatch):
+    """/chat-brief's contract is deliberately the channel+session_key SUBSET
+    of /chat's (see _validate_channel_and_session) — who/message rules from
+    _validate don't apply here, there's no message in this request."""
+    monkeypatch.setattr(chat, "_load_all_messages", lambda storage_key: [])
+    body, status = chat.chat_brief({**CHAT_BRIEF_PAYLOAD, "who": "x" * 999, "message": 123})
+    assert status == 404  # sailed past validation straight to the row-count check
+
+
+def test_chat_brief_storage_key_is_channel_prefixed(monkeypatch):
+    seen = {}
+
+    def fake_load(storage_key):
+        seen["storage_key"] = storage_key
+        return []
+
+    monkeypatch.setattr(chat, "_load_all_messages", fake_load)
+
+    chat.chat_brief({"channel": "telegram", "session_key": "room1"})
+
+    assert seen["storage_key"] == "telegram:room1"
+
+
+def test_chat_brief_zero_rows_404(monkeypatch):
+    monkeypatch.setattr(chat, "_load_all_messages", lambda storage_key: [])
+    body, status = chat.chat_brief(CHAT_BRIEF_PAYLOAD)
+    assert status == 404
+    assert body == {"ok": False, "error": "Nothing to summarize in this conversation yet."}
+
+
+def test_chat_brief_one_row_404(monkeypatch):
+    monkeypatch.setattr(
+        chat, "_load_all_messages",
+        lambda storage_key: [{"role": "user", "content": "only one message", "tier": None}],
+    )
+    body, status = chat.chat_brief(CHAT_BRIEF_PAYLOAD)
+    assert status == 404
+
+
+def test_chat_brief_no_api_key_returns_503(monkeypatch):
+    rows = [
+        {"role": "user", "content": "q", "tier": None},
+        {"role": "assistant", "content": "a", "tier": "llm"},
+    ]
+    monkeypatch.setattr(chat, "_load_all_messages", lambda storage_key: rows)
+    assert chat.ANTHROPIC_API_KEY == ""  # module default, no key configured
+
+    body, status = chat.chat_brief(CHAT_BRIEF_PAYLOAD)
+
+    assert status == 503
+    assert body == {"ok": False, "error": "AI tier is off — set ANTHROPIC_API_KEY."}
+
+
+def test_chat_brief_row_count_checked_before_api_key(monkeypatch):
+    """404 (nothing to summarize) must win over 503 (no key) — matches the
+    spec's stated check order, and is the more useful error for an empty
+    conversation regardless of whether the AI tier is configured."""
+    monkeypatch.setattr(chat, "_load_all_messages", lambda storage_key: [])
+    assert chat.ANTHROPIC_API_KEY == ""
+
+    body, status = chat.chat_brief(CHAT_BRIEF_PAYLOAD)
+
+    assert status == 404
+
+
+def test_chat_brief_llm_exception_returns_502_no_stub_fallback(monkeypatch):
+    rows = [
+        {"role": "user", "content": "q", "tier": None},
+        {"role": "assistant", "content": "a", "tier": "llm"},
+    ]
+    monkeypatch.setattr(chat, "_load_all_messages", lambda storage_key: rows)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    _chat_brief_settings_db(monkeypatch)
+    monkeypatch.setattr(chat, "_insert_brief", _raise)  # must not be reached
+
+    install_fake_anthropic(monkeypatch, [RuntimeError("boom")])
+
+    body, status = chat.chat_brief(CHAT_BRIEF_PAYLOAD)
+
+    assert status == 502
+    assert body == {"ok": False, "error": "Report generation failed — try again."}
+
+
+def test_chat_brief_title_truncated_to_90_chars(monkeypatch):
+    long_message = "Q" * 120
+    rows = [
+        {"role": "user", "content": long_message, "tier": None},
+        {"role": "assistant", "content": "a", "tier": "llm"},
+    ]
+    monkeypatch.setattr(chat, "_load_all_messages", lambda storage_key: rows)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    _chat_brief_settings_db(monkeypatch)
+    monkeypatch.setattr(chat, "_insert_brief", lambda *a, **kw: 1)
+    install_fake_anthropic(monkeypatch, [FakeResponse([text_block("report")], "end_turn")])
+
+    body, status = chat.chat_brief(CHAT_BRIEF_PAYLOAD)
+
+    assert status == 200
+    assert body["title"] == long_message[:90]
+    assert len(body["title"]) == 90
+
+
+def test_chat_brief_title_uses_first_user_message_not_first_row(monkeypatch):
+    rows = [
+        {"role": "assistant", "content": "orphaned lead-in", "tier": "llm"},
+        {"role": "user", "content": "the real opening question", "tier": None},
+        {"role": "assistant", "content": "a", "tier": "llm"},
+    ]
+    monkeypatch.setattr(chat, "_load_all_messages", lambda storage_key: rows)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    _chat_brief_settings_db(monkeypatch)
+    monkeypatch.setattr(chat, "_insert_brief", lambda *a, **kw: 1)
+    install_fake_anthropic(monkeypatch, [FakeResponse([text_block("report")], "end_turn")])
+
+    body, status = chat.chat_brief(CHAT_BRIEF_PAYLOAD)
+
+    assert status == 200
+    assert body["title"] == "the real opening question"
+
+
+def test_load_all_messages_drops_stub_pairs_and_caps_at_200(monkeypatch):
+    raw_rows = [
+        {"role": "user", "content": "old q", "tier": None},
+        {"role": "assistant", "content": "keyword stub", "tier": "stub"},
+        {"role": "user", "content": "real q", "tier": None},
+        {"role": "assistant", "content": "real a", "tier": "llm"},
+    ]
+    db_factory, calls = make_db([("kb.chat_messages", raw_rows)])
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    rows = chat._load_all_messages("web:sess-1")
+
+    assert [(r["role"], r["content"]) for r in rows] == [
+        ("user", "real q"), ("assistant", "real a"),
+    ]
+    sql, params = calls[0]
+    assert "ORDER BY id LIMIT 200" in sql  # spec: capped at 200 rows, ascending
+    assert params == ("web:sess-1",)
+
+
+def test_insert_brief_uses_chat_ecosystem_and_null_item_uid(monkeypatch):
+    db_factory, calls = make_db([("INSERT INTO kb.briefs", [{"id": 55}])])
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    brief_id = chat._insert_brief("Title", "Body md", "claude-opus-5", 10, 20)
+
+    assert brief_id == 55
+    sql, params = calls[0]
+    assert "INSERT INTO kb.briefs" in sql
+    assert params == (None, "chat", "Title", "Body md", "llm", "claude-opus-5", 10, 20)
+
+
+def test_chat_brief_happy_path_end_to_end(monkeypatch):
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+
+    chat_rows = [
+        {"role": "user", "content": "What grants has Optimism funded for dev tooling?",
+         "tier": None},
+        {"role": "assistant", "content": "Answer one.\n\nSources:\n1. https://x/1",
+         "tier": "llm"},
+        {"role": "user", "content": "Any recent ones?", "tier": None},
+        {"role": "assistant", "content": "Answer two.\n\nSources:\n1. https://x/2",
+         "tier": "llm"},
+    ]
+
+    def settings_response(params):
+        key = params[0]
+        if key == "brief_model":
+            return [{"value": "claude-opus-5"}]
+        if key == "brief_max_words":
+            return [{"value": "500"}]
+        return []
+
+    router = [
+        ("kb.chat_messages", chat_rows),
+        ("SELECT value FROM settings", settings_response),
+        ("INSERT INTO kb.briefs", [{"id": 77}]),
+    ]
+    db_factory, calls = make_db(router)
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    report_text = "### What was investigated\n...\n\nSources:\n1. https://x/1"
+    responses = [FakeResponse([text_block(report_text)], "end_turn",
+                               tokens_in=100, tokens_out=200)]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    body, status = chat.chat_brief({"channel": "web", "session_key": "sess-1"})
+
+    assert status == 200
+    assert body == {
+        "ok": True, "brief_id": 77,
+        "title": "What grants has Optimism funded for dev tooling?",
+    }
+
+    call = holder["client"].messages.calls[0]
+    assert call["model"] == "claude-opus-5"
+    assert call["max_tokens"] == 3000
+    assert "tools" not in call  # single one-shot call, no agentic loop
+    assert "500" in call["system"]  # C: brief_max_words injected per-call
+    transcript = call["messages"][0]["content"]
+    assert "CONVERSATION TRANSCRIPT" in transcript
+    assert "What grants has Optimism funded for dev tooling?" in transcript
+    assert "Answer two." in transcript
+
+    insert_call = next(c for c in calls if "INSERT INTO kb.briefs" in c[0])
+    assert insert_call[1] == (
+        None, "chat", "What grants has Optimism funded for dev tooling?",
+        report_text, "llm", "claude-opus-5", 100, 200,
+    )
+
+
+# ── C: brief_max_words clamp (chat._brief_max_words) ─────────────────
+
+
+def test_brief_max_words_clamps_below_floor():
+    db_factory, _ = make_db([("SELECT value FROM settings", [{"value": "10"}])])
+    assert chat._brief_max_words(db_factory()) == 100
+
+
+def test_brief_max_words_clamps_above_ceiling():
+    db_factory, _ = make_db([("SELECT value FROM settings", [{"value": "9999"}])])
+    assert chat._brief_max_words(db_factory()) == 2000
+
+
+def test_brief_max_words_non_numeric_falls_back_to_350():
+    db_factory, _ = make_db([("SELECT value FROM settings", [{"value": "lots"}])])
+    assert chat._brief_max_words(db_factory()) == 350
+
+
+def test_brief_max_words_missing_setting_falls_back_to_350():
+    db_factory, _ = make_db([])  # no row → _setting's own default kicks in
+    assert chat._brief_max_words(db_factory()) == 350
+
+
+def test_brief_max_words_within_range_passes_through():
+    db_factory, _ = make_db([("SELECT value FROM settings", [{"value": "500"}])])
+    assert chat._brief_max_words(db_factory()) == 500
+
+
+# ── A2: авто-детект «перевір в інтернеті» (запит Миколи 2026-08-11) ───
+
+
+def test_wants_web_detects_bilingual_verification_cues():
+    for msg in ["перевір це в інтернеті", "загугли останні новини",
+                "verify this claim online", "what's the latest on GG24",
+                "покажи актуальні дедлайни", "double-check the amount"]:
+        assert chat._wants_web(msg) is True, msg
+    for msg in ["що фінансував Optimism у dev tooling?",
+                "summarize Compound grants", "хто вирішує в Aave"]:
+        assert chat._wants_web(msg) is False, msg
+
+
+def test_verification_hint_forces_web_even_with_toggle_and_setting_off(monkeypatch):
+    """Ключова вимога: тумблер вимкнений, глобальний параметр вимкнений, але в
+    самому питанні є «перевір в інтернеті» → web_search все одно вмикається."""
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(chat, "_web_search_enabled", lambda: False)
+
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False):
+        seen["web_search"] = web_search
+        return "answer", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+    body, status = chat.answer(
+        {**VALID_PAYLOAD, "message": "перевір в інтернеті останні гранти Optimism"}
+    )
+    assert status == 200
+    assert seen["web_search"] is True

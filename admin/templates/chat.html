@@ -94,7 +94,10 @@
     <form class="chat__savebrief" method="post" action="/chat/save-brief">
       {% include "_csrf.html" %}
       <input type="hidden" name="message_id" value="{{ m.id }}">
-      <button class="btn btn--sm btn--ghost" type="submit">{{ t("act.save_as_brief", "Save as brief") }}</button>
+      {#- Микола не помітив цю кнопку — той самий підпис, лише з title-
+          підказкою на наведення (без редизайну). -#}
+      <button class="btn btn--sm btn--ghost" type="submit"
+              title="{{ t('act.save_as_brief.title', 'Save this answer as a brief the sales team can read later') }}">{{ t("act.save_as_brief", "Save as brief") }}</button>
     </form>
     {% endif %}
   </div>
@@ -187,6 +190,19 @@
   <a class="btn btn--ghost btn--sm" href="/chat?hist=1">{{ t("pg.chat.hist_open", "History") }}</a>
   {%- endif %}
 
+  {#- Розділ D — «Зберегти ЧАТ як звіт»: на відміну від chat__savebrief на
+      кожній бульбашці (одна репліка), тут kbmcp синтезує один бріф із УСІЄЇ
+      поточної розмови (app.py: /chat/save-report, session_key = сирий sid
+      цієї сторінки). Кнопка — лише коли є що синтезувати. -#}
+  {%- if messages %}
+  <form method="post" action="/chat/save-report"
+        data-busy="{{ t('pg.chat.report_busy', 'Synthesizing report…') }}">
+    {% include "_csrf.html" %}
+    <button class="btn btn--ghost btn--sm" type="submit"
+            title="{{ t('act.save_report.title', 'Build one brief synthesized from the whole conversation — not just one reply') }}">{{ t("act.save_report", "Save chat as report") }}</button>
+  </form>
+  {%- endif %}
+
   {#- D4 — форумні чипи. «All» веде на голий /chat (без ask). Кожен форумний
       чип без JS — посилання на приклад, уже прив'язаний до цього форуму
       (app.py: _forum_chip_href); з JS (app.js) клік ДОДАЄ " in <Forum>" до
@@ -211,6 +227,21 @@
         сторінка не сабмітить форму сама — жодного autofocus/autosubmit. -#}
     <textarea id="chat-input" name="message" maxlength="4000" required
               placeholder="{{ t('pg.chat.ph', 'e.g. which dev tooling grants were discussed in Optimism this quarter?') }}">{{ ask }}</textarea>
+    {#- Розділ C — тумблер веб-пошуку: вмикається будь-якої миті прямо в
+        чаті, а не лише в /settings (chat_web_search там — глобальний
+        дефолт, цей чекбокс — рішення на ОДНЕ повідомлення). Свідомо БЕЗ
+        `checked`: людина вмикає його сама, коли в запиті є натяк на
+        верифікацію («перевір в інтернеті») — інакше кожне повідомлення
+        мовчки тарифікувалось би пошуком. app.js нічого не скидає й нічого
+        не читає окремо — чекбокс уже всередині форми, тож FormData
+        (app.js, розділ 7) підхоплює його стан автоматично, і стан
+        лишається позначеним між повідомленнями (людина звіряє кілька
+        відповідей поспіль тим самим тумблером). -#}
+    <label class="check" for="chat-web"
+           title="{{ t('pg.chat.web_hint', 'Also searches the live internet for this message — billed separately by Anthropic, on top of the usual per-message token cost.') }}">
+      <input type="checkbox" id="chat-web" name="web" value="1">
+      {{ t("f.web_search", "Web search") }}
+    </label>
     <button class="btn btn--primary" type="submit">{{ t("act.send", "Send") }}</button>
   </form>
 </div>

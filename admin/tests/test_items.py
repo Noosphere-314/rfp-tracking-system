@@ -177,6 +177,121 @@ def test_items_page_offset_multiplies_by_page_size(client, monkeypatch):
     assert params[-1] == 100
 
 
+# ── /items?view=… — серверні пресети (розділ A/B3) ────────────────────────
+
+
+def test_items_view_review24_ignores_every_other_filter(client, monkeypatch):
+    """`view=review24` — самодостатній зріз (посилання з ранкового
+    Telegram-дайджесту): усі інші query-параметри, навіть якщо присутні,
+    НЕ впливають на WHERE/params — лише offset лишається."""
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, rows=[], sink=sink)
+
+    response = client.get(
+        "/items",
+        params={
+            "view": "review24",
+            "status": "pending", "q": "ignored", "ecosystem": "Optimism",
+            "lane": "rfp", "min_confidence": "0.7", "period": "7d",
+            "outcome": "won",
+        },
+    )
+    assert response.status_code == 200
+    sql, params = sink[0]
+    assert "i.category = 'FUNDING'" in sql
+    assert "i.delivered_at IS NULL" in sql
+    assert "i.first_seen > now() - interval '24 hours'" in sql
+    assert "ORDER BY i.confidence DESC NULLS LAST" in sql
+    assert "i.status = %s" not in sql
+    assert "i.title ILIKE %s" not in sql
+    assert params == (0,)  # лише OFFSET — жоден фільтр не додав плейсхолдер
+
+
+def test_items_view_review24_shows_banner_with_clear_view_link(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    html = client.get("/items", params={"view": "review24"}).text
+    assert "Morning review queue" in html
+    assert "this page IS the daily report" in html
+    assert 'href="/items">clear view<' in html
+
+
+def test_items_default_view_has_no_review24_banner(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    html = client.get("/items").text
+    assert "Morning review queue" not in html
+
+
+def test_items_view_leads24_preset_where_and_ignores_filters(client, monkeypatch):
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, rows=[], sink=sink)
+
+    response = client.get(
+        "/items", params={"view": "leads24", "status": "pending"}
+    )
+    assert response.status_code == 200
+    sql, params = sink[0]
+    assert "i.delivered_at > now() - interval '24 hours'" in sql
+    assert "i.status = %s" not in sql
+    assert params == (0,)
+
+
+def test_items_view_leads24_has_no_review24_banner(client, monkeypatch):
+    """Банер розділу A прив'язаний ЛИШЕ до view=review24 — leads24 не
+    отримує чужого пояснення."""
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    html = client.get("/items", params={"view": "leads24"}).text
+    assert "Morning review queue" not in html
+
+
+def test_items_unknown_view_value_falls_back_to_normal_filters(client, monkeypatch):
+    """Невідоме значення `view` (стара/відкликана посилання) не ламає
+    сторінку — той самий інваріант терпимості, що й у
+    min_confidence/period вище: фільтри застосовуються як завжди."""
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, rows=[], sink=sink)
+
+    response = client.get("/items", params={"view": "bogus", "status": "pending"})
+    assert response.status_code == 200
+    sql, params = sink[0]
+    assert "i.status = %s" in sql
+    assert "WHERE" in sql
+    assert params == ("pending", 0)
+
+
+def test_items_view_review24_hides_the_ordinary_filters_active_banner(client, monkeypatch):
+    """Пресет — не «ще один фільтр», тож звичайний банер «Filters active —
+    Reset» (для комбінованих фільтрів вище) тут не рендериться; своє
+    пояснення дає окремий банер розділу A, перевірений вище."""
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    html = client.get("/items", params={"view": "review24"}).text
+    assert "Filters active" not in html
+
+
+def test_items_view_review24_pager_link_keeps_the_view_param(client, monkeypatch):
+    """Лінк «older» (рендериться лише коли сторінка повна — 50 рядків)
+    зберігає `view=review24` — інакше друга сторінка пресету губила б сам
+    пресет."""
+    _login(client)
+    rows = [_item_row(item_uid=f"uid-{i:03d}") for i in range(50)]
+    _fake_db(monkeypatch, rows=rows)
+
+    html = client.get("/items", params={"view": "review24"}).text
+    # Jinja автоескейпить `&` у href як `&amp;` — той самий інваріант, що й
+    # у решті сторінки (розділ 4.3: qs_no_page завжди йде крізь атрибут href).
+    assert "/items?view=review24&amp;page=1" in html
+
+
 # ── «Ask AI» (розділ D3): посилання на /chat?ask=… з готовим питанням ────
 
 
@@ -247,6 +362,79 @@ def test_items_page_renders_ask_ai_link_urlencoded(client, monkeypatch):
     # Сирий, неенкодований пробіл між словами питання у href не з'являється.
     assert 'ask=What has Optimism' not in html
     assert "Ask AI" in html
+
+
+# ── Розділ B1: рядок-лід (delivered_at IS NOT NULL) ───────────────────────
+
+
+def test_items_page_delivered_row_gets_lead_class_and_chip(client, monkeypatch):
+    from datetime import datetime, timezone
+
+    _login(client)
+    row = _item_row(delivered_at=datetime(2026, 1, 6, 9, 0, tzinfo=timezone.utc))
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert '<tr class="item-row--lead">' in html
+    assert "LEAD" in html
+
+
+def test_items_page_undelivered_row_has_no_lead_class_or_chip(client, monkeypatch):
+    _login(client)
+    row = _item_row(delivered_at=None)
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert "item-row--lead" not in html
+    assert "LEAD" not in html
+
+
+# ── Розділ B2: NAV-бейдж «нових лідів за 24 год» (context processor) ──────
+
+
+def test_items_page_nav_badge_shows_lead_count_next_to_findings(client, monkeypatch):
+    """`_leads_badge_context` (app.py) рахується один раз на рендер і
+    доступний глобально — /items тут лише зручна сторінка для перевірки,
+    бейдж живе в base.html і рендериться на кожній."""
+    _login(client)
+    # Третій виклик execute() у цьому рендері (0: items, 1: ecosystem
+    # options, 2: контекст-процесор бейджа NAV) — той самий порядок, що
+    # й guard-коментар у _leads_badge_context описує.
+    _fake_db(monkeypatch, rows=[], extra_rows={2: [{"n": 7}]})
+
+    html = client.get("/items").text
+    assert 'class="badge b-lead"' in html
+    assert ">7<" in html
+
+
+def test_items_page_nav_badge_hidden_when_no_recent_leads(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    html = client.get("/items").text
+    assert 'class="badge b-lead"' not in html
+
+
+def test_items_page_nav_badge_absent_when_leads_query_fails(client, monkeypatch):
+    """Помилка БД у контекст-процесорі не має валити сторінку — бейдж лише
+    підказка (той самий компроміс, що й /healthz)."""
+    _login(client)
+    calls = {"n": 0}
+
+    def flaky_db():
+        # items_page робить РІВНО один виклик db() (один `with`-блок на
+        # обидва свої execute()); другий виклик db() — уже
+        # _leads_badge_context (окремий `with` нижче за течією рендеру),
+        # і саме він тут падає.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _Conn(rows=[])
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(admin_app, "db", flaky_db)
+    response = client.get("/items")
+    assert response.status_code == 200
+    assert 'class="badge b-lead"' not in response.text
 
 
 # ── POST /items/{uid}/outcome ─────────────────────────────────────────────

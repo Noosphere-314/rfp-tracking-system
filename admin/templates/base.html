@@ -58,7 +58,12 @@
       {% for it in NAV if it.group == group %}
         <a class="nav__item{{ ' is-active' if nav == it.id }}" href="{{ it.href }}"
            {% if nav == it.id %}aria-current="page"{% endif %}>{{ nav_labels[it.id] }}
-           {% if it.soon %}<span class="badge b-soon">{{ t("nav.soon", "soon") }}</span>{% endif %}</a>
+           {% if it.soon %}<span class="badge b-soon">{{ t("nav.soon", "soon") }}</span>{% endif %}
+           {#- Розділ B2: лід видно не лише в Telegram, а й тут — бейдж
+               рахується один раз на запит у _leads_badge_context (app.py) і
+               доступний глобально, тож жоден хендлер не мусить передавати
+               його окремо. -#}
+           {% if it.id == 'items' and leads_24h %}<span class="badge b-lead" title="{{ t('nav.leads_24h.title', 'New leads in the last 24 hours') }}">{{ leads_24h }}</span>{% endif %}</a>
       {% endfor %}
     {% endfor %}
     {% if N8N_URL %}

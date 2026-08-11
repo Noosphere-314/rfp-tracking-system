@@ -103,6 +103,16 @@
 {% endblock %}
 
 {% block data %}
+{#- Розділ A: банер /items?view=review24 — посилання з ранкового
+    Telegram-дайджесту (це посилання вшиває інший агент, поза цим файлом).
+    Пресет ІГНОРУЄ решту фільтрів (app.py: VIEW_PRESETS) — банер над таблицею
+    пояснює, чому фільтри вгорі не діють на цій сторінці. -#}
+{% if view == 'review24' %}
+<div class="alert alert--info" role="status">
+  {{ t("pg.items.review_banner", "Morning review queue — grey-zone findings from the last 24h. Instant Telegram pings are off by design; this page IS the daily report.") }}
+  — <a href="/items">{{ t("act.clear_view", "clear view") }}</a>
+</div>
+{% endif %}
 <section class="panel">
   <div class="tablewrap">
     <table>
@@ -118,10 +128,16 @@
       </thead>
       <tbody>
         {% for i in items %}
-        <tr>
+        {#- Розділ B1: лід підсвічується не лише в Telegram, а й тут — акцентна
+            рамка на рядку (app.css: .item-row--lead) і чип «LEAD»/«ЛІД» біля
+            заголовка, обидва через delivered_at IS NOT NULL — той самий
+            прапорець, що вже малює бейдж «доставлено» в колонці Delivered
+            нижче, лише тепер видно й без прокрутки до тієї колонки. -#}
+        <tr class="{{ 'item-row--lead' if i.delivered_at }}">
           <td><span class="badge b-{{ i.status }}">{{ STATUS_UA.get(i.status, i.status) }}</span></td>
           <td>
             <a href="{{ i.url }}" target="_blank" rel="noopener noreferrer">{{ i.title or i.item_uid[:16] }}</a>
+            {% if i.delivered_at %}<span class="badge b-lead" title="{{ t('chip.lead.title', 'This finding became a lead') }}">{{ t("chip.lead", "LEAD") }}</span>{% endif %}
             {% if i.canonical_project %}<div class="muted">{{ i.canonical_project }}</div>{% endif %}
           </td>
           <td>

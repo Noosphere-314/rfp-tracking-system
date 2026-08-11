@@ -80,9 +80,46 @@ N8N_URL = os.environ.get("N8N_URL", "")
 app = FastAPI(
     title="RFP Tracker Admin", docs_url=None, redoc_url=None, openapi_url=None
 )
+
+
+def _leads_badge_context(request: Request) -> dict:
+    """NAV-бейдж «нових лідів за 24 год» (розділ B2 — «ліди видимі в
+    дашборді»): один COUNT рахується тут, а не в кожному хендлері окремо,
+    бо NAV (base.html) рендериться на КОЖНІЙ сторінці, а не лише на
+    /items чи /. Той самий механізм, що й auth.template_context і
+    i18n.template_context нижче — context_processors викликає
+    Jinja2Templates рівно раз на кожен рендер шаблону, тобто рівно один
+    SELECT на одну відповідь (а не п'ять разів на сторінку).
+
+    Свідома вартість: /login (публічний, неавторизований) теж проходить
+    крізь цей самий Jinja2Templates env, тож і туди прилетить один зайвий
+    SELECT — прийнятно, бо логін відвідують рідко, а не на гарячому шляху.
+    ЧЕСНО: seen_items.delivered_at СЬОГОДНІ без окремого індексу
+    (migrations/001_core_schema.sql — є лише (source_id, first_seen DESC));
+    COUNT тут — послідовне сканування, не «дешевий індексований підрахунок».
+    Таблиця поки невелика, тож це прийнятно як старт, але міграція з
+    частковим індексом `WHERE delivered_at IS NOT NULL` — природний
+    наступний крок (поза межами цієї задачі: міграції належать паралельному
+    агенту).
+
+    Помилка БД тут НЕ має валити сторінку — бейдж лише підказка, а не
+    критичний шлях (той самий компроміс, що й /healthz).
+    """
+    try:
+        with db() as conn:
+            row = conn.execute(
+                "SELECT count(*) AS n FROM seen_items "
+                "WHERE delivered_at > now() - interval '24 hours'"
+            ).fetchone()
+        leads_24h = row["n"] if row else 0
+    except Exception:  # noqa: BLE001 — бейдж не критичний, сторінка не має падати
+        leads_24h = 0
+    return {"leads_24h": leads_24h}
+
+
 templates = Jinja2Templates(
     directory=Path(__file__).parent / "templates",
-    context_processors=[auth.template_context, i18n.template_context],
+    context_processors=[auth.template_context, i18n.template_context, _leads_badge_context],
 )
 # /assets/, а не /static/: каддівський catch-all віддає адміну все, що не
 # /webhook/*, /form/*, /form-waiting-room/*. Якщо HTML n8n-форми колись
@@ -1175,6 +1212,27 @@ CONFIDENCE_OPTIONS = ("0.5", "0.7", "0.9")
 PERIOD_OPTIONS = ("7d", "30d")
 OUTCOME_OPTIONS = ("won", "lost", "open")
 
+# Серверні пресети /items?view=… (розділ A + B3). На відміну від фільтрів
+# вище (комбінуються довільно), пресет — самодостатній, повністю визначений
+# зріз: активація ІГНОРУЄ решту query-параметрів, а не додається до них.
+# "review24" — банер Миколи для ранкового огляду («digest у Telegram має
+# відкриватись у дашборді зібраним»): Telegram-дайджест лінкує сюди напряму
+# (те посилання вшиває інший агент, поза цим файлом). "leads24" — плитка
+# «New leads (24h)» на /  (розділ B3). Обидва — літерали, не введення
+# користувача: `view` лише обирає КЛЮЧ словника, тому інтерполяція значень
+# нижче в SQL безпечна так само, як і решта f-string цього файлу (clause).
+VIEW_PRESETS: dict[str, dict[str, str]] = {
+    "review24": {
+        "where": "i.category = 'FUNDING' AND i.delivered_at IS NULL "
+                 "AND i.first_seen > now() - interval '24 hours'",
+        "order": "i.confidence DESC NULLS LAST",
+    },
+    "leads24": {
+        "where": "i.delivered_at > now() - interval '24 hours'",
+        "order": "i.first_seen DESC",
+    },
+}
+
 
 def _ilike_term(raw: str) -> str:
     """Екранує `%`/`_` (і сам `\\`) ПЕРЕД тим, як обгорнути в `%…%` — інакше
@@ -1216,61 +1274,81 @@ def items_page(
     min_confidence: str = "",
     period: str = "",
     outcome: str = "",
+    view: str = "",
     page: int = 0,
 ):
-    """Знахідки (розділ 4.3, розширення «фільтри + outcomes»).
+    """Знахідки (розділ 4.3, розширення «фільтри + outcomes» + розділ A/B3
+    «серверні пресети»).
 
     Дефолт «усі» НЕ змінюється (F5, той самий інваріант, що й раніше): коли
     жоден параметр не заданий, WHERE лишається порожнім і запит — той самий,
     що й до цієї зміни, тож наявні закладки/посилання з Telegram (`?status=`)
     показують те саме, що й учора.
-    """
-    where, params = [], []
-    if status:
-        where.append("i.status = %s")
-        params.append(status)
-    if q:
-        where.append("i.title ILIKE %s")
-        params.append(_ilike_term(q))
-    if ecosystem:
-        where.append("s.ecosystem = %s")
-        params.append(ecosystem)
-    if lane:
-        where.append("s.lane = %s")
-        params.append(lane)
-    if min_confidence in CONFIDENCE_OPTIONS:
-        where.append("i.confidence >= %s")
-        params.append(float(min_confidence))
-    if period == "7d":
-        where.append("i.first_seen > now() - interval '7 days'")
-    elif period == "30d":
-        where.append("i.first_seen > now() - interval '30 days'")
-    if outcome == "won":
-        where.append("i.outcome = 'won'")
-    elif outcome == "lost":
-        where.append("i.outcome = 'lost'")
-    elif outcome == "open":
-        where.append("i.delivered_at IS NOT NULL AND i.outcome IS NULL")
-    clause = ("WHERE " + " AND ".join(where)) if where else ""
 
-    # Хвіст запиту БЕЗ page — для лінків «новіші/старіші» і для «Скинути».
-    # Лише активні фільтри: порожній параметр не повинен смітити URL.
-    active_filters = {
-        k: v
-        for k, v in {
-            "status": status, "q": q, "ecosystem": ecosystem, "lane": lane,
-            "min_confidence": min_confidence, "period": period, "outcome": outcome,
-        }.items()
-        if v
-    }
-    qs_no_page = urlencode(active_filters)
+    `view` (розділ A/B3) — окрема гілка, а не ще один фільтр поверх інших:
+    коли він збігається з ключем VIEW_PRESETS, WHERE/ORDER BY повністю
+    визначаються пресетом, а status/q/ecosystem/… з query-рядка мовчки
+    ІГНОРУЮТЬСЯ (не 400 — та сама філософія терпимості, що й у
+    min_confidence/period нижче). Причина: `view=review24` — посилання з
+    Telegram-дайджесту, воно мусить показувати рівно той самий зріз щоранку
+    незалежно від того, які фільтри людина забула в адресному рядку вчора.
+    """
+    preset = VIEW_PRESETS.get(view)
+    if preset:
+        where, params = [preset["where"]], []
+        order_by = preset["order"]
+        qs_no_page = urlencode({"view": view})
+        filters_active = False
+    else:
+        where, params = [], []
+        order_by = "i.first_seen DESC"
+        if status:
+            where.append("i.status = %s")
+            params.append(status)
+        if q:
+            where.append("i.title ILIKE %s")
+            params.append(_ilike_term(q))
+        if ecosystem:
+            where.append("s.ecosystem = %s")
+            params.append(ecosystem)
+        if lane:
+            where.append("s.lane = %s")
+            params.append(lane)
+        if min_confidence in CONFIDENCE_OPTIONS:
+            where.append("i.confidence >= %s")
+            params.append(float(min_confidence))
+        if period == "7d":
+            where.append("i.first_seen > now() - interval '7 days'")
+        elif period == "30d":
+            where.append("i.first_seen > now() - interval '30 days'")
+        if outcome == "won":
+            where.append("i.outcome = 'won'")
+        elif outcome == "lost":
+            where.append("i.outcome = 'lost'")
+        elif outcome == "open":
+            where.append("i.delivered_at IS NOT NULL AND i.outcome IS NULL")
+
+        # Хвіст запиту БЕЗ page — для лінків «новіші/старіші» і для «Скинути».
+        # Лише активні фільтри: порожній параметр не повинен смітити URL.
+        active_filters = {
+            k: v
+            for k, v in {
+                "status": status, "q": q, "ecosystem": ecosystem, "lane": lane,
+                "min_confidence": min_confidence, "period": period, "outcome": outcome,
+            }.items()
+            if v
+        }
+        qs_no_page = urlencode(active_filters)
+        filters_active = bool(active_filters)
+
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
 
     with db() as conn:
         rows = conn.execute(
             f"""
             SELECT i.*, s.name AS source_name, s.ecosystem AS source_ecosystem
               FROM seen_items i JOIN sources s ON s.id = i.source_id {clause}
-             ORDER BY i.first_seen DESC LIMIT 50 OFFSET %s
+             ORDER BY {order_by} LIMIT 50 OFFSET %s
             """,
             (*params, page * 50),
         ).fetchall()
@@ -1294,9 +1372,10 @@ def items_page(
             "nav": "items", "items": rows,
             "status": status, "q": q, "ecosystem": ecosystem, "lane": lane,
             "min_confidence": min_confidence, "period": period, "outcome": outcome,
+            "view": view,
             "page": page,
             "ecosystem_options": [r["ecosystem"] for r in ecosystem_options],
-            "filters_active": bool(active_filters),
+            "filters_active": filters_active,
             "qs_no_page": qs_no_page,
         },
     )
@@ -1834,7 +1913,7 @@ def chat_page(request: Request, error: str = "", ask: str = "", hist: str = ""):
 
 
 @mutations.post("/chat/send")
-def send_chat_message(request: Request, message: str = Form(...)):
+def send_chat_message(request: Request, message: str = Form(...), web: str = Form("")):
     """Одне повідомлення → один запит до kbmcp.
 
     Відповідь гілкується заголовком X-Requested-With: fetch — його ставить
@@ -1844,6 +1923,14 @@ def send_chat_message(request: Request, message: str = Form(...)):
     generate_brief — там немає JS-гілки, і фрагмент у URL прийнятний
     компроміс): тут є куди показати причину, і ковтати її означало б
     видавати порожню відповідь замість пояснення.
+
+    `web` (розділ C — тумблер веб-пошуку в composer chat.html): checkbox
+    `name="web" value="1"`, тож непозначений чекбокс браузер узагалі НЕ
+    надсилає (стандартна поведінка форм) — `Form("")` ловить обидва випадки
+    однаково. У payload kbmcp ключ "web" з'являється ЛИШЕ коли позначено:
+    контракт kbmcp — опціональне булеве поле, і «відсутній» та «false»
+    рівнозначні для нього, тож нема сенсу засмічувати payload зайвим ключем
+    на КОЖНЕ повідомлення (переважна більшість — без веб-пошуку).
     """
     # СИРИЙ ключ, без префікса "web:" — kbmcp неймспейсить сам при записі
     # (контракт /chat забороняє ':' у session_key саме для того, щоб веб не
@@ -1866,10 +1953,12 @@ def send_chat_message(request: Request, message: str = Form(...)):
 
     import httpx
 
+    body = {"channel": "web", "session_key": session_key, "who": who, "message": text}
+    if web:
+        body["web"] = True
+
     try:
-        payload = _chat_backend(
-            {"channel": "web", "session_key": session_key, "who": who, "message": text}
-        )
+        payload = _chat_backend(body)
     except (httpx.HTTPError, ValueError) as exc:
         log.warning("kbmcp /chat unreachable: %s", exc)
         return fail("Chat backend is unreachable — please try again in a moment", 502)
@@ -1966,6 +2055,65 @@ def new_chat(request: Request):
     response = RedirectResponse("/chat", status_code=303)
     auth.issue(response, request, rotate_sid=True)
     return response
+
+
+def _chat_report_backend(payload: dict) -> dict:
+    """Виокремлено в окрему функцію — той самий прийом, що й _chat_backend/
+    _keywords_advice_backend вище, заради monkeypatch у тестах.
+
+    Контракт kbmcp /chat-brief (розділ D — «Зберегти ЧАТ як звіт»): бріф із
+    УСІЄЇ поточної розмови, а не з однієї репліки (на відміну від
+    /chat/save-brief нижче, яка сама пише в kb.briefs без походу в kbmcp —
+    там джерело вже готовий текст ОДНІЄЇ бульбашки, тут kbmcp мусить сам
+    прочитати всю історію сесії й синтезувати підсумок).
+    """
+    import httpx
+
+    response = httpx.post(
+        f"{KBMCP_URL}/chat-brief",
+        json=payload,
+        headers={"Authorization": f"Bearer {KB_MCP_TOKEN}"} if KB_MCP_TOKEN else {},
+        timeout=300,  # LLM-синтез над цілою розмовою — той самий контракт, що й /chat, /brief
+    )
+    return response.json()
+
+
+@mutations.post("/chat/save-report")
+def save_chat_report(request: Request):
+    """«Зберегти чат як звіт» (розділ D, кнопка в chat__controls — поруч із
+    «Історія»): на відміну від /chat/save-brief (одна бульбашка асистента),
+    тут бріф синтезує kbmcp з УСІЄЇ поточної розмови.
+
+    `session_key` — СИРИЙ ключ без ':' (той самий _chat_key, що й
+    send_chat_message вище): kbmcp сам додає неймспейс "web:" при записі
+    в kb.chat_messages, і той самий сирий ключ однозначно адресує розмову,
+    яку kbmcp має прочитати, щоб її синтезувати.
+
+    Кнопка в chat.html рендериться лише коли `messages` непорожні, але
+    хендлер про це не знає (він не бачить стану сторінки, що вже
+    відрендерилась) — порожня розмова для kbmcp просто помилка «нічого
+    синтезувати», а не окрема гілка тут.
+    """
+    session_key = _chat_key(request)
+
+    import httpx
+
+    try:
+        payload = _chat_report_backend({"channel": "web", "session_key": session_key})
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("kbmcp /chat-brief unreachable: %s", exc)
+        return RedirectResponse(
+            "/chat?" + urlencode({
+                "error": "Report backend is unreachable — please try again in a moment",
+            }),
+            status_code=303,
+        )
+
+    if not payload.get("ok"):
+        err = payload.get("error") or "Could not generate the report right now"
+        return RedirectResponse(f"/chat?{urlencode({'error': err})}", status_code=303)
+
+    return RedirectResponse(f"/briefs/{payload['brief_id']}", status_code=303)
 
 
 # ── Chat history (archive) ────────────────────────────────────────

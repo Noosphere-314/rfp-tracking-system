@@ -300,6 +300,78 @@ def test_chat_send_rejects_message_over_4000_chars(client):
     assert "4000" in response.json()["error"]
 
 
+# ── POST /chat/send: тумблер веб-пошуку (розділ C) ───────────────────
+
+
+def test_chat_send_passes_web_true_when_checkbox_checked(client, monkeypatch):
+    """Checkbox `name="web" value="1"` — коли позначений, payload до kbmcp
+    несе `"web": True` (контракт: опціональне булеве поле)."""
+    _login(client)
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        return {"ok": True, "reply_md": "ok", "tier": "llm", "model": None}
+
+    monkeypatch.setattr(admin_app, "_chat_backend", fake_backend)
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "web": "1", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 200
+    assert seen["web"] is True
+
+
+def test_chat_send_omits_web_key_when_checkbox_absent(client, monkeypatch):
+    """Непозначений чекбокс браузер узагалі не надсилає (стандартна
+    поведінка форм) — payload до kbmcp не повинен мати ключ "web" зовсім."""
+    _login(client)
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        return {"ok": True, "reply_md": "ok", "tier": "llm", "model": None}
+
+    monkeypatch.setattr(admin_app, "_chat_backend", fake_backend)
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "csrf": _csrf(client)},  # без "web"
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 200
+    assert "web" not in seen
+
+
+def test_chat_send_omits_web_key_when_checkbox_value_is_empty_string(client, monkeypatch):
+    """Той самий Form("") дефолт, яким FastAPI ловить і відсутнє поле, і
+    порожнє значення — обидва мають давати однакову поведінку."""
+    _login(client)
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        return {"ok": True, "reply_md": "ok", "tier": "llm", "model": None}
+
+    monkeypatch.setattr(admin_app, "_chat_backend", fake_backend)
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "web": "", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 200
+    assert "web" not in seen
+
+
+def test_chat_composer_renders_web_search_checkbox(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    html = client.get("/chat").text
+    assert '<input type="checkbox" id="chat-web" name="web" value="1">' in html
+    assert "Web search" in html
+
+
 # ── POST /chat/send: гілкування відповіді за X-Requested-With ───────
 
 
@@ -465,6 +537,110 @@ def test_chat_new_redirects_and_rotates_cookie(client):
     assert response.headers["location"] == "/chat"
     after = response.cookies.get(auth.COOKIE_BASE)
     assert after and after != before
+
+
+# ── POST /chat/save-report: «Зберегти чат як звіт» (розділ D) ─────────
+
+
+def test_save_chat_report_happy_path_redirects_to_new_brief(client, monkeypatch):
+    monkeypatch.setattr(
+        admin_app, "_chat_report_backend",
+        lambda payload: {"ok": True, "brief_id": 77, "title": "Chat report"},
+    )
+    _login(client)
+    response = client.post(
+        "/chat/save-report",
+        data={"csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/briefs/77"
+
+
+def test_save_chat_report_uses_raw_session_key_without_namespace(client, monkeypatch):
+    """Той самий контракт, що й /chat/send: session_key СИРИЙ (без "web:") —
+    kbmcp сам неймспейсить його при читанні kb.chat_messages."""
+    _login(client)
+    sid = _sid(client)
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        return {"ok": True, "brief_id": 1, "title": "x"}
+
+    monkeypatch.setattr(admin_app, "_chat_report_backend", fake_backend)
+    client.post(
+        "/chat/save-report",
+        data={"csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert seen["channel"] == "web"
+    assert seen["session_key"] == sid
+    assert ":" not in seen["session_key"]
+
+
+def test_save_chat_report_surfaces_kbmcp_ok_false_error(client, monkeypatch):
+    """kbmcp-помилка (наприклад, «нічого синтезувати» на порожню розмову) —
+    той самий шлях помилки, що й /chat/send: назад на /chat з ?error=…"""
+    monkeypatch.setattr(
+        admin_app, "_chat_report_backend",
+        lambda payload: {"ok": False, "error": "nothing to summarize"},
+    )
+    _login(client)
+    response = client.post(
+        "/chat/save-report",
+        data={"csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/chat?error=")
+    assert "nothing" in response.headers["location"].replace("+", " ")
+
+
+def test_save_chat_report_maps_httpx_error_to_chat_error_state(client, monkeypatch):
+    """Мережа впала (kbmcp недоступний) — не 500, а той самий редірект з
+    поясненням, що й для kbmcp ok:false вище."""
+    import httpx
+
+    def boom(payload):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(admin_app, "_chat_report_backend", boom)
+    _login(client)
+    response = client.post(
+        "/chat/save-report",
+        data={"csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/chat?error=")
+
+
+def test_chat_page_hides_save_report_button_when_conversation_is_empty(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+    html = client.get("/chat").text
+    assert "Save chat as report" not in html
+    assert 'action="/chat/save-report"' not in html
+
+
+def test_chat_page_shows_save_report_button_when_conversation_has_messages(client, monkeypatch):
+    _login(client)
+    now = datetime.now(timezone.utc)
+    _fake_db(
+        monkeypatch,
+        rows=[
+            {"id": 1, "role": "user", "who": WHO, "content": "hi",
+             "tier": None, "model": None, "created_at": now},
+        ],
+    )
+    html = client.get("/chat").text
+    assert "Save chat as report" in html
+    assert 'action="/chat/save-report"' in html
 
 
 # ── POST /chat/save-brief: «Save as brief» (розділ B) ─────────────────

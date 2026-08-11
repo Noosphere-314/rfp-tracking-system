@@ -20,6 +20,12 @@ class FakeCursor:
     def fetchone(self):
         return self._rows[0] if self._rows else None
 
+    def __iter__(self):
+        # Реальний psycopg-курсор ітерується напряму (briefing.make_brief's
+        # `for r in conn.execute(...)` для archived_ecosystems) — без цього
+        # той шлях падає з "FakeCursor object is not iterable".
+        return iter(self._rows)
+
 
 class FakeConn:
     def __init__(self, router, calls):

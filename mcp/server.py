@@ -218,6 +218,27 @@ async def chat_route(request: Request) -> JSONResponse:
     return JSONResponse(result, status_code=status)
 
 
+@mcp.custom_route("/chat-brief", methods=["POST"])
+async def chat_brief_route(request: Request) -> JSONResponse:
+    """HTTP entry for the web dashboard / Telegram bot's "generate report"
+    action — synthesizes the WHOLE (channel, session_key) conversation into a
+    saved kb.briefs report, unlike /chat which answers one turn at a time.
+    Same fail-closed KB_MCP_TOKEN contract as /chat (see chat.answer's
+    docstring): the Bearer middleware only covers this path when a token is
+    configured, chat.chat_brief guards the unset case itself."""
+    from starlette.concurrency import run_in_threadpool
+
+    import chat
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+
+    result, status = await run_in_threadpool(chat.chat_brief, payload)
+    return JSONResponse(result, status_code=status)
+
+
 @mcp.custom_route("/keywords-advice", methods=["POST"])
 async def keywords_advice_route(_request: Request) -> JSONResponse:
     """HTTP entry for the admin dashboard's "suggest keyword changes" button.

@@ -47,6 +47,20 @@ def _setting(conn: psycopg.Connection, key: str, default: str) -> str:
     return row["value"] if row else default
 
 
+def _brief_max_words(conn: psycopg.Connection) -> int:
+    """011: admin "depth slider", shared with chat.py's chat_brief (which
+    keeps its own copy of this clamp — see that module's _brief_max_words for
+    why it's duplicated rather than imported). Clamp defensively: a blank or
+    non-numeric setting must fall back to the old hardcoded 350, never 500
+    the brief over something this inconsequential."""
+    raw = _setting(conn, "brief_max_words", "350")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return 350
+    return max(100, min(2000, n))
+
+
 def _forum_for(conn: psycopg.Connection, ecosystem: str) -> dict | None:
     return conn.execute(
         """
@@ -246,6 +260,15 @@ _TOOLS = [
     },
 ]
 
+# {max_words}: filled in per-call from settings.brief_max_words (011, admin
+# "depth slider" — see _brief_max_words) via str.format in _llm_brief. Cache
+# tradeoff: this text is the cache_control ephemeral system block below, and
+# Anthropic's prompt cache matches on exact byte content — parameterizing it
+# means the cache is invalidated only when someone actually moves the slider
+# (rare), and stays a hit across the many identical-setting calls in between.
+# Cheaper than the alternative (a fixed prompt + a separate word-count
+# instruction appended outside the cached block) would have been to reason
+# about, for a setting that changes on the order of "never".
 _SYSTEM = """You are a bid-research analyst for a Web3 development agency.
 A new sales lead just arrived; your job is a briefing pack the salesperson
 reads in 60 seconds before opening the conversation.
@@ -258,7 +281,7 @@ Rules:
   specific forum post that supports it. No citation → drop the claim.
 - State facts only from the archive. If the archive is thin on something,
   say "no data in archive" rather than guessing.
-- Keep it under 350 words. Structure:
+- Keep it under {max_words} words. Structure:
   ### What they fund / discuss (similar work)
   ### Who decides & active voices
   ### Risks: rejected or contested proposals
@@ -276,6 +299,7 @@ def _llm_brief(
     body: str,
     model: str,
     language: str,
+    max_words: int,
 ) -> tuple[str, int, int]:
     """Manual tool-use loop (bounded, no beta dependency). Returns (md, in, out)."""
     import anthropic
@@ -299,12 +323,14 @@ def _llm_brief(
         ),
     }]
 
+    system_text = _SYSTEM.format(max_words=max_words)
+
     tokens_in = tokens_out = 0
     for _ in range(MAX_TOOL_ITERATIONS):
         response = client.messages.create(
             model=model,
             max_tokens=4000,
-            system=[{"type": "text", "text": _SYSTEM,
+            system=[{"type": "text", "text": system_text,
                      "cache_control": {"type": "ephemeral"}}],
             tools=_TOOLS,
             messages=messages,
@@ -367,13 +393,14 @@ def make_brief(
 
         model = _setting(conn, "brief_model", "claude-opus-5")
         language = _setting(conn, "brief_language", "en")
+        max_words = _brief_max_words(conn)
         slug = forum["forum_slug"]
 
         tier, tokens_in, tokens_out = "basic", None, None
         if ANTHROPIC_API_KEY:
             try:
                 brief_md, tokens_in, tokens_out = _llm_brief(
-                    conn, slug, ecosystem, title, body, model, language
+                    conn, slug, ecosystem, title, body, model, language, max_words
                 )
                 tier = "llm"
             except Exception:  # noqa: BLE001 — API down ≠ no brief
