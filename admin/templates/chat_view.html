@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{#- Одна чат-сесія, read-only (розділ «Chat history», B). Контекст із
+    chat_view_page (app.py): session_key, channel, messages, tokens. Та сама
+    архівна логіка, що й /briefs/{id} для бріфів — сторінка лише показує,
+    нічого не пише і не має композера.
+
+    Бульбашки — ті самі класи, що й chat.html (user праворуч / assistant
+    ліворуч, linkify лише на тексті асистента, stub-чип, meta з
+    ким-і-коли), навмисно продубльовані тут: /chat навколо них тримає ще й
+    "thinking"-натяк, форму збереження в бріф і сам композер — жодне з цього
+    тут не потрібне, і ділити один частковий шаблон на дві несумісні за
+    призначенням сторінки додало б більше галужень, ніж коротка копія
+    розмітки. -#}
+{% block title %}{{ t("pg.chatview.h1", "Chat session") }}{% endblock %}
+{% block h1 %}{{ t("pg.chatview.h1", "Chat session") }}{% endblock %}
+{% block sub %}{{ t("pg.chatview.readonly", "Read-only archive — conversations happen in AI chat or Telegram") }}{% endblock %}
+
+{% block controls %}
+<nav class="breadcrumbs" aria-label="{{ t('nav.breadcrumbs', 'Breadcrumbs') }}">
+  <a href="/chats">{{ t("nav.chats", "Chat history") }}</a>
+  <span aria-hidden="true">›</span>
+  <span>{{ t("pg.chatview.h1", "Chat session") }}</span>
+</nav>
+{% if messages %}
+<form method="post" action="/chats/delete" class="inline"
+      data-confirm="{{ t('pg.chats.delete_confirm', 'Delete this conversation permanently?') }}">
+  {% include "_csrf.html" %}
+  <input type="hidden" name="key" value="{{ session_key }}">
+  <button class="btn btn--sm btn--danger" type="submit">{{ t("act.delete_chat", "Delete conversation") }}</button>
+</form>
+{% endif %}
+{% endblock %}
+
+{% block data %}
+{% if messages %}
+<section class="panel">
+  <div class="panel__head">
+    <span class="badge {{ {'web': 'b-neutral', 'telegram': 'b-info'}.get(channel, 'b-neutral') }}">{{ t('val.channel.' ~ channel, channel | capitalize) }}</span>
+    <code class="muted">{{ session_key | truncate(60, true) }}</code>
+    <span class="toolbar__spacer"></span>
+    <span class="muted">{{ messages | length }} {{ t("f.messages", "messages") }}</span>
+    <span class="muted">{{ tokens }} {{ t("f.tokens", "tokens") }}</span>
+  </div>
+  <div class="panel__body">
+    <div class="chat__list">
+      {% for m in messages %}
+      <div class="chat__msg chat__msg--{{ m.role }}">
+        <div class="chat__bubble">
+          {% if m.role == 'assistant' %}
+          <p class="chat__text">{{ m.content | linkify }}</p>
+          {% else %}
+          <p class="chat__text">{{ m.content }}</p>
+          {% endif %}
+        </div>
+        <div class="chat__meta">
+          {% if m.role == 'user' %}
+          <span>{{ m.who or '—' }}</span>
+          {% else %}
+          {% if m.tier == 'stub' %}<span class="badge b-neutral">{{ t("pg.chat.stub_chip", "keyword tier") }}</span>{% endif %}
+          {% if m.model %}<span class="badge b-info">{{ m.model }}</span>{% endif %}
+          {% endif %}
+          <span>{{ m.created_at.strftime('%Y-%m-%d %H:%M') if m.created_at else '' }}</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% else %}
+<section class="panel">
+  <div class="panel__body">
+    {% set empty_title = t("pg.chatview.not_found", "Session not found") %}
+    {% set empty_hint = t("pg.chatview.not_found_hint", "The link may be stale, or this session doesn't exist yet — check the address or go back to the list.") %}
+    {% set empty_href = "/chats" %}
+    {% set empty_link = t("nav.chats", "Chat history") %}
+    {% include "_empty.html" %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

@@ -111,6 +111,7 @@ NAV = [
     {"id": "settings", "href": "/settings", "label": "Параметри", "group": "cfg"},
     {"id": "runs", "href": "/runs", "label": "Історія збору", "group": "sys"},
     {"id": "briefs", "href": "/briefs", "label": "Бріфи", "group": "sys"},
+    {"id": "chats", "href": "/chats", "label": "Історія чатів", "group": "sys"},
 ]
 
 # ІНВАРІАНТ ЛОКАЛІЗАЦІЇ: українська ТІЛЬКИ в презентації. Значення в URL і в БД
@@ -1922,6 +1923,150 @@ def new_chat(request: Request):
     response = RedirectResponse("/chat", status_code=303)
     auth.issue(response, request, rotate_sid=True)
     return response
+
+
+# ── Chat history (archive) ────────────────────────────────────────
+#
+# Команда ділить один пароль дашборда — тож весь kb.chat_messages видно всім,
+# з ОБОХ каналів (веб-композер вище і Telegram-бот): свідома командна
+# домовленість (не діра), зафіксована тут коментарем, а не десь у чаті поза
+# кодом. На відміну від /chat/save-brief вище, де guard на session_key
+# захищає саме МУТАЦІЮ (створення бріфа під чужим ім'ям), тут лише читання —
+# розмежовувати «моя сесія / чужа» нема від чого захищати.
+#
+# Обидва маршрути — прості GET, які лише читають kb.chat_messages (як і /chat
+# вище); нічого не пишуть, тож лишаються поза роутером `mutations`.
+
+CHAT_CHANNEL_OPTIONS = ("web", "telegram")
+
+
+@app.get("/chats", response_class=HTMLResponse)
+def chats_page(request: Request, channel: str = "", period: str = ""):
+    """Список чат-сесій: один рядок — одна сесія (session_key), згорнута з
+    kb.chat_messages однією агрегуючою вибіркою (без N+1 у Python).
+
+    `period` фільтрує за ОСТАННЬОЮ активністю сесії (`HAVING max(created_at)
+    > ...`), а не за окремими повідомленнями — інакше стара сесія з однією
+    свіжою реплікою показала б `started`, обрізаний межею періоду, і виглядала
+    б коротшою, ніж є насправді. `channel`, навпаки, фільтрує в WHERE — він
+    сталий для всієї сесії (session_key завжди в межах одного каналу), тож
+    звужувати вибірку до GROUP BY дешевше, ніж відкидати вже згорнуті групи.
+    """
+    where, params = [], []
+    if channel in CHAT_CHANNEL_OPTIONS:
+        where.append("channel = %s")
+        params.append(channel)
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+    having = ""
+    if period == "7d":
+        having = "HAVING max(created_at) > now() - interval '7 days'"
+    elif period == "30d":
+        having = "HAVING max(created_at) > now() - interval '30 days'"
+
+    with db() as conn:
+        # `array_agg(content ORDER BY id) FILTER (...)` [1] — найстаріше
+        # повідомлення user у групі: FILTER на агрегаті, без окремого JOIN чи
+        # LATERAL, залишається однією вибіркою (як і `max(who) FILTER (...)`
+        # поруч — той самий прийом для «хто питав»).
+        rows = conn.execute(
+            f"""
+            SELECT session_key, channel,
+                   min(created_at) AS started,
+                   max(created_at) AS last_at,
+                   count(*) AS messages,
+                   count(*) FILTER (WHERE role = 'user') AS questions,
+                   coalesce(sum(coalesce(tokens_in, 0) + coalesce(tokens_out, 0)), 0) AS tokens,
+                   max(who) FILTER (WHERE role = 'user') AS who,
+                   left((array_agg(content ORDER BY id) FILTER (WHERE role = 'user'))[1], 80) AS preview
+              FROM kb.chat_messages
+              {clause}
+             GROUP BY session_key, channel
+             {having}
+             ORDER BY last_at DESC LIMIT 100
+            """,
+            params,
+        ).fetchall()
+
+    # Ключ сесії містить ':' (web:<sid> / telegram:<id>[-ts]) — quote(safe="")
+    # той самий прийом, що й ask_ai_href на /items вище.
+    for row in rows:
+        row["view_href"] = "/chats/view?key=" + quote(row["session_key"], safe="")
+
+    return templates.TemplateResponse(
+        request,
+        "chats.html",
+        {
+            "nav": "chats",
+            "sessions": rows,
+            "channel": channel,
+            "period": period,
+            "filters_active": bool(channel or period),
+        },
+    )
+
+
+@app.get("/chats/view", response_class=HTMLResponse)
+def chat_view_page(request: Request, key: str = ""):
+    """Одна сесія повністю, read-only — та сама архівна логіка, що й
+    /briefs/{id} для бріфів: сторінка лише показує, нічого не пише.
+
+    Порожній чи невідомий `key` дають ОДНАКОВИЙ дружній порожній стан замість
+    500: `rows` лишається порожнім списком в обох випадках, і хендлер навіть
+    не йде в БД, коли key взагалі не передано.
+    """
+    rows = []
+    if key:
+        with db() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, channel, role, who, content, tier, model,
+                       tokens_in, tokens_out, created_at
+                  FROM kb.chat_messages
+                 WHERE session_key = %s
+                 ORDER BY id LIMIT 500
+                """,
+                (key,),
+            ).fetchall()
+
+    return templates.TemplateResponse(
+        request,
+        "chat_view.html",
+        {
+            "nav": "chats",
+            "session_key": key,
+            "channel": rows[0]["channel"] if rows else "",
+            "messages": rows,
+            "tokens": sum((r["tokens_in"] or 0) + (r["tokens_out"] or 0) for r in rows),
+        },
+    )
+
+
+@mutations.post("/chats/delete")
+def delete_chat_session(request: Request, key: str = Form("")):
+    """Видалення однієї розмови (запит Миколи 2026-08-11: історія цінна, але
+    має прибиратися «по ненадобності»). Незворотне — тому кнопка в шаблоні
+    під data-confirm, а маршрут на mutations (сесія + CSRF автоматично).
+    """
+    if key:
+        with db() as conn:
+            conn.execute(
+                "DELETE FROM kb.chat_messages WHERE session_key = %s", (key,)
+            )
+            conn.commit()
+    return RedirectResponse("/chats", status_code=303)
+
+
+@mutations.post("/chats/prune")
+def prune_chat_sessions(request: Request):
+    """Прибирання всієї історії, старшої за 30 днів, одним рухом — щоб список
+    не заростав ручним видаленням по одній розмові."""
+    with db() as conn:
+        conn.execute(
+            "DELETE FROM kb.chat_messages WHERE created_at < now() - interval '30 days'"
+        )
+        conn.commit()
+    return RedirectResponse("/chats", status_code=303)
 
 
 # Реєстрація мутуючого роутера — ОСТАННІМ рядком серед маршрутів, після того як

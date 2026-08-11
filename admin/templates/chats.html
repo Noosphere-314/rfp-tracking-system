@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{#- Історія чатів — список сесій (розділ «Chat history»). Контекст із
+    chats_page (app.py): sessions, channel, period, filters_active. Кожен
+    рядок — одна сесія kb.chat_messages.session_key, згорнута з обох каналів
+    (web і telegram): команда ділить один пароль дашборда, тож видимість
+    спільна на всю історію — командна домовленість, зафіксована коментарем
+    над самим маршрутом в app.py, а не тут.
+
+    Значення фільтра `channel` в URL лишається англійським (?channel=web) —
+    той самий інваріант локалізації, що й на /items, /briefs, /runs:
+    українською лише підписи, не значення. -#}
+{% block title %}{{ t("pg.chats.h1", "Chat history") }}{% endblock %}
+{% block h1 %}{{ t("pg.chats.h1", "Chat history") }}{% endblock %}
+{% block sub %}{{ t("pg.chats.sub", "Every conversation with the AI chat — from the dashboard and from Telegram") }}{% endblock %}
+
+{% block controls %}
+<form class="toolbar" method="get" action="/chats">
+  <div class="field">
+    <label class="field__label" for="f-channel">{{ t("f.channel", "Channel") }}</label>
+    <select id="f-channel" name="channel">
+      <option value="">{{ t("st.any", "all") }}</option>
+      {% for c in ['web', 'telegram'] %}
+      <option value="{{ c }}" {{ 'selected' if channel == c }}>{{ t('val.channel.' ~ c, c | capitalize) }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label class="field__label" for="f-period">{{ t("f.period", "Period") }}</label>
+    <select id="f-period" name="period">
+      <option value="">{{ t("st.any", "all") }}</option>
+      <option value="7d" {{ 'selected' if period == '7d' }}>{{ t("f.period.7d", "last 7 days") }}</option>
+      <option value="30d" {{ 'selected' if period == '30d' }}>{{ t("f.period.30d", "last 30 days") }}</option>
+    </select>
+  </div>
+  <button class="btn btn--primary" type="submit">{{ t("act.filter", "Filter") }}</button>
+  {% if filters_active %}<a class="btn btn--ghost" href="/chats">{{ t("act.reset", "Reset") }}</a>{% endif %}
+</form>
+{% endblock %}
+
+{% block data %}
+<section class="panel">
+  <div class="panel__head">
+    <h2>{{ t("pg.chats.h1", "Chat history") }}</h2>
+    <span class="toolbar__spacer"></span>
+    <form method="post" action="/chats/prune" class="inline"
+          data-confirm="{{ t('pg.chats.prune_confirm', 'Delete ALL conversations older than 30 days? This cannot be undone.') }}">
+      {% include "_csrf.html" %}
+      <button class="btn btn--sm" type="submit">{{ t("act.prune_chats", "Delete older than 30 days") }}</button>
+    </form>
+    <span class="badge">{{ sessions | length }}{% if sessions | length == 100 %} {{ t("msg.limited", "(capped)") }}{% endif %}</span>
+  </div>
+  {% if sessions %}
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>{{ t("f.started", "Started") }}</th>
+          <th>{{ t("f.last_activity", "Last activity") }}</th>
+          <th>{{ t("f.channel", "Channel") }}</th>
+          <th>{{ t("f.who", "Who") }}</th>
+          <th>{{ t("f.preview", "Preview") }}</th>
+          <th>{{ t("f.questions", "Questions") }}</th>
+          <th>{{ t("f.tokens", "Tokens") }}</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sessions %}
+        <tr>
+          <td class="muted cell--nowrap">{{ s.started.strftime('%Y-%m-%d %H:%M') if s.started else '—' }}</td>
+          <td class="muted cell--nowrap">{{ s.last_at.strftime('%Y-%m-%d %H:%M') if s.last_at else '—' }}</td>
+          <td class="cell--nowrap">
+            <span class="badge {{ {'web': 'b-neutral', 'telegram': 'b-info'}.get(s.channel, 'b-neutral') }}">{{ t('val.channel.' ~ s.channel, s.channel | capitalize) }}</span>
+          </td>
+          <td class="cell--nowrap">{{ s.who or '—' }}</td>
+          <td><a href="{{ s.view_href }}">{{ s.preview or '—' }}</a></td>
+          <td class="cell--num">{{ s.questions }}</td>
+          <td class="cell--num">{{ s.tokens }}</td>
+          <td class="cell--nowrap">
+            <form method="post" action="/chats/delete" class="inline"
+                  data-confirm="{{ t('pg.chats.delete_confirm', 'Delete this conversation permanently?') }}">
+              {% include "_csrf.html" %}
+              <input type="hidden" name="key" value="{{ s.session_key }}">
+              <button class="btn btn--sm btn--danger" type="submit">{{ t("act.delete", "Delete") }}</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="panel__body">
+    {% if filters_active %}
+    {% set empty_title = t("pg.chats.empty_filter", "No sessions match this filter") %}
+    {% set empty_hint = t("pg.chats.empty_filter_hint", "Try another channel or period — or clear the filter.") %}
+    {% set empty_href = "/chats" %}
+    {% set empty_link = t("pg.chats.show_all", "Show all sessions") %}
+    {% else %}
+    {% set empty_title = t("pg.chats.empty", "No chat history yet") %}
+    {% set empty_hint = t("pg.chats.empty_hint", "Appears once someone asks the AI chat a question — from the dashboard or from Telegram.") %}
+    {% set empty_href = "/chat" %}
+    {% set empty_link = t("nav.chat", "AI chat") %}
+    {% endif %}
+    {% include "_empty.html" %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
