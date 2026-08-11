@@ -591,3 +591,30 @@ form.inline,.inline{display:inline}
   .prose a{color:#000; text-decoration:underline}
   a{color:#000}
 }
+
+/* ── 13. Шухляда історії в AI-чаті (?hist=…) ─────────────────────────
+   Стан у URL, не в JS: .chat-split--open просто звужує колонку чату і
+   показує aside. Обидві колонки скролить спільний .data (.content--full). */
+.chat-split { display: flex; gap: var(--sp-4, 16px); align-items: flex-start; }
+.chat-split__main { flex: 1; min-width: 0; }
+.chat-drawer {
+  flex: 0 0 360px; max-width: 42%;
+  border-left: 1px solid var(--border, #26313d);
+  padding-left: var(--sp-4, 16px);
+  position: sticky; top: 0;
+}
+.chat-drawer__head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.chat-drawer__list { display: flex; flex-direction: column; gap: 6px; }
+.chat-drawer__item {
+  display: block; padding: 8px 10px; border-radius: 8px;
+  background: var(--panel-2, rgba(255,255,255,.03)); text-decoration: none;
+}
+.chat-drawer__item:hover { background: var(--panel-3, rgba(255,255,255,.07)); }
+.chat-drawer__preview { display: block; margin-bottom: 4px; }
+.chat-drawer__meta { display: flex; gap: 8px; font-size: .82em; opacity: .75; flex-wrap: wrap; }
+.chat-drawer__msgs .chat__bubble { max-width: 100%; font-size: .92em; }
+.chat-drawer__actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+@media (max-width: 900px) {
+  .chat-split--open .chat-split__main { display: none; }
+  .chat-drawer { flex: 1; max-width: 100%; border-left: 0; padding-left: 0; }
+}

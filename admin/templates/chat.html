@@ -36,6 +36,8 @@
 {% block content_mod %} content--full{% endblock %}
 
 {% block data %}
+<div class="chat-split{% if hist %} chat-split--open{% endif %}">
+<div class="chat-split__main">
 {#- Обидва блоки рендеряться завжди — приховується непотрібний через
     [hidden], а не {% if %}: JS перемикає видимість тим самим атрибутом при
     оптимістичному додаванні першої бульбашки, без перебудови DOM. -#}
@@ -110,6 +112,68 @@
   </div>
   {% endif %}
 </div>
+</div>
+
+{%- if hist %}
+{#- Шухляда історії (запит Миколи: історія — тут, а не в System). Стан у
+    URL (?hist=1 — список, ?hist=<key> — розмова) — жодного JS: перемикання
+    режимів це звичайні посилання, і без скриптів усе працює так само. -#}
+<aside class="chat-drawer" aria-label="{{ t('pg.chat.hist_title', 'Chat history') }}">
+  <div class="chat-drawer__head">
+    <strong>{{ t("pg.chat.hist_title", "Chat history") }}</strong>
+    <span class="toolbar__spacer"></span>
+    {% if hist != "1" %}<a class="btn btn--ghost btn--sm" href="/chat?hist=1">{{ t("pg.chat.hist_back", "← All") }}</a>{% endif %}
+    <a class="btn btn--ghost btn--sm" href="/chat" aria-label="{{ t('act.close', 'Close') }}">✕</a>
+  </div>
+
+  {% if hist == "1" %}
+  <div class="chat-drawer__list">
+    {% for s in hist_sessions %}
+    <a class="chat-drawer__item" href="{{ s.drawer_href }}">
+      <span class="chat-drawer__preview">{{ s.preview or '—' }}</span>
+      <span class="chat-drawer__meta">
+        <span class="badge {{ 'b-info' if s.channel == 'telegram' else 'b-neutral' }}">{{ s.channel }}</span>
+        <span>{{ s.who or '' }}</span>
+        <span>{{ s.last_at.strftime('%m-%d %H:%M') if s.last_at else '' }}</span>
+        <span>{{ s.questions }} · {{ s.tokens }} tok</span>
+      </span>
+    </a>
+    {% else %}
+    <p class="muted">{{ t("pg.chat.hist_empty", "No conversations yet.") }}</p>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="chat-drawer__msgs">
+    {% for m in hist_messages %}
+    <div class="chat__msg chat__msg--{{ m.role }}">
+      <div class="chat__bubble">
+        {% if m.role == 'assistant' %}<p class="chat__text">{{ m.content | linkify }}</p>
+        {% else %}<p class="chat__text">{{ m.content }}</p>{% endif %}
+      </div>
+      <div class="chat__meta">
+        <span>{{ m.who or '' }}</span>
+        <span>{{ m.created_at.strftime('%m-%d %H:%M') if m.created_at else '' }}</span>
+      </div>
+    </div>
+    {% else %}
+    <p class="muted">{{ t("pg.chat.hist_gone", "This conversation is empty or was deleted.") }}</p>
+    {% endfor %}
+  </div>
+  {% if hist_messages %}
+  <div class="chat-drawer__actions">
+    <a class="btn btn--ghost btn--sm" href="{{ hist_full_href }}">{{ t("pg.chat.hist_full", "Full view") }}</a>
+    <form method="post" action="/chats/delete" class="inline"
+          data-confirm="{{ t('pg.chats.delete_confirm', 'Delete this conversation permanently?') }}">
+      {% include "_csrf.html" %}
+      <input type="hidden" name="key" value="{{ hist }}">
+      <input type="hidden" name="next" value="/chat?hist=1">
+      <button class="btn btn--sm btn--danger" type="submit">{{ t("act.delete_chat", "Delete conversation") }}</button>
+    </form>
+  </div>
+  {% endif %}
+  {% endif %}
+</aside>
+{%- endif %}
 {% endblock %}
 
 {% block controls %}
@@ -117,6 +181,11 @@
   <form class="chat__newchat" method="post" action="/chat/new">{% include "_csrf.html" %}
     <button class="btn btn--ghost btn--sm" type="submit">{{ t("pg.chat.new_chat", "New chat") }}</button>
   </form>
+  {%- if hist %}
+  <a class="btn btn--sm" href="/chat">{{ t("pg.chat.hist_close", "Close history") }}</a>
+  {%- else %}
+  <a class="btn btn--ghost btn--sm" href="/chat?hist=1">{{ t("pg.chat.hist_open", "History") }}</a>
+  {%- endif %}
 
   {#- D4 — форумні чипи. «All» веде на голий /chat (без ask). Кожен форумний
       чип без JS — посилання на приклад, уже прив'язаний до цього форуму

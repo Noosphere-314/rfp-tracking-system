@@ -111,7 +111,9 @@ NAV = [
     {"id": "settings", "href": "/settings", "label": "Параметри", "group": "cfg"},
     {"id": "runs", "href": "/runs", "label": "Історія збору", "group": "sys"},
     {"id": "briefs", "href": "/briefs", "label": "Бріфи", "group": "sys"},
-    {"id": "chats", "href": "/chats", "label": "Історія чатів", "group": "sys"},
+    # «Історія чатів» свідомо БЕЗ пункту меню: вона живе шухлядою всередині
+    # AI-чату (/chat?hist=…, рішення Миколи 2026-08-11); маршрути /chats*
+    # лишаються як повноекранний вигляд за прямим лінком із шухляди.
 ]
 
 # ІНВАРІАНТ ЛОКАЛІЗАЦІЇ: українська ТІЛЬКИ в презентації. Значення в URL і в БД
@@ -1733,7 +1735,7 @@ def _forum_chip_href(display: str) -> str:
 
 
 @app.get("/chat", response_class=HTMLResponse)
-def chat_page(request: Request, error: str = "", ask: str = ""):
+def chat_page(request: Request, error: str = "", ask: str = "", hist: str = ""):
     """AI-чат над базою знань (розділ 4.9, задача #30; розділ D — «Ask AI»
     з /items, приклади й форумні чипи на порожньому стані).
 
@@ -1758,8 +1760,12 @@ def chat_page(request: Request, error: str = "", ask: str = ""):
         # Форумні чипи (розділ D4): лише enabled=true, ORDER BY forum_slug —
         # forum_slug UNIQUE (migrations/004_kb_schema.sql), тож DISTINCT тут
         # не потрібен. Дешево: та сама таблиця, що й на /kb, без JOIN.
+        # kind='discourse': після 008/010 у kb.forums живуть і snap-*/gh-*
+        # службові рядки — як чипи вони лише шумлять (людина мислить
+        # форумами, а Snapshot/GitHub-контент однаково шукається разом).
         forum_rows = conn.execute(
-            "SELECT forum_slug FROM kb.forums WHERE enabled = true ORDER BY forum_slug"
+            "SELECT forum_slug FROM kb.forums "
+            "WHERE enabled = true AND kind = 'discourse' ORDER BY forum_slug"
         ).fetchall()
 
     # Останній рядок — user: відповідь, можливо, ще генерується (POST
@@ -1775,6 +1781,37 @@ def chat_page(request: Request, error: str = "", ask: str = ""):
         for r in forum_rows
     ]
 
+    # Висувна історія (запит Миколи 2026-08-11: історія — всередині розділу
+    # AI chat, а не окремою сторінкою в System). Стан живе в URL, тому працює
+    # без JS: hist="1" — список розмов, hist="<session_key>" — одна розмова
+    # прямо в шухляді. Закриття — звичайний лінк на /chat.
+    hist_sessions: list = []
+    hist_messages: list = []
+    if hist == "1":
+        with db() as conn:
+            hist_sessions = conn.execute(
+                """
+                SELECT session_key, channel,
+                       max(created_at) AS last_at,
+                       count(*) FILTER (WHERE role = 'user') AS questions,
+                       coalesce(sum(coalesce(tokens_in, 0) + coalesce(tokens_out, 0)), 0) AS tokens,
+                       max(who) FILTER (WHERE role = 'user') AS who,
+                       left((array_agg(content ORDER BY id) FILTER (WHERE role = 'user'))[1], 70) AS preview
+                  FROM kb.chat_messages
+                 GROUP BY session_key, channel
+                 ORDER BY last_at DESC LIMIT 30
+                """
+            ).fetchall()
+        for s in hist_sessions:
+            s["drawer_href"] = "/chat?hist=" + quote(s["session_key"], safe="")
+    elif hist:
+        with db() as conn:
+            hist_messages = conn.execute(
+                "SELECT id, channel, role, who, content, tier, model, created_at "
+                "FROM kb.chat_messages WHERE session_key = %s ORDER BY id LIMIT 300",
+                (hist,),
+            ).fetchall()
+
     return templates.TemplateResponse(
         request,
         "chat.html",
@@ -1786,6 +1823,12 @@ def chat_page(request: Request, error: str = "", ask: str = ""):
             "error": error,
             "ask": ask,
             "forum_chips": forum_chips,
+            "hist": hist,
+            "hist_sessions": hist_sessions,
+            "hist_messages": hist_messages,
+            "hist_full_href": (
+                "/chats/view?key=" + quote(hist, safe="") if hist and hist != "1" else "/chats"
+            ),
         },
     )
 
@@ -2043,10 +2086,14 @@ def chat_view_page(request: Request, key: str = ""):
 
 
 @mutations.post("/chats/delete")
-def delete_chat_session(request: Request, key: str = Form("")):
+def delete_chat_session(request: Request, key: str = Form(""), next: str = Form("")):
     """Видалення однієї розмови (запит Миколи 2026-08-11: історія цінна, але
     має прибиратися «по ненадобності»). Незворотне — тому кнопка в шаблоні
     під data-confirm, а маршрут на mutations (сесія + CSRF автоматично).
+
+    `next` — куди повертатись (шухляда історії в /chat чи повна сторінка).
+    Тільки локальні цілі, що починаються з "/chat" — усе інше ігнорується:
+    open-redirect через hidden-поле форми не потрібен нікому хорошому.
     """
     if key:
         with db() as conn:
@@ -2054,7 +2101,8 @@ def delete_chat_session(request: Request, key: str = Form("")):
                 "DELETE FROM kb.chat_messages WHERE session_key = %s", (key,)
             )
             conn.commit()
-    return RedirectResponse("/chats", status_code=303)
+    target = next if next.startswith("/chat") and "//" not in next else "/chats"
+    return RedirectResponse(target, status_code=303)
 
 
 @mutations.post("/chats/prune")
