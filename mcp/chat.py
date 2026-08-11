@@ -553,6 +553,39 @@ def _dispatch_tool(name: str, tool_input: dict) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+def _web_research(client, messages: list[dict], model: str) -> str:
+    """Один виклик Anthropic із САМИМ веб-пошуком (жодних локальних
+    інструментів) → текст знайденого, або "" якщо не вийшло.
+
+    Ніколи не кидає: свіжі дані — приємний бонус до архіву, а не умова
+    відповіді; провалений пошук не має валити всю розмову в stub.
+    """
+    last_user = next(
+        (m["content"] for m in reversed(messages)
+         if m.get("role") == "user" and isinstance(m.get("content"), str)),
+        None,
+    )
+    if not last_user:
+        return ""
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=1200,
+            system=[{"type": "text", "text": (
+                "Search the web for up-to-date facts answering the user's "
+                "question. Reply with the findings and their source URLs, "
+                "concisely. If the web has nothing useful, say exactly: NONE."
+            )}],
+            tools=[_WEB_SEARCH_TOOL],
+            messages=[{"role": "user", "content": last_user}],
+        )
+    except Exception:  # noqa: BLE001 — див. докстрінг
+        log.exception("chat: web research step failed; continuing without it")
+        return ""
+    text = "\n".join(b.text for b in response.content if b.type == "text").strip()
+    return "" if text.upper().startswith("NONE") else text
+
+
 def _llm_reply(
     messages: list[dict], model: str, channel: str, web_search: bool = False,
 ) -> tuple[str, int, int]:
@@ -572,14 +605,31 @@ def _llm_reply(
     system = [{"type": "text", "text": _CHAT_SYSTEM,
                "cache_control": {"type": "ephemeral"}}]
     tools = list(_TOOLS)
-    if web_search:
-        tools.append(_WEB_SEARCH_TOOL)
-        system.append({"type": "text", "text": _WEB_SEARCH_SYSTEM_LINE})
-        system.append({"type": "text", "text": _WEB_SEARCH_HINT_LINE})
     if channel == "telegram":
         system.append({"type": "text", "text": _TELEGRAM_SYSTEM})
 
     messages = list(messages)
+
+    # Веб-пошук — ОКРЕМИЙ одноразовий крок ПЕРЕД циклом, а не ще один
+    # інструмент у ньому (прод 2026-08-11). Змішувати не можна: серверний
+    # пошук і наші локальні виклики в одному ході дають або 400
+    # "container_id is required…", або 400 "tool_use ids without
+    # tool_result", а якщо вирізати незавершений виклик — модель повторює
+    # пошук щоітерації і впирається в стелю (запит висів 5 хв). Тут один
+    # виклик БЕЗ локальних інструментів (така форма перевірена наживо і
+    # стабільно завершується), а його результат іде в цикл як контекст.
+    if web_search:
+        web_context = _web_research(client, messages, model)
+        if web_context:
+            messages = messages + [
+                {"role": "assistant", "content": "Let me check the web first."},
+                {"role": "user", "content": (
+                    "Web search results for my question (use them for anything "
+                    "newer than the archive, and cite web sources separately "
+                    "from forum sources):\n\n" + web_context
+                )},
+            ]
+            system.append({"type": "text", "text": _WEB_SEARCH_SYSTEM_LINE})
     tokens_in = tokens_out = 0
     last_response = None
 

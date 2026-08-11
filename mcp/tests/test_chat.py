@@ -575,32 +575,6 @@ def test_llm_reply_web_search_off_by_default(monkeypatch):
     assert chat._WEB_SEARCH_SYSTEM_LINE not in [b["text"] for b in system]
 
 
-def test_llm_reply_web_search_on_adds_server_tool_and_system_line(monkeypatch):
-    responses = [FakeResponse([text_block("ok")], "end_turn")]
-    holder = install_fake_anthropic(monkeypatch, responses)
-
-    chat._llm_reply([{"role": "user", "content": "q"}], "m", "web", web_search=True)
-
-    tools = holder["client"].messages.calls[0]["tools"]
-    assert len(tools) == len(chat._TOOLS) + 1
-    assert tools[-1] == chat._WEB_SEARCH_TOOL
-    assert tools[-1]["type"] == "web_search_20260209"
-    assert tools[-1]["max_uses"] == 3
-    system = holder["client"].messages.calls[0]["system"]
-    assert chat._WEB_SEARCH_SYSTEM_LINE in [b["text"] for b in system]
-
-
-def test_llm_reply_web_search_on_telegram_keeps_both_extra_system_lines(monkeypatch):
-    responses = [FakeResponse([text_block("ok")], "end_turn")]
-    holder = install_fake_anthropic(monkeypatch, responses)
-
-    chat._llm_reply(
-        [{"role": "user", "content": "q"}], "m", "telegram", web_search=True,
-    )
-
-    system_texts = [b["text"] for b in holder["client"].messages.calls[0]["system"]]
-    assert chat._WEB_SEARCH_SYSTEM_LINE in system_texts
-    assert chat._TELEGRAM_SYSTEM in system_texts
 
 
 def test_answer_reads_web_search_setting_and_passes_it_through(monkeypatch):
@@ -733,15 +707,6 @@ def test_response_contract_unchanged_with_web_flag(monkeypatch):
     assert set(body.keys()) == {"ok", "reply_md", "tier", "model", "tokens"}
 
 
-def test_llm_reply_web_search_on_adds_hint_line(monkeypatch):
-    responses = [FakeResponse([text_block("ok")], "end_turn")]
-    holder = install_fake_anthropic(monkeypatch, responses)
-
-    chat._llm_reply([{"role": "user", "content": "q"}], "m", "web", web_search=True)
-
-    system_texts = [b["text"] for b in holder["client"].messages.calls[0]["system"]]
-    assert chat._WEB_SEARCH_HINT_LINE in system_texts
-
 
 def test_llm_reply_web_search_off_has_no_hint_line(monkeypatch):
     responses = [FakeResponse([text_block("ok")], "end_turn")]
@@ -756,82 +721,6 @@ def test_llm_reply_web_search_off_has_no_hint_line(monkeypatch):
 # ── Agent 2.0: mixed content with a server-tool block ───────────────
 
 
-def test_llm_reply_mixed_server_tool_content_end_turn_does_not_crash(monkeypatch):
-    """server_tool_use/web_search_tool_result blocks must not break the
-    text-extraction pass (block.type != 'text' → skipped, exactly like
-    tool_use blocks already were before this change)."""
-    responses = [
-        FakeResponse(
-            [
-                text_block("Searching the web."),
-                server_tool_use_block("web_search", {"query": "optimism grants 2026"}),
-                web_search_tool_result_block(
-                    content=[{"type": "web_search_result", "url": "https://x", "title": "t"}],
-                ),
-                text_block("Found it.\n\nSources:\n1. https://x"),
-            ],
-            "end_turn",
-        ),
-    ]
-    install_fake_anthropic(monkeypatch, responses)
-
-    text, *_ = chat._llm_reply(
-        [{"role": "user", "content": "any recent news?"}], "m", "web", web_search=True,
-    )
-
-    assert text == "Searching the web.\nFound it.\n\nSources:\n1. https://x"
-
-
-def test_llm_reply_mixed_server_tool_and_client_tool_use_in_same_turn(monkeypatch):
-    """A response can carry BOTH a resolved server-tool pair (web_search) AND
-    a pending client tool_use (search_kb) in the same content list, with
-    stop_reason='tool_use' driven by the client tool alone. The dispatch
-    loop must only act on the tool_use block — server-tool blocks are
-    echoed back verbatim (their encrypted_content matters for replay) but
-    never locally dispatched."""
-    monkeypatch.setattr(
-        kbtools, "search_impl",
-        lambda query, **kw: {"post_hits": [], "topic_title_hits": [], "hint": "h"},
-    )
-    responses = [
-        FakeResponse(
-            [
-                text_block("Checking both."),
-                server_tool_use_block("web_search", {"query": "x"}, "srv_1"),
-                web_search_tool_result_block(id_="srv_1", content=[]),
-                tool_use_block("search_kb", {"query": "grants"}, "call_1"),
-            ],
-            "tool_use",
-        ),
-        FakeResponse([text_block("done")], "end_turn"),
-    ]
-    holder = install_fake_anthropic(monkeypatch, responses)
-
-    text, *_ = chat._llm_reply(
-        [{"role": "user", "content": "q"}], "m", "web", web_search=True,
-    )
-
-    assert text == "done"
-    second_call_messages = holder["client"].messages.calls[1]["messages"]
-    tool_results = second_call_messages[-1]["content"]
-    # Лише клієнтський tool_use породив tool_result — server-tool блоки
-    # мовчки пропущені, не здиспетчерені.
-    assert len(tool_results) == 1
-    assert tool_results[0]["tool_use_id"] == "call_1"
-    # НЕЗАВЕРШЕНИЙ server_tool_use вирізається з асистентського ходу
-    # (знайдено в проді 2026-08-11): лишити його = 400 "container_id is
-    # required…", а не відповісти на власний tool_use = 400 "tool_use ids
-    # were found without tool_result". Єдина форма, що задовольняє обидва
-    # правила — свої результати віддати, незавершений серверний виклик
-    # прибрати; веб-пошук модель повторює наступним ходом сама.
-    assistant_turn = second_call_messages[-2]
-    assert assistant_turn["role"] == "assistant"
-    block_types = [b.type for b in assistant_turn["content"]]
-    assert "server_tool_use" not in block_types
-    assert "tool_use" in block_types
-    # Готовий результат пошуку лишається — він уже завершений, вирізати його
-    # означало б викинути те, що модель щойно знайшла.
-    assert "web_search_tool_result" in block_types
 
 
 # ── list_findings dispatch ───────────────────────────────────────────
@@ -1275,3 +1164,90 @@ def test_telegram_always_gets_web_search(monkeypatch):
     )
     assert status == 200
     assert seen["web_search"] is True
+
+
+# ── Веб-пошук ОКРЕМИМ предкроком (редизайн 2026-08-11) ───────────────
+
+
+def test_web_search_runs_as_a_separate_call_without_local_tools(monkeypatch):
+    """Змішувати серверний пошук із локальними інструментами в одному ході
+    не можна (два взаємовиключні 400 від API + зациклення). Тому пошук —
+    окремий виклик БЕЗ _TOOLS, а його текст іде в цикл контекстом."""
+    responses = [
+        FakeResponse([text_block("Web says: program is open, deadline Sep 1.")], "end_turn"),
+        FakeResponse([text_block("answer")], "end_turn"),
+    ]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    text, *_ = chat._llm_reply(
+        [{"role": "user", "content": "check online: compound grants?"}],
+        "m", "web", web_search=True,
+    )
+
+    calls = holder["client"].messages.calls
+    assert len(calls) == 2, "має бути предкрок + основний виклик"
+
+    web_call = calls[0]
+    assert [t["name"] for t in web_call["tools"]] == ["web_search"]
+    assert web_call["tools"][0]["type"] == "web_search_20260209"
+
+    main_call = calls[1]
+    tool_names = [t.get("name") for t in main_call["tools"]]
+    assert "web_search" not in tool_names, "у циклі веб-інструмента бути не має"
+    assert "search_kb" in tool_names
+    joined = " ".join(
+        m["content"] for m in main_call["messages"] if isinstance(m.get("content"), str)
+    )
+    assert "deadline Sep 1" in joined, "знайдене в мережі має дійти в контекст"
+    assert text == "answer"
+
+
+def test_web_search_step_failure_does_not_break_the_answer(monkeypatch):
+    """Свіжі дані — бонус, а не умова: якщо предкрок упав, відповідь по
+    архіву все одно має вийти (а не впасти у stub)."""
+    import sys as _sys
+    from types import SimpleNamespace
+
+    class _Messages:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if any(t.get("name") == "web_search" for t in kwargs.get("tools", [])):
+                raise RuntimeError("web down")
+            return FakeResponse([text_block("archive answer")], "end_turn")
+
+    class _Client:
+        def __init__(self):
+            self.messages = _Messages()
+
+    holder = {}
+
+    def _Anthropic(api_key=None):
+        holder["client"] = _Client()
+        return holder["client"]
+
+    monkeypatch.setitem(_sys.modules, "anthropic", SimpleNamespace(Anthropic=_Anthropic))
+
+    text, *_ = chat._llm_reply(
+        [{"role": "user", "content": "verify online: anything new?"}],
+        "m", "web", web_search=True,
+    )
+    assert text == "archive answer"
+    assert len(holder["client"].messages.calls) == 2  # впав предкрок, цикл відпрацював
+
+
+def test_web_search_none_result_is_not_injected(monkeypatch):
+    """Порожній результат ('NONE') не має засмічувати контекст."""
+    responses = [
+        FakeResponse([text_block("NONE")], "end_turn"),
+        FakeResponse([text_block("answer")], "end_turn"),
+    ]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    chat._llm_reply(
+        [{"role": "user", "content": "check the web: xyz?"}], "m", "web", web_search=True,
+    )
+    main_call = holder["client"].messages.calls[1]
+    assert len(main_call["messages"]) == 1, "нічого не мало додатись"
