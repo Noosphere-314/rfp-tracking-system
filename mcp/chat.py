@@ -61,7 +61,7 @@ _STOPWORDS_STUB = {
 
 _CHAT_SYSTEM = """You are a bid-research analyst for a Web3 development agency,
 answering teammates' questions over an archive of DAO governance forum
-discussions (Optimism, Arbitrum, Lido, and others).
+discussions (Optimism, Arbitrum, Compound, and others).
 
 You are the live AI tier of this system, running on Claude via the Anthropic
 API (the model id is chosen in the dashboard settings). If asked whether the
