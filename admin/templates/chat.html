@@ -72,6 +72,21 @@
       <div class="alert alert--info chat__archived-banner" role="status">
         <span>{{ t("pg.chat.archived_banner", "Archived conversation") }}</span>
         <a class="btn btn--sm" href="/chat">{{ t("pg.chat.back_to_current", "Back to current chat") }}</a>
+        {#- Задача 5 аудиту 2026-08-11: «Create Brief» видима й у read-only
+            архівному перегляді, поруч із банером — та сама форма
+            #save-report-form (нижче, ЗА межами `{% if not archived %}`),
+            той самий select моделі, що й у живому композері. Лише коли є
+            що синтезувати (та сама умова, що й для живої розмови). -#}
+        {%- if messages %}
+        <span class="toolbar__spacer"></span>
+        <select name="model" class="select--sm" form="save-report-form" aria-label="{{ t('f.model.aria', 'Model') }}">
+          {% for value, key, default in BRIEF_MODEL_CHOICES %}
+          <option value="{{ value }}">{{ t(key, default) }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn btn--ghost btn--sm" type="submit" form="save-report-form"
+                title="{{ t('act.save_report.title', 'Create one brief synthesized from the whole conversation — not just one reply') }}">{{ t("act.save_report", "Create Brief") }}</button>
+        {%- endif %}
       </div>
       {%- endif %}
       {#- Кнопка ПІСЛЯ банера + margin-left:auto у CSS: Микола явно просив
@@ -218,25 +233,38 @@
           {{ t("f.web_search", "Web search") }}
         </label>
         <span class="toolbar__spacer"></span>
-        {#- «Save chat as report» — ВИДИМА кнопка біля чату (прохання Миколи
-            2026-08-11), а не пункт у топбар-меню. Це кнопка ІНШОЇ форми
-            (#save-report-form нижче, вкладати form у form не можна) —
-            зв'язок через атрибут form=. Лише коли є що синтезувати. -#}
+        {#- «Create Brief» — ВИДИМА кнопка біля чату (прохання Миколи
+            2026-08-11: «Save chat as report» перейменовано в задачі 5
+            аудиту 2026-08-11), а не пункт у топбар-меню. Це кнопка ІНШОЇ
+            форми (#save-report-form, тепер поза `{% if not archived %}` —
+            вкладати form у form не можна) — зв'язок через атрибут form=.
+            Лише коли є що синтезувати. Select моделі (задача 4) — той
+            самий BRIEF_MODEL_CHOICES, що й у формі бріфа на items.html. -#}
         {%- if messages %}
+        <select name="model" class="select--sm" form="save-report-form" aria-label="{{ t('f.model.aria', 'Model') }}">
+          {% for value, key, default in BRIEF_MODEL_CHOICES %}
+          <option value="{{ value }}">{{ t(key, default) }}</option>
+          {% endfor %}
+        </select>
         <button class="btn btn--ghost btn--sm" type="submit" form="save-report-form"
-                title="{{ t('act.save_report.title', 'Build one brief synthesized from the whole conversation — not just one reply') }}">{{ t("act.save_report", "Save chat as report") }}</button>
+                title="{{ t('act.save_report.title', 'Create one brief synthesized from the whole conversation — not just one reply') }}">{{ t("act.save_report", "Create Brief") }}</button>
         {%- endif %}
         <button class="btn btn--primary" type="submit">{{ t("act.send", "Send") }}</button>
       </div>
     </form>
-    {#- Сама форма звіту — ПОРУЧ, а не всередині композера (HTML забороняє
-        вкладені форми); кнопка вище шле саме її через form="save-report-form". -#}
+    {%- endif %}
+    {#- Сама форма звіту (задача 5): ЗАВЖДИ поза композером (HTML забороняє
+        вкладені форми, і архівний перегляд взагалі не рендерить композер) —
+        кнопка(и) вище шлють саме її через form="save-report-form". `key`
+        порожній у живій розмові (save_chat_report: як і раніше, поточна
+        сесія браузера) і рівний hist_key в архівному перегляді
+        (app.py: _parse_chat_history_key розпаковує "channel:session"). -#}
     {%- if messages %}
     <form id="save-report-form" method="post" action="/chat/save-report" hidden
           data-busy="{{ t('pg.chat.report_busy', 'Synthesizing report…') }}">
       {% include "_csrf.html" %}
+      <input type="hidden" name="key" value="{{ hist_key }}">
     </form>
-    {%- endif %}
     {%- endif %}
   </div>
 

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{#- «Знахідки» (розділ 4.3 + розширення «фільтри й outcomes»). Контекст дає
+{#- «Знахідки» (розділ 4.3 + розширення «фільтри й outcomes» + редизайн
+    фільтрів/read-unread/бріфів, задачі 1-4 аудиту 2026-08-11). Контекст дає
     items_page() у admin/app.py: items, status, q, ecosystem, lane,
     min_confidence, period, outcome, page, ecosystem_options, filters_active,
     qs_no_page.
@@ -9,17 +10,43 @@
     посилання з Telegram почали б показувати інше, ніж учора.
 
     Значення фільтрів в URL лишаються англійськими (?status=done) — інваріант
-    локалізації; українською лише підписи. Один компактний рядок фільтрів
-    (селекти + один текстовий інпут + Apply) замінює колишню пару
-    «чипси статусу» + «форма джерела»: команда попросила лишити сторінку
-    простою, а не додавати другий ряд керування під кожен новий фільтр. -#}
+    локалізації; українською лише підписи.
+
+    Задача 1 («тексти пливуть, особливо в фільтрах»): основні поля (period,
+    status, ecosystem, пошук) — рівна сітка .form-grid, label ЗВЕРХУ кожного
+    поля, БЕЗ .field__hint під контролем (він ламав вирівнювання висоти —
+    підказки тепер у title= самого select/input, місце нікуди не зникає).
+    Другорядні (lane, min_confidence, outcome) — у <details class="disclosure">
+    «More filters», відкритому, якщо будь-який із них активний.
+
+    Задача 2: колонка дій — «Open brief» лінк замість форми створення, коли
+    для item_uid вже є kb.briefs-рядок (i.brief_id, LEFT JOIN LATERAL у
+    app.py). Задача 4: у формі створення — компактний <select name="model">
+    (BRIEF_MODEL_CHOICES, глобал із app.py — той самий список опцій, що й
+    #save-report-form у chat.html, одне джерело правди для UI й для
+    серверного вайтліста BRIEF_MODEL_ALLOWED).
+
+    Задача 3 (read/unread як у месенджерах): непрочитаний рядок
+    (i.viewed_at is none) — крапка .unread-dot перед заголовком + ледь
+    помітний фон .item-row--unread, співіснує з .item-row--lead (задача не
+    плутати лід-підсвітку з непрочитаним — різні кольори: --brand-1 проти
+    --brand-2/--info). «Mark all as read» — окрема форма в панелі фільтрів,
+    PRG назад на поточний URL через hidden next=. -#}
 {% block title %}{{ t("pg.items.h1", "Findings") }}{% endblock %}
 {% block h1 %}{{ t("pg.items.h1", "Findings") }}{% endblock %}
 {% block sub %}{{ t("pg.items.sub", "Everything the worker saw in the sources, and what happened to it next") }}{% endblock %}
 
 {% block controls %}
-<div class="toolbar">
-  <form class="toolbar" method="get" action="/items">
+<form class="filters" method="get" action="/items">
+  <div class="form-grid">
+    <div class="field">
+      <label class="field__label" for="f-period">{{ t("f.period", "Period") }}</label>
+      <select id="f-period" name="period">
+        <option value="">{{ t("st.any", "all") }}</option>
+        <option value="7d" {{ 'selected' if period == '7d' }}>{{ t("f.period.7d", "last 7 days") }}</option>
+        <option value="30d" {{ 'selected' if period == '30d' }}>{{ t("f.period.30d", "last 30 days") }}</option>
+      </select>
+    </div>
     <div class="field">
       <label class="field__label" for="f-status">{{ t("f.status", "Status") }}</label>
       <select id="f-status" name="status">
@@ -39,55 +66,73 @@
       </select>
     </div>
     <div class="field">
-      <label class="field__label" for="f-lane">{{ t("f.lane", "Lane") }}</label>
-      <select id="f-lane" name="lane">
-        <option value="">{{ t("st.any", "all") }}</option>
-        {% for ln in ['rfp', 'funding'] %}
-        <option value="{{ ln }}" {{ 'selected' if lane == ln }}>{{ LANE_UA.get(ln, ln) }}</option>
-        {% endfor %}
-      </select>
-      <span class="field__hint">{{ t("f.lane.hint", "Which pipeline path delivered it") }}</span>
-    </div>
-    <div class="field">
-      <label class="field__label" for="f-conf">{{ t("f.min_confidence", "Min. confidence") }}</label>
-      <select id="f-conf" name="min_confidence">
-        <option value="">{{ t("st.any", "all") }}</option>
-        {% for c in ['0.5', '0.7', '0.9'] %}
-        <option value="{{ c }}" {{ 'selected' if min_confidence == c }}>&ge; {{ c }}</option>
-        {% endfor %}
-      </select>
-      <span class="field__hint">{{ t("f.min_confidence.hint", "How sure the classifier is, 0–1") }}</span>
-    </div>
-    <div class="field">
-      <label class="field__label" for="f-period">{{ t("f.period", "Period") }}</label>
-      <select id="f-period" name="period">
-        <option value="">{{ t("st.any", "all") }}</option>
-        <option value="7d" {{ 'selected' if period == '7d' }}>{{ t("f.period.7d", "last 7 days") }}</option>
-        <option value="30d" {{ 'selected' if period == '30d' }}>{{ t("f.period.30d", "last 30 days") }}</option>
-      </select>
-    </div>
-    <div class="field">
-      <label class="field__label" for="f-outcome">{{ t("f.outcome", "Outcome") }}</label>
-      <select id="f-outcome" name="outcome">
-        <option value="">{{ t("st.any", "all") }}</option>
-        {% for oc in ['won', 'lost', 'open'] %}
-        <option value="{{ oc }}" {{ 'selected' if outcome == oc }}>{{ OUTCOME_UA.get(oc, oc) }}</option>
-        {% endfor %}
-      </select>
-      <span class="field__hint">{{ t("f.outcome.hint", "Won/Lost mark you set after the deal") }}</span>
-    </div>
-    <div class="field">
       <label class="field__label" for="f-q">{{ t("f.search_title", "Search in title") }}</label>
       <input id="f-q" name="q" value="{{ q }}" placeholder="{{ t('f.search_title_ph', 'part of the title') }}">
     </div>
-    <button class="btn btn--primary" type="submit">{{ t("act.filter", "Filter") }}</button>
-  </form>
-</div>
+    {#- .field__label--ghost (app.css: visibility:hidden, не .visually-hidden
+        — той знімає елемент із потоку через position:absolute) — порожній
+        підпис-«привид» тримає цю комірку на ТІЙ САМІЙ висоті label+control,
+        що й сусідні поля, тож Filter/Reset вирівнюються по нижньому краю
+        решти полів. CSP тут principled: жодного inline style=, лише клас.
+        aria-hidden, бо для читачів екрана тут нічого не варто оголошувати. -#}
+    <div class="field field--actions">
+      <span class="field__label field__label--ghost" aria-hidden="true">{{ t("f.actions", "Actions") }}</span>
+      <div class="filters__actions">
+        <button class="btn btn--primary" type="submit">{{ t("act.filter", "Filter") }}</button>
+        <a class="btn btn--ghost" href="/items">{{ t("act.reset", "Reset") }}</a>
+      </div>
+    </div>
+  </div>
+
+  {#- Задача 1: другорядні фільтри — «More filters», відкрито автоматично,
+      якщо будь-який із них уже активний (той самий прийом, що й
+      <details class="disclosure"{% if error %} open{% endif %}> на
+      /sources). -#}
+  <details class="disclosure" {{ 'open' if lane or min_confidence or outcome }}>
+    <summary>{{ t("pg.items.more_filters", "More filters") }}</summary>
+    <div class="disclosure__body form-grid">
+      <div class="field">
+        <label class="field__label" for="f-lane">{{ t("f.lane", "Lane") }}</label>
+        <select id="f-lane" name="lane" title="{{ t('f.lane.hint', 'Which pipeline path delivered it') }}">
+          <option value="">{{ t("st.any", "all") }}</option>
+          {% for ln in ['rfp', 'funding'] %}
+          <option value="{{ ln }}" {{ 'selected' if lane == ln }}>{{ LANE_UA.get(ln, ln) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label class="field__label" for="f-conf">{{ t("f.min_confidence", "Min. confidence") }}</label>
+        <select id="f-conf" name="min_confidence" title="{{ t('f.min_confidence.hint', 'How sure the classifier is, 0–1') }}">
+          <option value="">{{ t("st.any", "all") }}</option>
+          {% for c in ['0.5', '0.7', '0.9'] %}
+          <option value="{{ c }}" {{ 'selected' if min_confidence == c }}>&ge; {{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label class="field__label" for="f-outcome">{{ t("f.outcome", "Outcome") }}</label>
+        <select id="f-outcome" name="outcome" title="{{ t('f.outcome.hint', 'Won/Lost mark you set after the deal') }}">
+          <option value="">{{ t("st.any", "all") }}</option>
+          {% for oc in ['won', 'lost', 'open'] %}
+          <option value="{{ oc }}" {{ 'selected' if outcome == oc }}>{{ OUTCOME_UA.get(oc, oc) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </details>
+</form>
 
 <div class="toolbar">
   {% if filters_active %}
-  <p class="muted">{{ t("msg.filters_active", "Filters active") }} — <a href="/items">{{ t("act.reset", "Reset") }}</a></p>
+  <p class="muted">{{ t("msg.filters_active", "Filters active") }}</p>
   {% endif %}
+  {#- Задача 3: «Mark all as read» — глобально, не лише видима сторінка;
+      PRG назад на поточний URL (фільтри+сторінка) через hidden next=. -#}
+  <form method="post" action="/items/mark-read" class="inline">
+    {% include "_csrf.html" %}
+    <input type="hidden" name="next" value="/items{{ '?' + request.url.query if request.url.query }}">
+    <button class="btn btn--ghost btn--sm" type="submit">{{ t("act.mark_all_read", "Mark all as read") }}</button>
+  </form>
   <span class="toolbar__spacer"></span>
   <p class="pager">
     {% if page > 0 %}
@@ -131,15 +176,22 @@
       </thead>
       <tbody>
         {% for i in items %}
-        {#- Розділ B1: лід підсвічується не лише в Telegram, а й тут — акцентна
-            рамка на рядку (app.css: .item-row--lead) і чип «LEAD»/«ЛІД» біля
-            заголовка, обидва через delivered_at IS NOT NULL — той самий
-            прапорець, що вже малює бейдж «доставлено» в колонці Delivered
-            нижче, лише тепер видно й без прокрутки до тієї колонки. -#}
-        <tr class="{{ 'item-row--lead' if i.delivered_at }}">
-          <td><span class="badge b-{{ i.status }}">{{ STATUS_UA.get(i.status, i.status) }}</span></td>
+        {#- Розділ B1 + задача 3: рядок може бути одночасно «лід»
+            (delivered_at IS NOT NULL — .item-row--lead) і «непрочитаний»
+            (viewed_at IS NULL — .item-row--unread), і вони не мають
+            зливатись в одне: різні кольори (--brand-1 проти --brand-2),
+            обидва класи можуть стояти на одному <tr> разом. -#}
+        {% set row_cls = [] %}
+        {% if i.delivered_at %}{% set _ = row_cls.append('item-row--lead') %}{% endif %}
+        {% if i.viewed_at is none %}{% set _ = row_cls.append('item-row--unread') %}{% endif %}
+        <tr class="{{ row_cls | join(' ') }}">
+          <td class="cell--nowrap"><span class="badge b-{{ i.status }}">{{ STATUS_UA.get(i.status, i.status) }}</span></td>
           <td>
-            <a href="{{ i.url }}" target="_blank" rel="noopener noreferrer">{{ i.title or i.item_uid[:16] }}</a>
+            {#- Крапка — ВСЕРЕДИНІ якоря, а не сиблінгом: обрізаний
+                nowrap-якір на вузькій колонці переносився на новий рядок
+                ЦІЛИМ, лишаючи крапку саму (бачено наживо) — всередині ж
+                вони фізично нерозривні. -#}
+            <a class="cell--truncate" href="{{ i.url }}" target="_blank" rel="noopener noreferrer" title="{{ i.title or i.item_uid }}">{% if i.viewed_at is none %}<span class="unread-dot" title="{{ t('msg.unread.title', 'Unread') }}"></span>{% endif %}{{ i.title or i.item_uid[:16] }}</a>
             {% if i.delivered_at %}<span class="badge b-lead" title="{{ t('chip.lead.title', 'This finding became a lead') }}">{{ t("chip.lead", "LEAD") }}</span>{% endif %}
             {% if i.canonical_project %}<div class="muted">{{ i.canonical_project }}</div>{% endif %}
           </td>
@@ -195,12 +247,27 @@
             {% endif %}
           </td>
           <td class="cell--nowrap">
+            {#- Задача 2: якщо для item_uid вже є kb.briefs-рядок (LEFT JOIN
+                LATERAL у app.py, найновіший — bf.id), «Open brief» лінк
+                замість другої кнопки створення. -#}
+            {% if i.brief_id %}
+            <a class="btn btn--sm" href="/briefs/{{ i.brief_id }}"
+               title="{{ t('act.open_brief.title', 'Open the existing brief for this finding') }}">{{ t("act.open_brief", "Open brief") }}</a>
+            {% else %}
             <form class="inline" method="post" action="/items/{{ i.item_uid }}/brief"
                   data-busy="{{ t('msg.brief_busy', 'Building the brief, up to 5 min…') }}">
               {% include "_csrf.html" %}
+              {#- Задача 4: вибір моделі перед створенням — BRIEF_MODEL_CHOICES
+                  глобал з app.py, той самий список, що й у chat.html. -#}
+              <select name="model" class="select--sm" aria-label="{{ t('f.model.aria', 'Model') }}">
+                {% for value, key, default in BRIEF_MODEL_CHOICES %}
+                <option value="{{ value }}">{{ t(key, default) }}</option>
+                {% endfor %}
+              </select>
               <button class="btn btn--sm" type="submit"
                       title="{{ t('act.brief.title', 'Build a brief from the knowledge base: a search across the forum archive, up to 5 minutes') }}">{{ t("act.brief", "brief") }}</button>
             </form>
+            {% endif %}
             {#- «Ask AI» (розділ D3): питання (англійською, зібране в
                 _ask_ai_question у app.py) вже готове в i.ask_ai_href — тут
                 лише посилання, нуль логіки в шаблоні. -#}

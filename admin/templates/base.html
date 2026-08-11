@@ -59,11 +59,15 @@
         <a class="nav__item{{ ' is-active' if nav == it.id }}" href="{{ it.href }}"
            {% if nav == it.id %}aria-current="page"{% endif %}>{{ nav_labels[it.id] }}
            {% if it.soon %}<span class="badge b-soon">{{ t("nav.soon", "soon") }}</span>{% endif %}
-           {#- Розділ B2: лід видно не лише в Telegram, а й тут — бейдж
-               рахується один раз на запит у _leads_badge_context (app.py) і
-               доступний глобально, тож жоден хендлер не мусить передавати
-               його окремо. -#}
-           {% if it.id == 'items' and leads_24h %}<span class="badge b-lead" title="{{ t('nav.leads_24h.title', 'New leads in the last 24 hours') }}">{{ leads_24h }}</span>{% endif %}</a>
+           {#- Розділи B2/3: непрочитане видно не лише в Telegram-дайджесті, а
+               й тут — бейдж рахується один раз на запит у
+               _leads_badge_context (app.py) і доступний глобально, тож жоден
+               хендлер не мусить передавати його окремо. Задача 3 аудиту
+               2026-08-11: рахує НЕПРОЧИТАНІ (viewed_at IS NULL) серед
+               «потенційно цікавого» (leads24 ∪ review24), а не просто ліди
+               за 24 год — .b-info замість .b-lead, щоб не плутати з зеленим
+               лід-акцентом (той самий --brand-1, що й item-row--lead). -#}
+           {% if it.id == 'items' and unread_count %}<span class="badge b-info" title="{{ t('nav.unread.title', 'Unread potential leads and review-band findings') }}">{{ unread_count }}</span>{% endif %}</a>
       {% endfor %}
     {% endfor %}
     {% if N8N_URL %}

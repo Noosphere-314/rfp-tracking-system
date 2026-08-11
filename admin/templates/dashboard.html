@@ -1,15 +1,20 @@
 {% extends "base.html" %}
-{#- «Огляд» (розділ 4.1). Контекст дає dashboard() у admin/app.py:
-    status_counts, last_runs, source_health, sources_total, recent_pending,
-    stub_classifier. Нічого поза цим списком тут не вигадується.
+{#- «Огляд» — переосмислений (задача 6 аудиту 2026-08-11, запит Миколи «не
+    розумію, як це читати»). Мета: сейлз відкриває сторінку і за 10 секунд
+    розуміє «що нового / чи все працює / як тиждень». Контекст дає
+    dashboard() у admin/app.py: collected_24h, briefs_7d, issues,
+    top_problem_sources, funnel, stub_classifier — плюс leads_24h/
+    unread_count із context-процесора _leads_badge_context (той самий
+    підрахунок, що й NAV-бейдж, перші дві плитки не додають жодного SELECT
+    тут).
 
-    Свідомо НЕ робимо блок «Ліди за 7 днів» і бари впевненості (F5+F6):
-    Pipedrive-ноди вимкнені, `Mark handled (no lead)` пише done без ліда, а
-    класифікатор у STUB із захардкодженим confidence 0.55 — така панель
-    виглядала б робочою і брехала. Замість неї — чесний бейдж режиму. -#}
+    Свідомо НЕ повертаємо сирі таблиці «Source health» (повний реєстр на 12
+    рядків) і «Queued and stuck» (черга на 20 рядків) — їхню роль тепер
+    грає «Needs attention»: лише проблеми, кожна — рядок із лінком на
+    сторінку дії. Порожньо — зелений порожній стан, а не порожня таблиця. -#}
 {% block title %}{{ t("pg.overview.h1", "Overview") }}{% endblock %}
 {% block h1 %}{{ t("pg.overview.h1", "Overview") }}{% endblock %}
-{% block sub %}{{ t("pg.overview.sub", "The queue, source health and the latest collection runs") }}{% endblock %}
+{% block sub %}{{ t("pg.overview.sub", "What's new, what needs you, and how the week is going") }}{% endblock %}
 
 {% block topbar_actions %}
   {%- if stub_classifier %}
@@ -29,179 +34,107 @@
 
 {% block data %}
 
-{#- 1. П'ять плиток статусів + плитка лідів (розділ B3). Кожна — посилання у
-    «Знахідки» з фільтром; значення в URL англійські (інваріант локалізації),
-    підпис — український. Плитка лідів навмисно НЕ через ще один SELECT тут:
-    `leads_24h` уже прийшов у контекст шаблону з _leads_badge_context
-    (app.py) — той самий підрахунок, що й бейдж у сайдбарі, тож друга
-    плитка на цій самій сторінці не додає жодного запиту до БД. -#}
+{#- 1. Плитки-дії (розділ 1 задачі 6): 4 великі клікабельні плитки замість
+    колишніх 5 статусних + лідів. leads_24h/unread_count — з context-
+    процесора (той самий, що й NAV-бейдж); collected_24h/briefs_7d — з
+    dashboard(). -#}
 <div class="stats">
-  {% for st in ITEM_STATUSES %}
-  <a class="stat" href="/items?status={{ st }}">
-    <div class="stat__num">{{ status_counts.get(st, 0) }}</div>
-    <div class="stat__lbl">{{ STATUS_UA.get(st, st) }}</div>
-  </a>
-  {% endfor %}
   <a class="stat stat--lead" href="/items?view=leads24">
     <div class="stat__num">{{ leads_24h }}</div>
     <div class="stat__lbl">{{ t("pg.overview.leads24", "New leads (24h)") }}</div>
   </a>
+  <a class="stat stat--unread" href="/items?view=review24">
+    <div class="stat__num">{{ unread_count }}</div>
+    <div class="stat__lbl">{{ t("pg.overview.unread", "Unread findings") }}</div>
+  </a>
+  <a class="stat" href="/runs">
+    <div class="stat__num">{{ collected_24h }}</div>
+    <div class="stat__lbl">{{ t("pg.overview.collected24", "Collected (24h)") }}</div>
+  </a>
+  <a class="stat" href="/briefs">
+    <div class="stat__num">{{ briefs_7d }}</div>
+    <div class="stat__lbl">{{ t("pg.overview.briefs7d", "Briefs (7d)") }}</div>
+  </a>
 </div>
 
-{#- 2. Стан джерел. SQL уже сортує «найпроблемніші зверху» і має LIMIT 12,
-    тож це не реєстр, а список того, що потребує уваги. -#}
+{#- 2. Needs attention (розділ 2 задачі 6): ЛИШЕ проблеми, кожен рядок —
+    проблема + лінк на сторінку дії (app.py: issues, побудовано з
+    _ATTENTION_KINDS). Немає проблем → зелений порожній стан. -#}
 <section class="panel">
   <div class="panel__head">
-    <h2>{{ t("pg.overview.sources", "Source health") }}</h2>
-    <span class="toolbar__spacer"></span>
-    <a href="/sources">{{ t("act.all_sources", "all sources →") }}</a>
+    <h2>{{ t("pg.overview.attention", "Needs attention") }}</h2>
   </div>
-
-  {% if source_health %}
-  <div class="tablewrap">
-    <table>
-      <thead>
-        <tr>
-          <th>{{ t("f.source", "Source") }}</th><th>{{ t("f.type", "Type") }}</th>
-          <th>{{ t("f.lane", "Lane") }}</th><th>{{ t("f.state", "State") }}</th>
-          <th>{{ t("f.items_7d", "Items in 7 days") }}</th>
-          <th>{{ t("f.last_item", "Last item") }}</th>
-          <th>{{ t("f.consec_fails", "Failures in a row") }}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for s in source_health %}
-        <tr>
-          <td>
-            {{ s.name }} <span class="muted">· {{ s.ecosystem }}</span>
-            {%- if s.quarantined and s.quarantine_reason %}
-            <div class="field__hint field__hint--bad">{{ t("st.quarantined.label", "Quarantined") }}: {{ s.quarantine_reason }}</div>
-            {%- endif %}
-          </td>
-          <td class="muted">{{ s.type }}</td>
-          <td><span class="badge b-{{ s.lane }}">{{ LANE_UA.get(s.lane, s.lane) }}</span></td>
-          <td>
-            {% if s.quarantined %}<span class="badge b-quarantine">{{ t("st.quarantined", "quarantined") }}</span>
-            {% elif s.enabled %}<span class="badge b-on">{{ t("st.on", "enabled") }}</span>
-            {% else %}<span class="badge b-off">{{ t("st.off", "disabled") }}</span>{% endif %}
-          </td>
-          <td class="cell--num">{{ s.items_7d }}</td>
-          <td class="muted cell--nowrap">{{ s.last_item_at.strftime('%Y-%m-%d %H:%M') if s.last_item_at else '—' }}</td>
-          <td class="cell--num">
-            {%- if s.consecutive_failures %}<span class="badge b-dead">{{ s.consecutive_failures }}</span>
-            {%- else %}0{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  <div class="panel__foot">
-    {{ t("pg.overview.worst_shown", "Showing the most troubled:") }}
-    {{ source_health | length }} {{ t("msg.of", "of") }} {{ sources_total }}.
-    {{ t("pg.overview.worst_sort", "Sorted by failures in a row, then by how long ago the last item arrived.") }}
-  </div>
-  {% else %}
-  <div class="panel__body">
-    <div class="empty">
-      <div class="empty__title">{{ t("msg.no_sources", "No sources yet") }}</div>
-      <div class="empty__hint">{{ t("pg.overview.add_first_a", "Add the first one on the") }}
-        <a href="/sources">{{ t("nav.sources", "Sources") }}</a>
-        {{ t("pg.overview.add_first_b", "page — the form only saves a source after a live test fetch succeeds.") }}</div>
-    </div>
-  </div>
-  {% endif %}
-</section>
-
-{#- 3. Останні запуски — п'ять рядків, повна історія на /runs. -#}
-<section class="panel">
-  <div class="panel__head">
-    <h2>{{ t("pg.overview.runs", "Latest runs") }}</h2>
-    <span class="toolbar__spacer"></span>
-    <a href="/runs">{{ t("act.all_runs", "full history →") }}</a>
-  </div>
-
-  {% if last_runs %}
+  {% if issues %}
+  <ul class="issues">
+    {% for issue in issues %}
+    <li class="issue">
+      <span class="issue__text">{{ t(issue.key, issue.default) | replace("%(n)s", issue.n | string) }}</span>
+      <a class="btn btn--sm" href="{{ issue.href }}">{{ t("act.review", "Review →") }}</a>
+    </li>
+    {% endfor %}
+  </ul>
+  {#- Максимум топ-3 проблемних джерела (розділ 4 задачі 6) — компактний
+      список, не повний реєстр (той живе на /sources), і лише коли хоч
+      одне джерело реально проблемне. -#}
+  {% if top_problem_sources %}
   <div class="tablewrap">
     <table class="table--dense">
       <thead>
-        <tr>
-          <th>{{ t("f.started", "Started") }}</th><th>{{ t("f.mode", "Mode") }}</th>
-          <th>{{ t("f.sources_n", "Sources") }}</th><th>{{ t("f.seen", "Seen") }}</th>
-          <th>{{ t("f.new", "New") }}</th><th>{{ t("f.filtered", "Filtered out") }}</th>
-          <th>{{ t("f.delivered", "Delivered") }}</th><th>{{ t("f.dead", "Not delivered") }}</th>
-        </tr>
+        <tr><th>{{ t("f.source", "Source") }}</th><th>{{ t("f.consec_fails", "Failures in a row") }}</th></tr>
       </thead>
       <tbody>
-        {% for r in last_runs %}
+        {% for s in top_problem_sources %}
         <tr>
-          <td class="cell--nowrap">{{ r.started_at.strftime('%Y-%m-%d %H:%M') }}</td>
-          <td>{{ MODE_UA.get(r.mode, r.mode) }}</td>
-          <td class="cell--num">
-            {{ r.sources_checked }}{% if r.sources_failed %} <span class="badge b-dead">−{{ r.sources_failed }}</span>{% endif %}
+          <td>
+            {{ s.name }} <span class="muted">· {{ s.ecosystem }}</span>
+            {%- if s.quarantined %} <span class="badge b-quarantine">{{ t("st.quarantined", "quarantined") }}</span>{% endif %}
           </td>
-          <td class="cell--num">{{ r.items_seen }}</td>
-          <td class="cell--num">{{ r.items_new }}</td>
-          <td class="cell--num">{{ r.items_filtered }}</td>
-          <td class="cell--num">{{ r.items_delivered }}</td>
-          <td class="cell--num">
-            {%- if r.items_dead %}<span class="badge b-dead">{{ r.items_dead }}</span>
-            {%- else %}0{% endif %}
-          </td>
+          <td class="cell--num">{{ s.consecutive_failures }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+  {% endif %}
   {% else %}
   <div class="panel__body">
     <div class="empty">
-      <div class="empty__title">{{ t("msg.no_runs.title", "No runs yet") }}</div>
-      <div class="empty__hint">{{ t("msg.no_runs.hint", "Start the worker:") }} <code>docker compose up -d worker</code></div>
+      <div class="empty__title">{{ t("pg.overview.all_normal", "All systems normal") }}</div>
+      <div class="empty__hint">{{ t("pg.overview.all_normal_hint", "Nothing needs you right now.") }}</div>
     </div>
   </div>
   {% endif %}
 </section>
 
-{#- 4. У черзі / проблемні — те, що воркер уже побачив, але ще не довіз. -#}
+{#- 3. This week (розділ 3 задачі 6): міні-воронка, кожне число — лінк на
+    відповідний фільтр Findings. Усі чотири числа рахують той самий базовий
+    зріз (first_seen > 7 днів, app.py: funnel), тож те, що людина побачить
+    після кліку, збігається з плиткою. -#}
 <section class="panel">
-  <div class="panel__head">
-    <h2>{{ t("pg.overview.queue", "Queued and stuck") }}</h2>
-    <span class="toolbar__spacer"></span>
-    <a href="/items?status=pending">{{ t("act.all_queue", "whole queue →") }}</a>
-  </div>
-
-  {% if recent_pending %}
-  <div class="tablewrap">
-    <table>
-      <thead>
-        <tr>
-          <th>{{ t("f.status", "Status") }}</th><th>{{ t("f.title", "Title") }}</th>
-          <th>{{ t("f.source", "Source") }}</th><th>{{ t("f.attempts", "Attempts") }}</th>
-          <th>{{ t("f.first_seen", "First seen") }}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for i in recent_pending %}
-        <tr>
-          <td><span class="badge b-{{ i.status }}">{{ STATUS_UA.get(i.status, i.status) }}</span></td>
-          <td><a href="{{ i.url }}" target="_blank" rel="noopener noreferrer">{{ i.title or i.item_uid[:16] }}</a></td>
-          <td class="muted">{{ i.source_name }}</td>
-          <td class="cell--num">{{ i.attempts }}</td>
-          <td class="muted cell--nowrap">{{ i.first_seen.strftime('%Y-%m-%d %H:%M') }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
+  <div class="panel__head"><h2>{{ t("pg.overview.week", "This week") }}</h2></div>
   <div class="panel__body">
-    <div class="empty">
-      <div class="empty__title">{{ t("msg.queue_empty", "The queue is empty") }}</div>
-      <div class="empty__hint">{{ t("msg.queue_empty.hint", "Everything the worker found has been processed — nothing is stuck.") }}</div>
+    <div class="funnel">
+      <a class="funnel__step" href="/items?period=7d">
+        <span class="funnel__num">{{ funnel.collected }}</span>
+        <span class="funnel__lbl">{{ t("pg.overview.funnel.collected", "Collected") }}</span>
+      </a>
+      <span class="funnel__arrow" aria-hidden="true">→</span>
+      <a class="funnel__step" href="/items?period=7d&amp;passed_filter=1">
+        <span class="funnel__num">{{ funnel.passed_filter }}</span>
+        <span class="funnel__lbl">{{ t("pg.overview.funnel.passed", "Passed filter") }}</span>
+      </a>
+      <span class="funnel__arrow" aria-hidden="true">→</span>
+      <a class="funnel__step" href="/items?period=7d&amp;delivered=1">
+        <span class="funnel__num">{{ funnel.leads }}</span>
+        <span class="funnel__lbl">{{ t("pg.overview.funnel.leads", "Leads") }}</span>
+      </a>
+      <span class="funnel__arrow" aria-hidden="true">→</span>
+      <a class="funnel__step" href="/items?period=7d&amp;outcome=closed">
+        <span class="funnel__num">{{ funnel.closed }}</span>
+        <span class="funnel__lbl">{{ t("pg.overview.funnel.closed", "Won / Lost") }}</span>
+      </a>
     </div>
   </div>
-  {% endif %}
 </section>
 
 {% endblock %}

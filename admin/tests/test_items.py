@@ -107,7 +107,9 @@ def test_items_default_view_has_no_where_clause(client, monkeypatch):
     response = client.get("/items")
     assert response.status_code == 200
     sql, params = sink[0]
-    assert "WHERE" not in sql
+    # Єдиний WHERE — усередині LATERAL-підзапиту brief_id (задача «Open
+    # brief» 2026-08-11); ЗОВНІШНІЙ запит без фільтрів, як і був.
+    assert sql.count("WHERE") == 1 and "WHERE b.item_uid" in sql
     assert params == (0,)  # лише OFFSET
 
 
@@ -153,7 +155,8 @@ def test_items_invalid_min_confidence_and_period_are_ignored(client, monkeypatch
     response = client.get("/items", params={"min_confidence": "0.99", "period": "1y"})
     assert response.status_code == 200
     sql, _ = sink[0]
-    assert "WHERE" not in sql
+    # Див. коментар у тесті дефолтного вигляду: 1 WHERE = лише LATERAL.
+    assert sql.count("WHERE") == 1 and "WHERE b.item_uid" in sql
 
 
 def test_items_outcome_open_means_delivered_without_a_verdict(client, monkeypatch):
@@ -392,18 +395,20 @@ def test_items_page_undelivered_row_has_no_lead_class_or_chip(client, monkeypatc
 # ── Розділ B2: NAV-бейдж «нових лідів за 24 год» (context processor) ──────
 
 
-def test_items_page_nav_badge_shows_lead_count_next_to_findings(client, monkeypatch):
+def test_items_page_nav_badge_shows_unread_count_next_to_findings(client, monkeypatch):
     """`_leads_badge_context` (app.py) рахується один раз на рендер і
     доступний глобально — /items тут лише зручна сторінка для перевірки,
-    бейдж живе в base.html і рендериться на кожній."""
+    бейдж живе в base.html і рендериться на кожній. З 2026-08-11 бейдж —
+    НЕПРОЧИТАНІ (unread_count, .b-info), а не ліди за 24 год."""
     _login(client)
     # Третій виклик execute() у цьому рендері (0: items, 1: ecosystem
     # options, 2: контекст-процесор бейджа NAV) — той самий порядок, що
     # й guard-коментар у _leads_badge_context описує.
-    _fake_db(monkeypatch, rows=[], extra_rows={2: [{"n": 7}]})
+    _fake_db(monkeypatch, rows=[],
+             extra_rows={2: [{"leads_24h": 3, "unread_count": 7}]})
 
     html = client.get("/items").text
-    assert 'class="badge b-lead"' in html
+    assert 'class="badge b-info"' in html
     assert ">7<" in html
 
 

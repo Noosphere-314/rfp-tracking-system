@@ -55,6 +55,20 @@ WEBHOOK_SECRET = os.environ.get("N8N_WEBHOOK_SECRET", "")
 KBMCP_URL = os.environ.get("KBMCP_URL", "http://kbmcp:8000")
 KB_MCP_TOKEN = os.environ.get("KB_MCP_TOKEN", "")
 
+# Вибір моделі для генерації бріфа (задача 4 аудиту 2026-08-11) — той самий
+# вайтліст переюзаний у ДВОХ хендлерах (generate_brief і save_chat_report):
+# порожнє значення ("Default") ніколи не потрапляє в payload до kbmcp — той
+# сам падає назад на settings.brief_model. Список тут, а не в шаблоні:
+# шаблони items.html/chat.html рендерять <option> з цього самого джерела
+# (templates.env.globals нижче), тож UI і серверна валідація не можуть
+# розійтися.
+BRIEF_MODEL_CHOICES: list[tuple[str, str, str]] = [
+    ("", "f.model.default", "Default"),
+    ("claude-sonnet-5", "f.model.sonnet", "Sonnet · faster"),
+    ("claude-opus-5", "f.model.opus", "Opus · deeper"),
+]
+BRIEF_MODEL_ALLOWED = {value for value, _, _ in BRIEF_MODEL_CHOICES if value}
+
 STATIC = Path(__file__).parent / "static"
 
 # Кеш-бастинг: хеш ВМІСТУ обох асетів на імпорті → ?v= у base.html і
@@ -82,14 +96,41 @@ app = FastAPI(
 )
 
 
+# Розділ 3 задачі «read/unread як у месенджерах» (2026-08-11): «потенційно
+# цікаве» = ті самі критерії, що вже реалізовані у /items?view=leads24 і
+# view=review24 (VIEW_PRESETS нижче) — константи тут, а VIEW_PRESETS
+# посилається на ТІ САМІ рядки, а не дублює їх: «переюзай ті самі
+# WHERE-шматки, не вигадуй нові» буквально означає одне джерело правди.
+# Обидва фрагменти читають лише `i.*` (seen_items), без залежності від
+# JOIN sources — тож придатні і для VIEW_PRESETS (де є `s`), і для
+# _leads_badge_context нижче (де JOIN на sources не потрібен).
+_LEADS24_WHERE = "i.delivered_at > now() - interval '24 hours'"
+_REVIEW24_WHERE = (
+    "i.category = 'FUNDING' AND i.delivered_at IS NULL "
+    "AND i.first_seen > now() - interval '24 hours'"
+)
+
+
 def _leads_badge_context(request: Request) -> dict:
-    """NAV-бейдж «нових лідів за 24 год» (розділ B2 — «ліди видимі в
-    дашборді»): один COUNT рахується тут, а не в кожному хендлері окремо,
-    бо NAV (base.html) рендериться на КОЖНІЙ сторінці, а не лише на
-    /items чи /. Той самий механізм, що й auth.template_context і
-    i18n.template_context нижче — context_processors викликає
+    """NAV-бейдж (розділ B2 — «ліди видимі в дашборді», розділ 3 — «read/
+    unread»): один комбінований запит рахується тут, а не в кожному
+    хендлері окремо, бо NAV (base.html) рендериться на КОЖНІЙ сторінці, а
+    не лише на /items чи /. Той самий механізм, що й auth.template_context
+    і i18n.template_context нижче — context_processors викликає
     Jinja2Templates рівно раз на кожен рендер шаблону, тобто рівно один
     SELECT на одну відповідь (а не п'ять разів на сторінку).
+
+    Два числа, а не одне (задача 3 аудиту 2026-08-11):
+      leads_24h     — ліди за останні 24 год (як і раніше; плитка Overview
+                      «New leads (24h)» лишається незмінною).
+      unread_count  — НЕПРОЧИТАНІ (viewed_at IS NULL) серед «потенційно
+                      цікавого» (leads24 ∪ review24) — це і є нове число на
+                      NAV-бейджі біля «Знахідки» і на плитці Overview
+                      «Unread findings».
+    Обидва — FILTER-агрегати ОДНОГО запиту (той самий прийом, що й
+    source_health у dashboard() нижче), а не два execute(): один SELECT
+    замість двох тримає вартість на кожній сторінці однаковою, що й до
+    цієї зміни.
 
     Свідома вартість: /login (публічний, неавторизований) теж проходить
     крізь цей самий Jinja2Templates env, тож і туди прилетить один зайвий
@@ -108,13 +149,22 @@ def _leads_badge_context(request: Request) -> dict:
     try:
         with db() as conn:
             row = conn.execute(
-                "SELECT count(*) AS n FROM seen_items "
-                "WHERE delivered_at > now() - interval '24 hours'"
+                f"""
+                SELECT
+                    count(*) FILTER (WHERE {_LEADS24_WHERE}) AS leads_24h,
+                    count(*) FILTER (
+                        WHERE i.viewed_at IS NULL
+                          AND (({_LEADS24_WHERE}) OR ({_REVIEW24_WHERE}))
+                    ) AS unread_count
+                  FROM seen_items i
+                """
             ).fetchone()
-        leads_24h = row["n"] if row else 0
+        leads_24h = row["leads_24h"] if row else 0
+        unread_count = row["unread_count"] if row else 0
     except Exception:  # noqa: BLE001 — бейдж не критичний, сторінка не має падати
         leads_24h = 0
-    return {"leads_24h": leads_24h}
+        unread_count = 0
+    return {"leads_24h": leads_24h, "unread_count": unread_count}
 
 
 templates = Jinja2Templates(
@@ -376,6 +426,7 @@ templates.env.globals.update(
     MODE_UA=MODE_UA,
     TIER_UA=TIER_UA,
     OUTCOME_UA=OUTCOME_UA,
+    BRIEF_MODEL_CHOICES=BRIEF_MODEL_CHOICES,
 )
 
 # Усі мутуючі маршрути — на одному роутері з `csrf_guard` (розділ 1.9, третій
@@ -556,37 +607,105 @@ def healthz():
 
 
 # ── Dashboard ──────────────────────────────────────────────────────
+#
+# Переосмислення (задача 6 аудиту 2026-08-11, запит Миколи «не розумію, як
+# це читати»): мета сторінки — сейлз відкриває і за 10 секунд розуміє «що
+# нового / чи все працює / як тиждень». П'ять дешевих агрегатних запитів
+# замість колишніх N+1-схильних сирих таблиць («Source health» на 12 рядків,
+# «Queued and stuck» на 20) — їхню роль тепер грає «Needs attention»: лише
+# проблеми, кожна — рядок із лінком на сторінку дії. Порожньо — зелений
+# порожній стан, а не порожня таблиця.
+
+# «Проблема» для панелі Needs attention — сталий список (kind, href) у
+# порядку показу; текст і лічильник рахуються нижче в dashboard(). Порядок
+# тут навмисний: спершу джерела (найчастіша причина тиші), далі збори,
+# черга, і насамкінець KB — та сама послідовність, що й у воронці «звідки
+# ліди беруться».
+_ATTENTION_KINDS = (
+    ("quarantined_sources", "pg.overview.issue.quarantined",
+     "%(n)s source(s) in quarantine", "/sources"),
+    ("fetch_failures_24h", "pg.overview.issue.fetch_failures",
+     "%(n)s source fetch failure(s) in the last 24 hours", "/runs"),
+    ("pending_stuck", "pg.overview.issue.pending_stuck",
+     "%(n)s finding(s) stuck pending for over 2 hours", "/items?status=pending"),
+    ("stale_kb_forums", "pg.overview.issue.stale_kb",
+     "%(n)s knowledge-base forum(s) with no new activity in 30+ days", "/kb"),
+)
 
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     with db() as conn:
-        status_counts = {
-            row["status"]: row["n"]
-            for row in conn.execute(
-                "SELECT status, count(*) AS n FROM seen_items GROUP BY status"
-            )
-        }
-        last_runs = conn.execute(
-            "SELECT * FROM worker_runs ORDER BY started_at DESC LIMIT 5"
-        ).fetchall()
-        # Сортування «найпроблемніші зверху» + LIMIT (розділ 4.1): попереднє
-        # `ORDER BY enabled DESC, name` без ліміту ховало зламане джерело
-        # посеред алфавіту. На головній має бути видно проблему, а не повний
-        # реєстр — повний живе на /sources.
-        source_health = conn.execute(
+        # Плитки-дії (розділ 1): leads_24h/unread_count приходять із того
+        # самого context-процесора, що й NAV-бейдж (_leads_badge_context) —
+        # друга й перша плитки не додають жодного SELECT тут. Ці дві —
+        # операційні (24 год), рахуються підзапитами по НЕзалежних таблицях
+        # в ОДНОМУ execute(), а не окремими походами в БД.
+        tiles = conn.execute(
             """
-            SELECT s.id, s.name, s.type, s.ecosystem, s.enabled, s.quarantined,
-                   s.quarantine_reason, s.lane, s.last_success_at, s.last_item_at,
-                   s.consecutive_failures,
-                   count(i.item_uid) FILTER (WHERE i.first_seen > now() - interval '7 days') AS items_7d
-              FROM sources s LEFT JOIN seen_items i ON i.source_id = s.id
-             GROUP BY s.id
-             ORDER BY s.consecutive_failures DESC, s.last_item_at ASC NULLS FIRST
-             LIMIT 12
+            SELECT
+                (SELECT coalesce(sum(items_seen), 0) FROM worker_runs
+                  WHERE started_at > now() - interval '24 hours') AS collected_24h,
+                (SELECT count(*) FROM kb.briefs
+                  WHERE created_at > now() - interval '7 days') AS briefs_7d
+            """
+        ).fetchone()
+
+        # Панель «Needs attention» (розділ 2): чотири незалежні підрахунки в
+        # ОДНОМУ запиті — жодного N+1, і жодна з таблиць тут не велика
+        # (sources/worker_runs/seen_items(pending)/kb.forums), тож ціна
+        # прийнятна для сторінки, яку відкривають на кожному заході.
+        attention = conn.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM sources WHERE quarantined) AS quarantined_sources,
+                (SELECT coalesce(sum(sources_failed), 0) FROM worker_runs
+                  WHERE started_at > now() - interval '24 hours') AS fetch_failures_24h,
+                (SELECT count(*) FROM seen_items
+                  WHERE status = 'pending'
+                    AND first_seen < now() - interval '2 hours') AS pending_stuck,
+                (SELECT count(*) FROM (
+                    SELECT f.id
+                      FROM kb.forums f
+                      LEFT JOIN kb.topics t ON t.forum_slug = f.forum_slug
+                     WHERE f.enabled
+                     GROUP BY f.id
+                    HAVING max(t.bumped_at) IS NULL
+                        OR max(t.bumped_at) < now() - interval '30 days'
+                 ) stale) AS stale_kb_forums
+            """
+        ).fetchone()
+
+        # Топ-3 проблемних джерела (розділ 4 — «максимум табличне всередині
+        # Needs attention»): та сама сортировка, що й колишня повна таблиця
+        # source_health, лише LIMIT 3 й лише реально проблемні рядки.
+        top_problem_sources = conn.execute(
+            """
+            SELECT name, ecosystem, consecutive_failures, quarantined
+              FROM sources
+             WHERE quarantined OR consecutive_failures > 0
+             ORDER BY consecutive_failures DESC, last_item_at ASC NULLS FIRST
+             LIMIT 3
             """
         ).fetchall()
-        sources_total = conn.execute("SELECT count(*) AS n FROM sources").fetchone()["n"]
+
+        # Панель «This week» (розділ 3): міні-воронка одним запитом
+        # (FILTER-агрегати, той самий прийом, що й вище) — усі чотири числа
+        # рахують той самий базовий зріз (first_seen > 7 днів), що й лінк
+        # /items?period=7d нижче показав би, тож число на плитці завжди
+        # збігається з тим, що людина побачить після кліку.
+        funnel = conn.execute(
+            """
+            SELECT
+                count(*) AS collected,
+                count(*) FILTER (WHERE status <> 'filtered') AS passed_filter,
+                count(*) FILTER (WHERE delivered_at IS NOT NULL) AS leads,
+                count(*) FILTER (WHERE outcome IN ('won', 'lost')) AS closed
+              FROM seen_items
+             WHERE first_seen > now() - interval '7 days'
+            """
+        ).fetchone()
+
         # Чесний бейдж режиму (розділ 4.1, F6): поки класифікатор — заглушка з
         # захардкодженим confidence 0.55, будь-яка аналітика по впевненості
         # малювала б сотню однакових барів і виглядала б робочою.
@@ -594,25 +713,27 @@ def dashboard(request: Request):
             "SELECT prompt_version FROM items_log WHERE event = 'classified' "
             "ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
-        recent_pending = conn.execute(
-            """
-            SELECT i.*, s.name AS source_name FROM seen_items i
-              JOIN sources s ON s.id = i.source_id
-             WHERE i.status IN ('pending', 'dead')
-             ORDER BY i.first_seen DESC LIMIT 20
-            """
-        ).fetchall()
+
+    # Текст і число кожної проблеми — тут, не в шаблоні (той самий принцип,
+    # що й _ask_ai_question вище): шаблон лише перекладає готовий
+    # (ключ, %(n)s-рядок) через t() і рендерить лінк. Нуль проблем → шаблон
+    # сам показує зелений порожній стан.
+    issues = [
+        {"key": key, "default": default, "n": attention[field], "href": href}
+        for field, key, default, href in _ATTENTION_KINDS
+        if attention[field]
+    ]
 
     return templates.TemplateResponse(
         request,
         "dashboard.html",
         {
             "nav": "dashboard",
-            "status_counts": status_counts,
-            "last_runs": last_runs,
-            "source_health": source_health,
-            "sources_total": sources_total,
-            "recent_pending": recent_pending,
+            "collected_24h": tiles["collected_24h"],
+            "briefs_7d": tiles["briefs_7d"],
+            "issues": issues,
+            "top_problem_sources": top_problem_sources,
+            "funnel": funnel,
             "stub_classifier": bool(
                 last_verdict and last_verdict["prompt_version"] == "stub-no-llm"
             ),
@@ -1259,14 +1380,16 @@ OUTCOME_OPTIONS = ("won", "lost", "open")
 # «New leads (24h)» на /  (розділ B3). Обидва — літерали, не введення
 # користувача: `view` лише обирає КЛЮЧ словника, тому інтерполяція значень
 # нижче в SQL безпечна так само, як і решта f-string цього файлу (clause).
+# WHERE-фрагменти — _LEADS24_WHERE/_REVIEW24_WHERE, визначені разом із
+# _leads_badge_context вище: те саме джерело правди, яким тепер рахує і
+# NAV-бейдж/плитку «Unread findings» (задача 3 аудиту 2026-08-11).
 VIEW_PRESETS: dict[str, dict[str, str]] = {
     "review24": {
-        "where": "i.category = 'FUNDING' AND i.delivered_at IS NULL "
-                 "AND i.first_seen > now() - interval '24 hours'",
+        "where": _REVIEW24_WHERE,
         "order": "i.confidence DESC NULLS LAST",
     },
     "leads24": {
-        "where": "i.delivered_at > now() - interval '24 hours'",
+        "where": _LEADS24_WHERE,
         "order": "i.first_seen DESC",
     },
 }
@@ -1312,6 +1435,14 @@ def items_page(
     min_confidence: str = "",
     period: str = "",
     outcome: str = "",
+    # `delivered`/`passed_filter` і `outcome=closed` (розширення значення, не
+    # новий параметр) — розділ 3 задачі 6 («This week» на Overview): кожне
+    # число міні-воронки мусить лінкувати на ТОЙ САМИЙ зріз /items, що дав би
+    # цю саму цифру. У видимій формі фільтрів (items.html) цих значень немає
+    # — той самий підхід, що й у `view` нижче: deep-лінк без відповідного
+    # <select>, як view=leads24/review24 вже були.
+    delivered: str = "",
+    passed_filter: str = "",
     view: str = "",
     page: int = 0,
 ):
@@ -1365,6 +1496,12 @@ def items_page(
             where.append("i.outcome = 'lost'")
         elif outcome == "open":
             where.append("i.delivered_at IS NOT NULL AND i.outcome IS NULL")
+        elif outcome == "closed":
+            where.append("i.outcome IN ('won', 'lost')")
+        if delivered == "1":
+            where.append("i.delivered_at IS NOT NULL")
+        if passed_filter == "1":
+            where.append("i.status <> 'filtered'")
 
         # Хвіст запиту БЕЗ page — для лінків «новіші/старіші» і для «Скинути».
         # Лише активні фільтри: порожній параметр не повинен смітити URL.
@@ -1373,6 +1510,7 @@ def items_page(
             for k, v in {
                 "status": status, "q": q, "ecosystem": ecosystem, "lane": lane,
                 "min_confidence": min_confidence, "period": period, "outcome": outcome,
+                "delivered": delivered, "passed_filter": passed_filter,
             }.items()
             if v
         }
@@ -1384,8 +1522,19 @@ def items_page(
     with db() as conn:
         rows = conn.execute(
             f"""
-            SELECT i.*, s.name AS source_name, s.ecosystem AS source_ecosystem
-              FROM seen_items i JOIN sources s ON s.id = i.source_id {clause}
+            SELECT i.*, s.name AS source_name, s.ecosystem AS source_ecosystem,
+                   bf.id AS brief_id
+              FROM seen_items i
+              JOIN sources s ON s.id = i.source_id
+              -- Задача 2 аудиту 2026-08-11: найновіший бріф цього item_uid,
+              -- якщо він уже існує — items.html показує лінк «Open brief»
+              -- замість форми створення, коли brief_id непорожній.
+              LEFT JOIN LATERAL (
+                  SELECT b.id FROM kb.briefs b
+                   WHERE b.item_uid = i.item_uid
+                   ORDER BY b.id DESC LIMIT 1
+              ) AS bf ON true
+              {clause}
              ORDER BY {order_by} LIMIT 50 OFFSET %s
             """,
             (*params, page * 50),
@@ -1452,6 +1601,31 @@ def set_item_outcome(request: Request, item_uid: str, outcome: str = Form(...), 
     # тут немає навіть у теорії. \r\n на випадок ручного/зіпсованого POST.
     safe_qs = qs.replace("\r", "").replace("\n", "")[:2000]
     target = f"/items?{safe_qs}" if safe_qs else "/items"
+    return RedirectResponse(target, status_code=303)
+
+
+@mutations.post("/items/mark-read")
+def mark_items_read(next: str = Form("")):
+    """«Mark all as read» (задача 3 — read/unread як у месенджерах, панель
+    фільтрів Findings): ставить viewed_at=now() усім НЕПРОЧИТАНИМ глобально
+    (viewed_at IS NULL), а не лише видимій сторінці/фільтру — той самий
+    принцип, що й «mark all as read» у поштових клієнтах: непрочитане
+    ховається звідусіль одразу, а не лише з поточного фільтра.
+
+    Свідомо БЕЗ автоматичного «прочитано при відкритті сторінки» (той самий
+    інваріант, що й у коментарі міграції 013): людина сама вирішує, що вже
+    переглянула — тому це окрема кнопка, а не побічний ефект GET /items.
+
+    `next` — поточний URL /items (hidden-поле форми, той самий PRG-прийом,
+    що й `qs` у set_item_outcome вище): людина повертається туди, звідки
+    натиснула кнопку, зі своїми фільтрами й сторінкою пагінації, а не на
+    голий /items. Лише локальні цілі, що починаються з "/items" — той самий
+    захист від open redirect, що й `next` у delete_chat_session.
+    """
+    with db() as conn:
+        conn.execute("UPDATE seen_items SET viewed_at = now() WHERE viewed_at IS NULL")
+        conn.commit()
+    target = next if next.startswith("/items") and "//" not in next else "/items"
     return RedirectResponse(target, status_code=303)
 
 
@@ -1671,9 +1845,32 @@ def add_kb_forum(forum_slug: str = Form(...), base_url: str = Form(...)):
 # ── Briefing packs ─────────────────────────────────────────────────
 
 
+def _brief_backend(payload: dict) -> dict:
+    """Виокремлено в окрему функцію — той самий прийом, що й _chat_backend/
+    _keywords_advice_backend/_chat_report_backend нижче, заради monkeypatch
+    у тестах (жоден із них не піднімає kbmcp і не ходить у мережу)."""
+    import httpx
+
+    response = httpx.post(
+        f"{KBMCP_URL}/brief",
+        json=payload,
+        headers={"Authorization": f"Bearer {KB_MCP_TOKEN}"} if KB_MCP_TOKEN else {},
+        timeout=300,  # LLM tier legitimately takes minutes
+    )
+    return response.json()
+
+
 @mutations.post("/items/{item_uid}/brief")
-def generate_brief(item_uid: str):
-    """Manual trigger — the same call the n8n node makes after lead creation."""
+def generate_brief(item_uid: str, model: str = Form("")):
+    """Manual trigger — the same call the n8n node makes after lead creation.
+
+    `model` (задача 4 аудиту 2026-08-11): компактний <select> у рядку
+    items.html — "" (Default), "claude-sonnet-5" чи "claude-opus-5"
+    (BRIEF_MODEL_CHOICES/BRIEF_MODEL_ALLOWED вище). Лише вайтлістове
+    значення потрапляє в payload до kbmcp; порожнє чи невідоме — ключ
+    "model" туди взагалі не йде, і kbmcp сам падає на settings.brief_model
+    (контракт POST /brief: опціональне поле, невалідне ігнорується).
+    """
     import httpx
 
     with db() as conn:
@@ -1691,27 +1888,25 @@ def generate_brief(item_uid: str):
     if not item:
         raise HTTPException(404, "item not found")
 
+    payload = {
+        "ecosystem": item["ecosystem"],
+        "title": item["title"] or item_uid[:16],
+        "body": item["body"] or "",
+        "item_uid": item_uid,
+    }
+    if model in BRIEF_MODEL_ALLOWED:
+        payload["model"] = model
+
     try:
-        response = httpx.post(
-            f"{KBMCP_URL}/brief",
-            json={
-                "ecosystem": item["ecosystem"],
-                "title": item["title"] or item_uid[:16],
-                "body": item["body"] or "",
-                "item_uid": item_uid,
-            },
-            headers={"Authorization": f"Bearer {KB_MCP_TOKEN}"} if KB_MCP_TOKEN else {},
-            timeout=300,  # LLM tier legitimately takes minutes
-        )
-        payload = response.json()
+        result = _brief_backend(payload)
     except (httpx.HTTPError, ValueError) as exc:
         return RedirectResponse(f"/items?status=&source_id=0#brief-error-{exc.__class__.__name__}",
                                 status_code=303)
 
-    if payload.get("error"):
+    if result.get("error"):
         # No archive for this ecosystem — the honest outcome, show it inline.
         return RedirectResponse("/items", status_code=303)
-    return RedirectResponse(f"/briefs/{payload['brief_id']}", status_code=303)
+    return RedirectResponse(f"/briefs/{result['brief_id']}", status_code=303)
 
 
 @app.get("/briefs", response_class=HTMLResponse)
@@ -1922,6 +2117,33 @@ def _forum_scope_groups(rows: list[dict]) -> list[dict]:
 # з реальних enabled-рядків) — тому мовчки відкидається, а не 400.
 _FORUM_SLUG_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 CHAT_SCOPE_MAX_FORUMS = 12
+
+# Значення каналу чату — той самий алфавіт, що й kb.chat_messages.channel
+# (migrations/006_kb_chat.sql). Визначено тут (а не поруч із /chats нижче,
+# де він жив раніше), бо save_chat_report (розділ D нижче) теж валідує
+# канал, розпарсений з архівного ключа "channel:session" — обидва
+# споживачі мають бачити той самий список.
+CHAT_CHANNEL_OPTIONS = ("web", "telegram")
+
+
+def _parse_chat_history_key(key: str) -> tuple[str, str] | None:
+    """→ (channel, session) з архівного ключа "channel:session" (розділ D
+    задачі 5 аудиту 2026-08-11 — «Create Brief» з архівної розмови /chat?
+    hist=<key>) або None, якщо ключ невалідний.
+
+    Спліт по ПЕРШІЙ двокрапці (`partition`, не `split(":", 1)` заради
+    симетрії з рештою файлу): channel мусить бути одним із
+    CHAT_CHANNEL_OPTIONS, а session — непорожнім і без ВЛАСНОЇ двокрапки
+    (той самий контракт, що session_key має в kb.chat_messages: неймспейс —
+    рівно один префікс "канал:", а не довільна кількість). `hist_key` у
+    chat.html завжди прийшов ІЗ хендлера chat_page (він сам будує
+    session_key = "web:" + sid чи читає channel/session_key з БД), тож
+    невалідне значення тут можливе лише при ручному підробленні POST-тіла.
+    """
+    channel, sep, session = key.partition(":")
+    if not sep or channel not in CHAT_CHANNEL_OPTIONS or not session or ":" in session:
+        return None
+    return channel, session
 
 
 @app.get("/chat", response_class=HTMLResponse)
@@ -2206,27 +2428,53 @@ def _chat_report_backend(payload: dict) -> dict:
 
 
 @mutations.post("/chat/save-report")
-def save_chat_report(request: Request):
-    """«Зберегти чат як звіт» (розділ D, кнопка в chat__controls — поруч із
-    «Історія»): на відміну від /chat/save-brief (одна бульбашка асистента),
-    тут бріф синтезує kbmcp з УСІЄЇ поточної розмови.
+def save_chat_report(request: Request, model: str = Form(""), key: str = Form("")):
+    """«Create Brief» (розділ D, кнопка поруч із «Send» у композері; розділ 5
+    задачі аудиту 2026-08-11 — перейменовано з «Save chat as report», і тепер
+    доступна й з архівного перегляду /chat?hist=<key>): на відміну від
+    /chat/save-brief (одна бульбашка асистента), тут бріф синтезує kbmcp з
+    УСІЄЇ розмови.
 
-    `session_key` — СИРИЙ ключ без ':' (той самий _chat_key, що й
-    send_chat_message вище): kbmcp сам додає неймспейс "web:" при записі
-    в kb.chat_messages, і той самий сирий ключ однозначно адресує розмову,
-    яку kbmcp має прочитати, щоб її синтезувати.
+    `key` (задача 5): порожній — жива сесія ЦЬОГО браузера, той самий
+    контракт, що й раніше (`_chat_key`, СИРИЙ ключ без "web:" — kbmcp сам
+    неймспейсить при записі в kb.chat_messages). Непорожній —
+    "channel:session" з архівного `hist_key` (chat.html: hidden `key=`
+    поруч із кнопкою в банері «Archived conversation»), розпарсений
+    _parse_chat_history_key вище; команда бачить УСІ розмови в /chats
+    (свідома відсутність розмежування «своя/чужа» — той самий коментар, що
+    й над GET /chats нижче), тож бріф із чужої розмови тут консистентний.
+    Невалідний ключ (ручне підроблення POST — форма завжди шле лише те, що
+    сама ж chat_page поклала в hist_key) — редірект на /chat з помилкою,
+    жодного походу в kbmcp.
+
+    `model` (задача 4): той самий вайтліст BRIEF_MODEL_ALLOWED, що й
+    generate_brief вище — порожнє чи невідоме значення не потрапляє в
+    payload, kbmcp сам падає на settings.brief_model.
 
     Кнопка в chat.html рендериться лише коли `messages` непорожні, але
     хендлер про це не знає (він не бачить стану сторінки, що вже
     відрендерилась) — порожня розмова для kbmcp просто помилка «нічого
     синтезувати», а не окрема гілка тут.
     """
-    session_key = _chat_key(request)
+    if key:
+        parsed = _parse_chat_history_key(key)
+        if not parsed:
+            return RedirectResponse(
+                "/chat?" + urlencode({"error": "Invalid conversation reference"}),
+                status_code=303,
+            )
+        channel, session_key = parsed
+    else:
+        channel, session_key = "web", _chat_key(request)
+
+    payload = {"channel": channel, "session_key": session_key}
+    if model in BRIEF_MODEL_ALLOWED:
+        payload["model"] = model
 
     import httpx
 
     try:
-        payload = _chat_report_backend({"channel": "web", "session_key": session_key})
+        result = _chat_report_backend(payload)
     except (httpx.HTTPError, ValueError) as exc:
         log.warning("kbmcp /chat-brief unreachable: %s", exc)
         return RedirectResponse(
@@ -2236,11 +2484,11 @@ def save_chat_report(request: Request):
             status_code=303,
         )
 
-    if not payload.get("ok"):
-        err = payload.get("error") or "Could not generate the report right now"
+    if not result.get("ok"):
+        err = result.get("error") or "Could not generate the report right now"
         return RedirectResponse(f"/chat?{urlencode({'error': err})}", status_code=303)
 
-    return RedirectResponse(f"/briefs/{payload['brief_id']}", status_code=303)
+    return RedirectResponse(f"/briefs/{result['brief_id']}", status_code=303)
 
 
 # ── Chat history (archive) ────────────────────────────────────────
@@ -2254,8 +2502,9 @@ def save_chat_report(request: Request):
 #
 # Обидва маршрути — прості GET, які лише читають kb.chat_messages (як і /chat
 # вище); нічого не пишуть, тож лишаються поза роутером `mutations`.
-
-CHAT_CHANNEL_OPTIONS = ("web", "telegram")
+# CHAT_CHANNEL_OPTIONS — визначено раніше у файлі (поруч із _chat_key), бо
+# save_chat_report (розділ D вище) теж валідує канал з архівного ключа
+# "channel:session" за цим самим списком.
 
 
 @app.get("/chats", response_class=HTMLResponse)

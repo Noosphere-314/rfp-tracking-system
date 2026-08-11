@@ -861,7 +861,7 @@ def test_chat_page_shows_save_report_button_when_conversation_has_messages(clien
         ],
     )
     html = client.get("/chat").text
-    assert "Save chat as report" in html
+    assert "Create Brief" in html  # перейменування 2026-08-11
     assert 'action="/chat/save-report"' in html
 
 

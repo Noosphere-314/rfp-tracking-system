@@ -750,3 +750,83 @@ form.inline,.inline{display:inline}
     display:block; position:fixed; inset:0; z-index:30; background:rgb(0 0 0/.55);
   }
 }
+
+/* ─────────────  15. Findings: рівні фільтри (задача 1 аудиту)  ───────── */
+/* `.filters` — форма-обгортка навколо .form-grid (основні поля) і
+   <details class="disclosure"> (другорядні): flex-колонка з gap замість
+   .toolbar + .disclosure (adjacent-sibling margin вище не спрацював би —
+   тут disclosure ВСЕРЕДИНІ тієї самої форми, а не сусід після неї). */
+.filters{display:flex; flex-direction:column; gap:var(--sp-3)}
+.filters__actions{display:flex; gap:var(--sp-2)}
+/* Порожній підпис-«привид»: та сама висота (font-size+line-height), що й у
+   .field__label сусідніх полів, тож Filter/Reset вирівнюються по нижньому
+   краю решти контролів, а не по верху комірки. visibility:hidden — НЕ
+   display:none/position:absolute (.visually-hidden) — той знімає елемент
+   із потоку, і вирівнювання знову ламається. */
+.field__label--ghost{visibility:hidden}
+/* Довгі назви знахідок (задача 1, п. «таблиця не пливе») — CSS-обрізання +
+   title= у розмітці для повного тексту на ховері/скрінрідері. */
+.cell--truncate{
+  display:inline-block; max-width:46ch; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom;
+}
+
+/* ────────────  16. Findings: непрочитане як у месенджерах (задача 3)  ── */
+/* Крапка-маркер перед заголовком — той самий розмір/прийом, що й
+   .session__dot (розділ 5), лише колір --brand-2/--info: НЕ --brand-1
+   (той належить .item-row--lead/.b-lead — «лід», інша категорія уваги,
+   яка може співіснувати на тому самому рядку). */
+.unread-dot{
+  display:inline-block; width:7px; height:7px; margin-right:6px;
+  border-radius:50%; background:var(--brand-2); vertical-align:middle;
+}
+/* Крапка живе ВСЕРЕДИНІ .cell--truncate-якоря (items.html пояснює чому) —
+   сиблінгом вона лишалася сама на рядку, коли вузька колонка переносила
+   nowrap-якір цілим. */
+.item-row--unread{background:color-mix(in srgb, var(--brand-2) 5%, transparent)}
+.item-row--unread:hover{background:color-mix(in srgb, var(--brand-2) 11%, transparent)}
+/* Лід + непрочитане одночасно — окремий, трохи насиченіший відтінок
+   (вкладений color-mix: спершу 4% --brand-2 понад прозорий, тоді 4%
+   --brand-1 понад той результат), щоб рядок лишався відрізним від «просто
+   лід» чи «просто непрочитане» без другого box-shadow поверх першого. */
+.item-row--lead.item-row--unread{
+  background:color-mix(in srgb, var(--brand-1) 4%, color-mix(in srgb, var(--brand-2) 4%, transparent));
+}
+.item-row--lead.item-row--unread:hover{
+  background:color-mix(in srgb, var(--brand-1) 8%, color-mix(in srgb, var(--brand-2) 8%, transparent));
+}
+
+/* ──────────  17. Компактний select моделі бріфа (задача 4 аудиту)  ───── */
+/* Рядок items.html/composer chat.html не має розпухати від звичайного
+   <select> (padding 7px 10px, розділ 8) — .select--sm тримає його на
+   висоті .btn--sm поруч. */
+select.select--sm{padding:2px 6px; font-size:var(--fs-sm); min-width:0}
+
+/* ───────────  18. Overview: needs attention і воронка (задача 6)  ────── */
+/* «Unread findings» — та сама пара --brand-2/--info, що й .unread-dot/NAV-
+   бейдж вище (одна візуальна категорія «непрочитане» по всьому дашборду),
+   на відміну від .stat--lead (--brand-1, «лід» — інша категорія). */
+.stat--unread{border-color:var(--info)}
+.stat--unread .stat__num{color:var(--info)}
+
+.issues{list-style:none; margin:0; padding:0}
+.issue{
+  display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
+  gap:var(--sp-3); padding:var(--sp-3) var(--sp-4);
+  border-bottom:1px solid var(--line-soft);
+}
+.issue:last-child{border-bottom:0}
+.issue__text{font-size:var(--fs-md)}
+
+/* Міні-воронка «This week» — цифрами в один рядок, кожен крок клікабельний
+   (лінк на відповідний фільтр Findings), стрілка — суто декоративна. */
+.funnel{display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2)}
+.funnel__step{
+  display:flex; flex-direction:column; align-items:center; gap:2px;
+  padding:var(--sp-2) var(--sp-4); border-radius:var(--r-md);
+  color:inherit; text-decoration:none; text-align:center;
+}
+.funnel__step:hover{background:var(--surface-2); text-decoration:none}
+.funnel__num{font-size:var(--fs-2xl); font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums}
+.funnel__lbl{margin-top:2px; font-size:var(--fs-sm); color:var(--text-dim)}
+.funnel__arrow{color:var(--text-faint); font-size:var(--fs-lg)}
