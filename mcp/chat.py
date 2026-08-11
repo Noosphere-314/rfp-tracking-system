@@ -559,6 +559,21 @@ def _dispatch_tool(name: str, tool_input: dict) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+def _input_tokens(usage) -> int:
+    """Повний вхід = некешований + запис у кеш + читання з кешу.
+
+    `usage.input_tokens` — ЛИШЕ некешований залишок. Після ввімкнення
+    rolling-кешу (2026-08-11) він упав до сотень токенів, і облік почав
+    брехати: денний бюджет перестав би бачити витрати взагалі. Рахуємо
+    все — бюджет має обмежувати обсяг роботи; реальні гроші при цьому
+    менші, бо читання з кешу коштує 0.1×.
+    """
+    total = getattr(usage, "input_tokens", 0) or 0
+    for field in ("cache_creation_input_tokens", "cache_read_input_tokens"):
+        total += getattr(usage, field, 0) or 0
+    return total
+
+
 def _roll_cache_breakpoint(messages: list[dict]) -> None:
     """Ставить cache_control на останній блок останнього ходу, знімаючи
     попередній (rolling breakpoint).
@@ -675,7 +690,7 @@ def _llm_reply(
             messages=messages,
         )
         last_response = response
-        tokens_in += response.usage.input_tokens
+        tokens_in += _input_tokens(response.usage)
         tokens_out += response.usage.output_tokens
 
         if response.stop_reason == "refusal":
@@ -941,7 +956,7 @@ def chat_brief(payload: dict) -> tuple[dict, int]:
             }],
         )
         brief_md = "\n".join(b.text for b in response.content if b.type == "text")
-        tokens_in = response.usage.input_tokens
+        tokens_in = _input_tokens(response.usage)
         tokens_out = response.usage.output_tokens
     except Exception:  # noqa: BLE001 — no stub fallback for a report, see docstring
         log.exception("chat_brief: llm call failed")

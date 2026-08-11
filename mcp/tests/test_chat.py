@@ -1285,3 +1285,18 @@ def test_loop_sets_cache_breakpoint_on_tool_results(monkeypatch):
     second_call = holder["client"].messages.calls[1]
     last_block = second_call["messages"][-1]["content"][-1]
     assert last_block.get("cache_control") == {"type": "ephemeral"}
+
+
+def test_input_tokens_counts_cache_reads_and_writes():
+    """Після ввімкнення кешу usage.input_tokens — лише некешований залишок;
+    якщо рахувати тільки його, денний бюджет осліпне."""
+    from types import SimpleNamespace
+
+    usage = SimpleNamespace(
+        input_tokens=101, cache_creation_input_tokens=4000,
+        cache_read_input_tokens=58000, output_tokens=2500,
+    )
+    assert chat._input_tokens(usage) == 62101
+
+    # Старий SDK без кеш-полів не має падати.
+    assert chat._input_tokens(SimpleNamespace(input_tokens=50)) == 50
