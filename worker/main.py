@@ -9,6 +9,8 @@
 
     kb-backfill  archive enabled KB forums completely (resumable; overnight job)
     kb-update    incremental KB refresh: new posts + bumped topics
+    kb-repair    catch-up pass: re-crawl already-archived topics with missing
+                 posts (discourse only; one-off, run after a bad backfill)
     kb-status    KB archive statistics per forum
 """
 
@@ -254,6 +256,59 @@ def cmd_kb_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_kb_repair(args: argparse.Namespace) -> int:
+    """One-off catch-up: re-crawl topics whose stored posts undershoot the
+    listing's post_count (worker/kb.py::repair() — see its docstring for the
+    "partial capture, skipped forever" bug it recovers from).
+
+    Discourse-only today: routed through the same kb.forums.kind → crawler
+    dispatch as backfill/update, but a crawler module without a `repair`
+    attribute is skipped rather than treated as an error — same reasoning
+    _kb_crawlers() already documents for an unregistered `kind`, applied one
+    level down (a *registered* kind whose module simply has no repair mode).
+    """
+    from . import kb
+    from .http import HttpClient, SourceBlocked
+
+    crawlers = _kb_crawlers()
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    with connect() as conn:
+        forums = kb.load_forums(conn, args.forum)
+        if not forums:
+            print(f"no enabled KB forum matches {args.forum!r}" if args.forum
+                  else "no enabled KB forums — check kb.forums")
+            return 1
+        with HttpClient(conn) as client:
+            for forum in forums:
+                if _stopping:
+                    break
+                crawler = crawlers.get(forum.kind)
+                repair = getattr(crawler, "repair", None)
+                if repair is None:
+                    log.info(
+                        "%s: kind %r has no repair mode — skipped",
+                        forum.forum_slug, forum.kind,
+                    )
+                    continue
+                try:
+                    stats = repair(
+                        conn, client, forum,
+                        max_topics=args.max_topics,
+                        should_stop=lambda: _stopping,
+                    )
+                    print(f"{forum.forum_slug}: {stats}")
+                except SourceBlocked as exc:
+                    kb.record_failure(conn, forum, exc)
+                    print(f"{forum.forum_slug}: BLOCKED (403/429) — stopping this forum: {exc}")
+                except Exception as exc:  # noqa: BLE001 — repair is idempotent, re-run is safe
+                    kb.record_failure(conn, forum, exc)
+                    print(f"{forum.forum_slug}: failed ({exc}); re-run to retry remaining topics")
+    return 0
+
+
 def cmd_kb_status(_args: argparse.Namespace) -> int:
     from . import kb
 
@@ -261,10 +316,16 @@ def cmd_kb_status(_args: argparse.Namespace) -> int:
         for row in kb.status(conn):
             state = "✓ done" if row["backfill_done"] else ("… crawling" if row["enabled"] else "✗ off")
             newest = row["newest_activity"].strftime("%Y-%m-%d") if row["newest_activity"] else "—"
-            print(
+            line = (
                 f"{row['forum_slug']:<12} {state:<11} topics={row['topics']:<7} "
                 f"posts={row['posts']:<8} newest={newest} fails={row['consecutive_failures']}"
             )
+            # remote_* — set by _update_remote_stats() from /about.json; NULL
+            # until the first backfill/incremental run touches this forum.
+            if row.get("remote_posts"):
+                post_pct = 100 * row["posts"] / row["remote_posts"] if row["remote_posts"] else 0
+                line += f" coverage={post_pct:.0f}% (of {row['remote_posts']} remote posts)"
+            print(line)
     return 0
 
 
@@ -296,6 +357,11 @@ def main(argv: list[str] | None = None) -> int:
     kb_update = sub.add_parser("kb-update")
     kb_update.add_argument("--forum", help="single forum slug (default: all enabled)")
     kb_update.set_defaults(func=cmd_kb_update)
+
+    kb_repair = sub.add_parser("kb-repair")
+    kb_repair.add_argument("--forum", help="single forum slug (default: all enabled)")
+    kb_repair.add_argument("--max-topics", type=int, help="stop after N topics (smoke test)")
+    kb_repair.set_defaults(func=cmd_kb_repair)
 
     sub.add_parser("kb-status").set_defaults(func=cmd_kb_status)
 

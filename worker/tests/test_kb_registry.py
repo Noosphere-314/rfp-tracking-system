@@ -175,3 +175,73 @@ def test_update_skips_unregistered_kind(monkeypatch, calls):
 
     assert rc == 0
     assert calls == []
+
+
+# ── cmd_kb_repair ───────────────────────────────────────────────────
+# repair() is Discourse-only (worker/kb.py) — no equivalent on kb_snapshot /
+# kb_github, so the dispatch checks hasattr(crawler, "repair") rather than
+# routing by kind like backfill/update do. These tests exercise exactly that
+# one extra layer of "is this even supported" gating.
+
+
+def test_repair_routes_to_discourse_only(monkeypatch, calls):
+    forums = [_forum("optimism", "discourse"), _forum("snap-arbitrum", "snapshot")]
+    monkeypatch.setattr(kb, "load_forums", lambda conn, only_slug=None: forums)
+    monkeypatch.setattr(kb, "repair", _spy("discourse", calls))
+    monkeypatch.setattr(main, "connect", _fake_connect)
+
+    rc = main.cmd_kb_repair(argparse.Namespace(forum=None, max_topics=None))
+
+    assert rc == 0
+    # snap-arbitrum: kb_snapshot module has no `repair` attribute at all —
+    # skipped like an unregistered kind, never reaches _spy.
+    assert [slug for _, slug, _ in calls] == ["optimism"]
+
+
+def test_repair_skips_kind_without_a_repair_attribute_without_raising(monkeypatch, calls):
+    forums = [_forum("gh-filecoin", "github")]
+    monkeypatch.setattr(kb, "load_forums", lambda conn, only_slug=None: forums)
+    monkeypatch.setattr(main, "connect", _fake_connect)
+
+    rc = main.cmd_kb_repair(argparse.Namespace(forum=None, max_topics=None))
+
+    assert rc == 0
+    assert calls == []
+
+
+def test_repair_skips_unregistered_kind_too(monkeypatch, calls):
+    forums = [_forum("woof", "site")]
+    monkeypatch.setattr(kb, "load_forums", lambda conn, only_slug=None: forums)
+    monkeypatch.setattr(main, "connect", _fake_connect)
+
+    rc = main.cmd_kb_repair(argparse.Namespace(forum=None, max_topics=None))
+
+    assert rc == 0
+    assert calls == []
+
+
+def test_repair_passes_max_topics_and_should_stop_through(monkeypatch, calls):
+    forums = [_forum("optimism", "discourse")]
+    monkeypatch.setattr(kb, "load_forums", lambda conn, only_slug=None: forums)
+    monkeypatch.setattr(kb, "repair", _spy("discourse", calls))
+    monkeypatch.setattr(main, "connect", _fake_connect)
+
+    main.cmd_kb_repair(argparse.Namespace(forum=None, max_topics=7))
+
+    _, _, kwargs = calls[0]
+    assert kwargs["max_topics"] == 7
+    assert callable(kwargs["should_stop"])
+
+
+def test_repair_does_not_gate_on_backfill_done(monkeypatch, calls):
+    """Unlike backfill/update, repair() has no reason to wait for
+    backfill_done — it only touches topics already sitting in kb.topics."""
+    forums = [_forum("optimism", "discourse", backfill_done=False)]
+    monkeypatch.setattr(kb, "load_forums", lambda conn, only_slug=None: forums)
+    monkeypatch.setattr(kb, "repair", _spy("discourse", calls))
+    monkeypatch.setattr(main, "connect", _fake_connect)
+
+    rc = main.cmd_kb_repair(argparse.Namespace(forum=None, max_topics=None))
+
+    assert rc == 0
+    assert [slug for _, slug, _ in calls] == ["optimism"]
