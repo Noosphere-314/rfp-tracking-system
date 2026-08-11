@@ -1553,19 +1553,28 @@ def runs_page(request: Request, mode: str = "", limit: int = 50):
 HEADLINE_OPTS = "MaxWords=35, MinWords=15, StartSel=\x02, StopSel=\x03"
 
 
-def _kb_coverage(posts: int, remote_posts: int | None) -> tuple[int | None, str]:
-    """Відсоток покриття архіву постами (задача «покриття архівів», /kb):
-    наші пости проти еталону з /about.json форуму (kb.forums.remote_posts,
+def _kb_coverage(topics: int, remote_topics: int | None) -> tuple[int | None, str]:
+    """Відсоток покриття архіву ТЕМАМИ (задача «покриття архівів», /kb):
+    наші теми проти еталону з /about.json форуму (kb.forums.remote_topics,
     міграція 012 — воркер пише його щопрогону). Порахований тут, у Python, а
     не в SQL: NULL (форум ще не мав жодного проходу воркера з еталоном, або
-    еталон — 0 постів) інакше довелося б розрізняти від 0% через CASE в
-    кожному місці, де читається значення, а тут — одна проста гілка.
+    еталон — 0) інакше довелося б розрізняти від 0% через CASE в кожному
+    місці, де читається значення, а тут — одна проста гілка.
 
-    Пороги — з аудиту (2026-08-11): ≥90% вважається достатнім покриттям,
-    60-89% — помітна прогалина, <60% — суттєва недостача постів в архіві."""
-    if not remote_posts:
+    Саме ТЕМИ, а не пости — свідомо (перевірено на проді 2026-08-11):
+    /about.json рахує пости, невидимі анонімному API (видалені, whispers,
+    приватні категорії), тому пост-метрика показувала б ~50% ВІЧНО навіть
+    для повного архіву (Arbitrum: наші 32 457 = сума власних posts_count
+    усіх видимих тем, а /about.json заявляє 73 570). Теми чесніші: Arbitrum
+    2708/2741 = 99% ✅, ENS 787/2721 = 29% 🔴 — рівно те, що треба бачити.
+    Повноту ПОСТІВ у межах відомих тем гарантує окремий механізм —
+    kb-repair + CrawlResult.complete у воркері.
+
+    Пороги — з аудиту (2026-08-11): ≥90% достатньо, 60-89% — помітна
+    прогалина, <60% — суттєва недостача тем в архіві."""
+    if not remote_topics:
         return None, "b-neutral"
-    pct = round(100 * posts / remote_posts)
+    pct = round(100 * topics / remote_topics)
     if pct >= 90:
         return pct, "b-ok"
     if pct >= 60:
@@ -1592,7 +1601,7 @@ def kb_page(request: Request, q: str = "", forum: str = ""):
         # щоб шаблон не рахував нічого сам.
         for f in forums:
             f["coverage_pct"], f["coverage_class"] = _kb_coverage(
-                f["posts"], f["remote_posts"]
+                f["topics"], f["remote_topics"]
             )
 
         results = []

@@ -74,12 +74,19 @@ def _forum(**over) -> dict:
     return base
 
 
+#- Бейдж рахується по ТЕМАХ (не постах): /about.json завищує пости
+#  невидимими анонімному API (видалені/whispers/приватні категорії), і
+#  пост-метрика показувала б ~50% вічно навіть для повного архіву —
+#  перевірено на проді 2026-08-11 (Arbitrum 32k наших = сума власних
+#  posts_count видимих тем при 73k у /about.json).
+
+
 def test_kb_page_shows_bad_coverage_badge_under_60_percent(client, monkeypatch):
     _login(client)
     _fake_db(
         monkeypatch,
         rows_queue=[
-            [_forum(posts=440, remote_posts=1000, topics=80, remote_topics=120)],
+            [_forum(posts=440, remote_posts=1000, topics=88, remote_topics=200)],
             [],
             [],
         ],
@@ -97,7 +104,7 @@ def test_kb_page_shows_warn_coverage_badge_in_60_89_band(client, monkeypatch):
     _login(client)
     _fake_db(
         monkeypatch,
-        rows_queue=[[_forum(posts=700, remote_posts=1000)], [], []],
+        rows_queue=[[_forum(topics=70, remote_topics=100)], [], []],
     )
     response = client.get("/kb")
     html = response.text
@@ -109,7 +116,7 @@ def test_kb_page_shows_ok_coverage_badge_at_90_percent_and_above(client, monkeyp
     _login(client)
     _fake_db(
         monkeypatch,
-        rows_queue=[[_forum(posts=950, remote_posts=1000)], [], []],
+        rows_queue=[[_forum(topics=95, remote_topics=100)], [], []],
     )
     response = client.get("/kb")
     html = response.text

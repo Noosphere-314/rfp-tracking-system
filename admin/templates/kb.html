@@ -161,7 +161,11 @@
               еталоном /about.json — «—», а не «0», щоб не читалось як
               нульове покриття. -#}
           <td class="cell--num cell--nowrap">{{ f.topics | compact }} / {% if f.remote_topics is none %}<span class="muted">—</span>{% else %}{{ f.remote_topics | compact }}{% endif %}</td>
-          <td class="cell--num cell--nowrap">{{ f.posts | compact }} / {% if f.remote_posts is none %}<span class="muted">—</span>{% else %}{{ f.remote_posts | compact }}{% endif %}</td>
+          {#- «на сайті» для ПОСТІВ — завищений: /about.json рахує й невидиме
+              анонімному API (видалені/whispers/приватні категорії), тож
+              50-60% тут — норма для ПОВНОГО архіву. Бейдж покриття свідомо
+              рахується по ТЕМАХ (див. _kb_coverage), а тут — title-підказка. -#}
+          <td class="cell--num cell--nowrap" title="{{ t('pg.kb.posts_site_title', 'The site number also counts posts invisible to the public API (deleted, staff-only, private categories) — 50-60% here is normal for a complete archive.') }}">{{ f.posts | compact }} / {% if f.remote_posts is none %}<span class="muted">—</span>{% else %}{{ f.remote_posts | compact }}{% endif %}</td>
           <td class="cell--num">
             {% if f.coverage_pct is none %}
             <span class="badge b-neutral" title="{{ t('pg.kb.coverage_hint', 'reference numbers appear after the next crawl') }}">—</span>
