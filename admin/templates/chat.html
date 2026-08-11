@@ -44,23 +44,15 @@
 {% block sub %}{{ t("pg.chat.sub", "Ask the knowledge base in plain language") }}{% endblock %}
 {% block content_mod %} content--full{% endblock %}
 
-{#- Меню сторінки (розділ 2 задачі): «Save chat as report» синтезує бріф із
-    УСІЄЇ поточної розмови (kbmcp читає ЖИВУ сесію цього браузера — тому
-    пункт прихований у read-only архівному перегляді, де messages нижче
-    належать ІНШІЙ розмові). «Open full history» — статичний лінк на /chats,
-    завжди присутній. «New chat» свідомо НЕ тут — він угорі .chat-side. -#}
+{#- Меню сторінки (розділ 2 задачі): «Open full history» — статичний лінк
+    на /chats. «Save chat as report» тут БУЛО, але переїхало ВИДИМОЮ
+    кнопкою в рядок композера (прохання Миколи 2026-08-11: «кнопка має бути
+    видна, а не схована, і десь біля чату, а не в хедері»). «New chat»
+    свідомо НЕ тут — він угорі .chat-side. -#}
 {% block topbar_actions %}
 <details class="menu">
   <summary class="menu__btn" aria-haspopup="true" aria-label="{{ t('act.menu', 'Actions') }}">⋯</summary>
   <div class="menu__list">
-    {%- if not archived and messages %}
-    <form method="post" action="/chat/save-report" class="menu__item-form"
-          data-busy="{{ t('pg.chat.report_busy', 'Synthesizing report…') }}">
-      {% include "_csrf.html" %}
-      <button class="menu__item" type="submit"
-              title="{{ t('act.save_report.title', 'Build one brief synthesized from the whole conversation — not just one reply') }}">{{ t("act.save_report", "Save chat as report") }}</button>
-    </form>
-    {%- endif %}
     <a class="menu__item" href="/chats">{{ t("pg.chat.open_full_history", "Open full history") }}</a>
   </div>
 </details>
@@ -226,9 +218,25 @@
           {{ t("f.web_search", "Web search") }}
         </label>
         <span class="toolbar__spacer"></span>
+        {#- «Save chat as report» — ВИДИМА кнопка біля чату (прохання Миколи
+            2026-08-11), а не пункт у топбар-меню. Це кнопка ІНШОЇ форми
+            (#save-report-form нижче, вкладати form у form не можна) —
+            зв'язок через атрибут form=. Лише коли є що синтезувати. -#}
+        {%- if messages %}
+        <button class="btn btn--ghost btn--sm" type="submit" form="save-report-form"
+                title="{{ t('act.save_report.title', 'Build one brief synthesized from the whole conversation — not just one reply') }}">{{ t("act.save_report", "Save chat as report") }}</button>
+        {%- endif %}
         <button class="btn btn--primary" type="submit">{{ t("act.send", "Send") }}</button>
       </div>
     </form>
+    {#- Сама форма звіту — ПОРУЧ, а не всередині композера (HTML забороняє
+        вкладені форми); кнопка вище шле саме її через form="save-report-form". -#}
+    {%- if messages %}
+    <form id="save-report-form" method="post" action="/chat/save-report" hidden
+          data-busy="{{ t('pg.chat.report_busy', 'Synthesizing report…') }}">
+      {% include "_csrf.html" %}
+    </form>
+    {%- endif %}
     {%- endif %}
   </div>
 

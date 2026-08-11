@@ -38,9 +38,11 @@ MAX_TOOL_ITERATIONS = 8          # той самий бюджет ітераці
 MAX_HISTORY_ROWS = 6             # скільки попередніх реплік тягнемо в контекст
 RATE_LIMIT_PER_MINUTE = 5
 
-_BUDGET_NOTE = "_Daily LLM budget reached — keyword tier until tomorrow._"
+# Без _..._-обгорток: бульбашки чату і Telegram показують сирий текст, і
+# маркери виглядали б сміттям (правило Миколи 2026-08-11 «без ** і #»).
+_BUDGET_NOTE = "Daily LLM budget reached — keyword tier until tomorrow."
 _FORUM_SLUG_RE = re.compile(r"[a-z0-9-]{1,64}")
-_TRUNCATION_NOTE = "\n\n_(answer truncated — ask a follow-up to continue)_"
+_TRUNCATION_NOTE = "\n\n(answer truncated — ask a follow-up to continue)"
 _REFUSAL_TEXT = (
     "I'm not able to help with that request. Try rephrasing your question "
     "about the forum archive."
@@ -100,7 +102,17 @@ Synthesis quality bar:
 - Where the archive shows disagreement or a rejected proposal, say so —
   the failure reasons are often the most valuable part for a bid.
 - Default to under ~350 words; when the user asks for a review, analysis
-  or "детально", go deeper — up to ~700 words, still every claim sourced."""
+  or "детально", go deeper — up to ~700 words, still every claim sourced.
+
+Output format — clean plain text, ALREADY formatted for reading (Mykola's
+rule 2026-08-11: no raw markup symbols anywhere in chat replies):
+- NEVER use markdown syntax: no **, no #, no backticks, no [text](url),
+  no _underscores_ for emphasis, no --- rules, no tables.
+- Structure with short paragraphs separated by blank lines; section names
+  as a short plain line ending with a colon.
+- Bullets as "•" and numbered points as "1.", "2." at line start.
+- URLs bare, on their own line or at the end of the point they support.
+- End with "Sources:" on its own line, then numbered bare URLs."""
 
 _TELEGRAM_SYSTEM = (
     "Output is plain-text Telegram: no markdown syntax at all, bare URLs on "
@@ -630,8 +642,8 @@ def _stub_reply(message: str, forums: list[str] | None = None) -> str:
             "No matches in the archive for these keywords. Try rephrasing "
             "with different forum vocabulary (e.g. RetroPGF, mission, ARFC, "
             "service provider) or asking about a specific forum.\n\n"
-            "_Keyword tier — set ANTHROPIC_API_KEY for analyst-grade "
-            "answers._"
+            "Keyword tier — set ANTHROPIC_API_KEY for analyst-grade "
+            "answers."
         )
 
     lines = [_STUB_HEADER, ""]
@@ -641,7 +653,7 @@ def _stub_reply(message: str, forums: list[str] | None = None) -> str:
             lines.append(f"   {hit['snippet']}")
     lines.append("")
     lines.append(
-        "_Keyword tier — set ANTHROPIC_API_KEY for analyst-grade answers._"
+        "Keyword tier — set ANTHROPIC_API_KEY for analyst-grade answers."
     )
     return "\n".join(lines)
 
