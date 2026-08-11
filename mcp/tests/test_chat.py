@@ -27,6 +27,8 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
+import json
+
 import pytest  # noqa: E402
 
 import chat  # noqa: E402
@@ -62,6 +64,12 @@ def _stub_no_op_db(monkeypatch, *, budget_exceeded=False):
     # web_search — окрема settings-читалка (agent 2.0); тести, яким байдужий
     # web_search, не мають торкатися БД заради неї.
     monkeypatch.setattr(chat, "_web_search_enabled", lambda: False)
+    # Важелі економії (2026-08-11) — теж settings/БД-читалки: за замовчуванням
+    # кеш промахується, роутинг вимкнений. Тести самих важелів перекривають
+    # ці заглушки власними.
+    monkeypatch.setattr(chat, "_cache_lookup", lambda *a, **kw: None)
+    monkeypatch.setattr(chat, "_cache_store", lambda *a, **kw: None)
+    monkeypatch.setattr(chat, "_chat_light_model_setting", lambda: "")
 
 
 # ── Fail-closed (KB_MCP_TOKEN unset) ────────────────────────────────
@@ -131,7 +139,7 @@ def test_missing_required_field_is_400(monkeypatch, missing):
 
 def test_who_is_optional(monkeypatch):
     _stub_no_op_db(monkeypatch)
-    monkeypatch.setattr(chat, "_stub_reply", lambda message: "ok")
+    monkeypatch.setattr(chat, "_stub_reply", lambda message, **kw: "ok")
     payload = {k: v for k, v in VALID_PAYLOAD.items() if k != "who"}
     body, status = chat.answer(payload)
     assert status == 200
@@ -170,7 +178,7 @@ def test_web_and_telegram_share_no_storage_key(monkeypatch):
         chat, "_insert_message",
         lambda storage_key, channel, who, role, content, **kw: 1,
     )
-    monkeypatch.setattr(chat, "_stub_reply", lambda message: "stub reply")
+    monkeypatch.setattr(chat, "_stub_reply", lambda message, **kw: "stub reply")
 
     chat.answer({**VALID_PAYLOAD, "channel": "web", "session_key": "room1"})
     chat.answer({**VALID_PAYLOAD, "channel": "telegram", "session_key": "room1"})
@@ -326,7 +334,7 @@ def test_budget_exceeded_forces_stub_and_prepends_note(monkeypatch):
     _stub_no_op_db(monkeypatch, budget_exceeded=True)
     monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")  # would try llm otherwise
     monkeypatch.setattr(chat, "_llm_reply", _raise)  # must never be called
-    monkeypatch.setattr(chat, "_stub_reply", lambda message: "keyword answer")
+    monkeypatch.setattr(chat, "_stub_reply", lambda message, **kw: "keyword answer")
 
     body, status = chat.answer(VALID_PAYLOAD)
 
@@ -344,7 +352,7 @@ def test_llm_exception_falls_back_to_stub_tier(monkeypatch):
     monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
     monkeypatch.setattr(chat, "_llm_reply", _raise)
-    monkeypatch.setattr(chat, "_stub_reply", lambda message: "stub answer")
+    monkeypatch.setattr(chat, "_stub_reply", lambda message, **kw: "stub answer")
 
     body, status = chat.answer(VALID_PAYLOAD)
 
@@ -359,7 +367,7 @@ def test_no_api_key_never_attempts_llm(monkeypatch):
     _stub_no_op_db(monkeypatch)
     assert chat.ANTHROPIC_API_KEY == ""  # module default from env, set above
     monkeypatch.setattr(chat, "_llm_reply", _raise)
-    monkeypatch.setattr(chat, "_stub_reply", lambda message: "stub answer")
+    monkeypatch.setattr(chat, "_stub_reply", lambda message, **kw: "stub answer")
 
     body, status = chat.answer(VALID_PAYLOAD)
 
@@ -588,7 +596,7 @@ def test_answer_reads_web_search_setting_and_passes_it_through(monkeypatch):
 
     seen = {}
 
-    def fake_llm_reply(messages, model, channel, web_search=False):
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
         seen["web_search"] = web_search
         return "answer", 1, 1
 
@@ -606,7 +614,7 @@ def test_answer_reads_web_search_setting_and_passes_it_through(monkeypatch):
 @pytest.mark.parametrize("web_value", [True, False])
 def test_web_true_and_false_pass_validation(monkeypatch, web_value):
     _stub_no_op_db(monkeypatch)
-    monkeypatch.setattr(chat, "_stub_reply", lambda message: "ok")
+    monkeypatch.setattr(chat, "_stub_reply", lambda message, **kw: "ok")
     payload = {**VALID_PAYLOAD, "web": web_value}
     body, status = chat.answer(payload)
     assert status == 200
@@ -623,7 +631,7 @@ def test_web_true_enables_search_even_when_settings_off(monkeypatch):
 
     seen = {}
 
-    def fake_llm_reply(messages, model, channel, web_search=False):
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
         seen["web_search"] = web_search
         return "answer", 1, 1
 
@@ -642,7 +650,7 @@ def test_web_absent_and_settings_off_disables_search(monkeypatch):
 
     seen = {}
 
-    def fake_llm_reply(messages, model, channel, web_search=False):
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
         seen["web_search"] = web_search
         return "answer", 1, 1
 
@@ -661,7 +669,7 @@ def test_web_false_and_settings_off_disables_search(monkeypatch):
 
     seen = {}
 
-    def fake_llm_reply(messages, model, channel, web_search=False):
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
         seen["web_search"] = web_search
         return "answer", 1, 1
 
@@ -683,7 +691,7 @@ def test_web_false_but_settings_on_still_enables_search(monkeypatch):
 
     seen = {}
 
-    def fake_llm_reply(messages, model, channel, web_search=False):
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
         seen["web_search"] = web_search
         return "answer", 1, 1
 
@@ -704,7 +712,7 @@ def test_response_contract_unchanged_with_web_flag(monkeypatch):
     body, status = chat.answer({**VALID_PAYLOAD, "web": True})
 
     assert status == 200
-    assert set(body.keys()) == {"ok", "reply_md", "tier", "model", "tokens"}
+    assert set(body.keys()) == {"ok", "reply_md", "tier", "model", "cached", "tokens"}
 
 
 
@@ -1132,7 +1140,7 @@ def test_verification_hint_forces_web_even_with_toggle_and_setting_off(monkeypat
 
     seen = {}
 
-    def fake_llm_reply(messages, model, channel, web_search=False):
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
         seen["web_search"] = web_search
         return "answer", 1, 1
 
@@ -1154,7 +1162,7 @@ def test_telegram_always_gets_web_search(monkeypatch):
 
     seen = {}
 
-    def fake_llm_reply(messages, model, channel, web_search=False):
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
         seen["web_search"] = web_search
         return "answer", 1, 1
 
@@ -1300,3 +1308,364 @@ def test_input_tokens_counts_cache_reads_and_writes():
 
     # Старий SDK без кеш-полів не має падати.
     assert chat._input_tokens(SimpleNamespace(input_tokens=50)) == 50
+
+
+# ── Важелі економії (2026-08-11): scope форумів ─────────────────────
+
+
+def test_forums_must_be_a_list(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    body, status = chat.answer({**VALID_PAYLOAD, "forums": "compound"})
+    assert status == 400
+    assert "list" in body["error"]
+
+
+def test_forums_rejects_bad_slugs(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    for bad in (["Compound"], ["comp ound"], ["x" * 65], [7]):
+        body, status = chat.answer({**VALID_PAYLOAD, "forums": bad})
+        assert status == 400, bad
+        assert "slugs" in body["error"]
+
+
+def test_forums_caps_at_12(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    body, status = chat.answer(
+        {**VALID_PAYLOAD, "forums": [f"forum-{i}" for i in range(13)]}
+    )
+    assert status == 400
+    assert "12" in body["error"]
+
+
+def test_forums_passed_through_to_llm_reply(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
+        seen["forums"] = kw.get("forums")
+        return "ok", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+
+    chat.answer({**VALID_PAYLOAD, "forums": ["compound", "optimism"]})
+    assert seen["forums"] == ["compound", "optimism"]
+
+    # Порожній список — те саме, що відсутній ключ: жодного фільтра.
+    chat.answer({**VALID_PAYLOAD, "forums": []})
+    assert seen["forums"] is None
+
+
+def test_dispatch_search_is_scoped_and_out_of_scope_forum_dropped(monkeypatch):
+    captured = {}
+
+    def fake_search(query, **kw):
+        captured.update(kw, query=query)
+        return {"post_hits": [], "topic_title_hits": [], "hint": ""}
+
+    monkeypatch.setattr(kbtools, "search_impl", fake_search)
+
+    # Модель попросила форум ПОЗА scope — її вибір скидається, scope лишається.
+    chat._dispatch_tool(
+        "search_kb", {"query": "x", "forum": "lido"}, forums=["compound"]
+    )
+    assert captured["forum"] is None
+    assert captured["forums"] == ["compound"]
+
+    # Форум УСЕРЕДИНІ scope — вибір моделі поважається (звузити можна).
+    chat._dispatch_tool(
+        "search_kb", {"query": "x", "forum": "compound"},
+        forums=["compound", "optimism"],
+    )
+    assert captured["forum"] == "compound"
+
+
+def test_dispatch_get_topic_outside_scope_is_honest_error(monkeypatch):
+    monkeypatch.setattr(kbtools, "topic_impl", _raise)  # must not be reached
+    result = json.loads(chat._dispatch_tool(
+        "get_topic", {"forum": "lido", "topic_id": 5}, forums=["compound"]
+    ))
+    assert "scoped" in result["error"]
+    assert "compound" in result["error"]
+
+
+# ── Важелі економії: роутинг простих питань на дешеву модель ────────
+
+
+def test_simple_question_routes_to_light_model(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(
+        chat, "_chat_light_model_setting", lambda: "claude-haiku-4-5-20251001"
+    )
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
+        seen["model"] = model
+        return "ok", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+
+    chat.answer({**VALID_PAYLOAD, "message": "find the thread about RetroPGF rounds"})
+    assert seen["model"] == "claude-haiku-4-5-20251001"
+
+
+def test_complex_or_long_question_stays_on_main_model(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(
+        chat, "_chat_light_model_setting", lambda: "claude-haiku-4-5-20251001"
+    )
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
+        seen["model"] = model
+        return "ok", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+
+    # Аналітичне слово поруч із навігаційним — виграє обережність.
+    chat.answer({**VALID_PAYLOAD, "message": "find and compare dev tooling grants"})
+    assert seen["model"] == "claude-sonnet-5"
+
+    # Без навігаційного натяку — теж основна модель.
+    chat.answer(VALID_PAYLOAD)
+    assert seen["model"] == "claude-sonnet-5"
+
+
+def test_light_routing_skipped_when_web_search_on(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(
+        chat, "_chat_light_model_setting", lambda: "claude-haiku-4-5-20251001"
+    )
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
+        seen["model"] = model
+        return "ok", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+
+    chat.answer({
+        **VALID_PAYLOAD,
+        "message": "find the thread about RetroPGF rounds",
+        "web": True,
+    })
+    assert seen["model"] == "claude-sonnet-5"
+
+
+def test_light_routing_disabled_by_empty_setting(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(chat, "_chat_light_model_setting", lambda: "")
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False, **kw):
+        seen["model"] = model
+        return "ok", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+
+    chat.answer({**VALID_PAYLOAD, "message": "find the thread about RetroPGF"})
+    assert seen["model"] == "claude-sonnet-5"
+
+
+def test_is_simple_requires_first_turn():
+    history = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}]
+    assert chat._is_simple("find the thread about grants", history) is False
+    assert chat._is_simple("find the thread about grants", []) is True
+
+
+# ── Важелі економії: кеш повторюваних перших питань ─────────────────
+
+
+def test_cache_hit_skips_llm_and_marks_cached(monkeypatch):
+    from datetime import datetime
+
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_llm_reply", _raise)  # must never be called
+    monkeypatch.setattr(chat, "_cache_lookup", lambda *a, **kw: {
+        "reply_md": "cached body",
+        "model": "claude-sonnet-5",
+        "created_at": datetime(2026, 8, 11, 10, 0),
+    })
+
+    body, status = chat.answer(dict(VALID_PAYLOAD))
+
+    assert status == 200
+    assert body["tier"] == "llm"
+    assert body["cached"] is True
+    assert body["reply_md"].startswith("cached body")
+    assert "cached answer" in body["reply_md"]
+    assert body["tokens"] == {"in": 0, "out": 0}
+
+
+def test_cache_hit_served_even_when_budget_exceeded(monkeypatch):
+    from datetime import datetime
+
+    _stub_no_op_db(monkeypatch, budget_exceeded=True)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_llm_reply", _raise)
+    monkeypatch.setattr(chat, "_cache_lookup", lambda *a, **kw: {
+        "reply_md": "cached body",
+        "model": "claude-sonnet-5",
+        "created_at": datetime(2026, 8, 11, 10, 0),
+    })
+
+    body, _ = chat.answer(dict(VALID_PAYLOAD))
+
+    assert body["tier"] == "llm"
+    assert chat._BUDGET_NOTE not in body["reply_md"]
+
+
+def test_cache_store_called_with_normalized_key(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(chat, "_llm_reply", lambda *a, **kw: ("fine", 5, 7))
+    stored = []
+    monkeypatch.setattr(
+        chat, "_cache_store", lambda *a, **kw: stored.append(a)
+    )
+
+    chat.answer({**VALID_PAYLOAD, "forums": ["optimism", "compound"]})
+
+    assert len(stored) == 1
+    question_norm, scope, web, reply_md, model, t_in, t_out = stored[0]
+    assert question_norm == chat._normalize_question(VALID_PAYLOAD["message"])
+    assert scope == "compound,optimism"  # відсортований, незалежно від порядку
+    assert web is False
+    assert reply_md == "fine"
+
+
+def test_cache_not_stored_for_refusal_or_truncation(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    stored = []
+    monkeypatch.setattr(chat, "_cache_store", lambda *a, **kw: stored.append(a))
+
+    monkeypatch.setattr(
+        chat, "_llm_reply", lambda *a, **kw: (chat._REFUSAL_TEXT, 1, 1)
+    )
+    chat.answer(dict(VALID_PAYLOAD))
+
+    monkeypatch.setattr(
+        chat, "_llm_reply",
+        lambda *a, **kw: ("partial" + chat._TRUNCATION_NOTE, 1, 1),
+    )
+    chat.answer(dict(VALID_PAYLOAD))
+
+    assert stored == []
+
+
+def test_cache_skipped_on_followup_turn(monkeypatch):
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(chat, "_load_history", lambda *a: [
+        {"role": "user", "content": "q1", "tier": None},
+        {"role": "assistant", "content": "a1", "tier": "llm"},
+    ])
+    looked = []
+    monkeypatch.setattr(
+        chat, "_cache_lookup", lambda *a, **kw: looked.append(a) or None
+    )
+    stored = []
+    monkeypatch.setattr(chat, "_cache_store", lambda *a, **kw: stored.append(a))
+    monkeypatch.setattr(chat, "_llm_reply", lambda *a, **kw: ("ok", 1, 1))
+
+    chat.answer(dict(VALID_PAYLOAD))
+
+    assert looked == []   # follow-up: ключа для нього не існує
+    assert stored == []
+
+
+def test_normalize_question_folds_case_space_punctuation():
+    a = chat._normalize_question("  Які гранти на Dev Tooling?  ")
+    b = chat._normalize_question("які гранти на dev   tooling")
+    assert a == b
+
+
+# ── Важелі економії: pre-seeded search ──────────────────────────────
+
+
+def test_preseed_block_skips_non_latin_questions(monkeypatch):
+    monkeypatch.setattr(kbtools, "search_impl", _raise)  # must not be called
+    assert chat._preseed_block("Привіт, як справи взагалі?", None) == ""
+
+
+def test_preseed_injected_as_second_text_block(monkeypatch):
+    seen = {}
+
+    def fake_search(query, **kw):
+        seen["forums"] = kw.get("forums")
+        return {
+            "post_hits": [{
+                "forum": "compound", "topic_id": 7, "title": "T",
+                "post_url": "https://x/1", "snippet": "s",
+            }],
+            "topic_title_hits": [], "hint": "",
+        }
+
+    monkeypatch.setattr(kbtools, "search_impl", fake_search)
+    responses = [FakeResponse([text_block("done")], "end_turn")]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    chat._llm_reply(
+        [{"role": "user", "content": "any grants for dev tooling?"}],
+        "m", "web", forums=["compound"],
+    )
+
+    content = holder["client"].messages.calls[0]["messages"][0]["content"]
+    assert isinstance(content, list) and len(content) == 2
+    assert content[0]["text"] == "any grants for dev tooling?"
+    assert "Pre-run keyword search" in content[1]["text"]
+    assert "https://x/1" in content[1]["text"]
+    # Сідінг поважає scope розмови.
+    assert seen["forums"] == ["compound"]
+
+
+def test_preseed_skipped_when_archive_has_no_hits(monkeypatch):
+    monkeypatch.setattr(
+        kbtools, "search_impl",
+        lambda query, **kw: {"post_hits": [], "topic_title_hits": [], "hint": ""},
+    )
+    responses = [FakeResponse([text_block("done")], "end_turn")]
+    holder = install_fake_anthropic(monkeypatch, responses)
+
+    chat._llm_reply(
+        [{"role": "user", "content": "any grants for dev tooling?"}], "m", "web",
+    )
+
+    content = holder["client"].messages.calls[0]["messages"][0]["content"]
+    assert content == "any grants for dev tooling?"
+
+
+def test_scope_system_line_present_only_with_forums(monkeypatch):
+    monkeypatch.setattr(
+        kbtools, "search_impl",
+        lambda query, **kw: {"post_hits": [], "topic_title_hits": [], "hint": ""},
+    )
+    holder = install_fake_anthropic(
+        monkeypatch, [FakeResponse([text_block("a")], "end_turn")]
+    )
+    chat._llm_reply([{"role": "user", "content": "q"}], "m", "web",
+                    forums=["compound", "optimism"])
+    scoped_system = [b["text"] for b in holder["client"].messages.calls[0]["system"]]
+    assert any("compound, optimism" in t for t in scoped_system)
+
+    # Свіжий fake на другий виклик: install() підміняє клієнта цілком.
+    holder = install_fake_anthropic(
+        monkeypatch, [FakeResponse([text_block("b")], "end_turn")]
+    )
+    chat._llm_reply([{"role": "user", "content": "q"}], "m", "web")
+    plain_system = [b["text"] for b in holder["client"].messages.calls[0]["system"]]
+    assert not any("archive scope" in t for t in plain_system)

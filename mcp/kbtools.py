@@ -53,10 +53,16 @@ def search_impl(
     category: str | None = None,
     after: str | None = None,
     limit: int = 20,
+    forums: list[str] | None = None,
 ) -> dict:
     """SQL core of search_kb. See server.py's @mcp.tool search_kb for the
-    public tool contract (that docstring is what Claude reads)."""
+    public tool contract (that docstring is what Claude reads).
+
+    `forums` — scope-фільтр РОЗМОВИ (вибір людини в композері чату), а не
+    параметр моделі: AND-иться з `forum` (вибором моделі всередині scope).
+    Порожній список рівнозначний None — жодного фільтра."""
     limit = max(1, min(int(limit), 50))
+    forums = list(forums) if forums else None
     after_ts = None
     if after:
         try:
@@ -79,6 +85,7 @@ def search_impl(
                websearch_to_tsquery('english', %(query)s) q
          WHERE p.body_tsv @@ q
            AND (%(forum)s::text IS NULL OR t.forum_slug = %(forum)s)
+           AND (%(forums)s::text[] IS NULL OR t.forum_slug = ANY(%(forums)s))
            AND (%(category)s::text IS NULL
                 OR t.category_name ILIKE '%%' || %(category)s || '%%')
            AND (%(after)s::timestamptz IS NULL OR p.posted_at >= %(after)s)
@@ -86,7 +93,7 @@ def search_impl(
          LIMIT %(limit)s
     """
     params = {
-        "query": query, "forum": forum, "category": category,
+        "query": query, "forum": forum, "forums": forums, "category": category,
         "after": after_ts, "limit": limit,
     }
     with _db() as conn:
@@ -99,9 +106,10 @@ def search_impl(
               FROM kb.topics t, websearch_to_tsquery('english', %(query)s) q
              WHERE t.title_tsv @@ q
                AND (%(forum)s::text IS NULL OR t.forum_slug = %(forum)s)
+               AND (%(forums)s::text[] IS NULL OR t.forum_slug = ANY(%(forums)s))
              ORDER BY t.bumped_at DESC NULLS LAST LIMIT 10
             """,
-            {"query": query, "forum": forum},
+            {"query": query, "forum": forum, "forums": forums},
         ).fetchall()
 
     hits = [
@@ -123,7 +131,7 @@ def search_impl(
         }
         for r in title_rows
     ]
-    _log("search_kb", query, forum, len(hits))
+    _log("search_kb", query, forum or (",".join(forums) if forums else None), len(hits))
     return {
         "post_hits": hits,
         "topic_title_hits": topic_hits,

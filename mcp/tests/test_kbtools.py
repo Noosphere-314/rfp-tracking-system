@@ -283,3 +283,33 @@ def test_topic_impl_max_posts_is_clamped_to_200(monkeypatch):
     kbtools.topic_impl("optimism", 1, max_posts=10_000)
 
     assert captured["max_posts"] == 200
+
+
+def test_search_impl_forums_scope_reaches_sql_params(monkeypatch):
+    """Scope розмови (2026-08-11): forums=… мусить доїхати ОКРЕМИМ
+    параметром до ОБОХ запитів (пости і title-only), а порожній список —
+    нормалізуватися в None (жодного фільтра)."""
+    router = [
+        ("ts_rank_cd(p.body_tsv", []),
+        ("t.title_tsv @@ q", []),
+        ("INSERT INTO kb.query_log", []),
+    ]
+    db_factory, calls = make_db(router)
+    monkeypatch.setattr(kbtools, "_db", db_factory)
+
+    kbtools.search_impl("grants", forums=["compound", "optimism"])
+
+    scoped = [p for sql, p in calls if isinstance(p, dict) and "forums" in p]
+    assert len(scoped) == 2  # обидва SELECT-и
+    assert all(p["forums"] == ["compound", "optimism"] for p in scoped)
+    # І сам SQL справді фільтрує масивом.
+    assert any("ANY(%(forums)s)" in sql for sql, _ in calls)
+
+    # У kb.query_log scope потрапляє замість forum, коли forum не заданий.
+    log_call = next(p for sql, p in calls if "INSERT INTO kb.query_log" in sql)
+    assert log_call[2] == "compound,optimism"
+
+    calls.clear()
+    kbtools.search_impl("grants", forums=[])
+    scoped = [p for sql, p in calls if isinstance(p, dict) and "forums" in p]
+    assert all(p["forums"] is None for p in scoped)

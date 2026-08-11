@@ -39,6 +39,7 @@ MAX_HISTORY_ROWS = 6             # скільки попередніх репл�
 RATE_LIMIT_PER_MINUTE = 5
 
 _BUDGET_NOTE = "_Daily LLM budget reached — keyword tier until tomorrow._"
+_FORUM_SLUG_RE = re.compile(r"[a-z0-9-]{1,64}")
 _TRUNCATION_NOTE = "\n\n_(answer truncated — ask a follow-up to continue)_"
 _REFUSAL_TEXT = (
     "I'm not able to help with that request. Try rephrasing your question "
@@ -251,6 +252,18 @@ def _validate(payload: dict) -> str | None:
     if "web" in payload and not isinstance(payload["web"], bool):
         return "web must be a boolean"
 
+    # Scope форумів (вибір людини у випадайці композера). Порожній список —
+    # те саме, що відсутній ключ: без фільтра, модель сама вирішує, де шукати.
+    if "forums" in payload and payload["forums"] is not None:
+        forums = payload["forums"]
+        if not isinstance(forums, list):
+            return "forums must be a list of forum slugs"
+        if len(forums) > 12:
+            return "forums must have at most 12 items"
+        for slug in forums:
+            if not isinstance(slug, str) or not _FORUM_SLUG_RE.fullmatch(slug):
+                return "forums items must be lowercase slugs (a-z, 0-9, '-')"
+
     return None
 
 
@@ -307,6 +320,112 @@ def _wants_web(message: str) -> bool:
 def _web_search_enabled() -> bool:
     with kbtools._db() as conn:
         return _setting(conn, "chat_web_search", "off") == "on"
+
+
+# ── Cost levers (2026-08-11): light-model routing + answer cache ─────
+#
+# Двомовні списки навігаційних/аналітичних натяків. Роутинг свідомо
+# консервативний: хибно відправити СКЛАДНЕ питання на дешеву модель коштує
+# якістю відповіді, а хибно відправити ПРОСТЕ на основну — лише грошима.
+_SIMPLE_CUES = (
+    "знайди", "найди", "покажи", "дай лінк", "дай посилання", "дай список",
+    "де тред", "де обговор", "є тред", "лінк на",
+    "find", "show me", "link to", "list the", "where is", "which thread",
+    "give me the link", "url",
+)
+_COMPLEX_CUES = (
+    "чому", "навіщо", "порівня", "аналіз", "проаналіз", "детально",
+    "підсум", "оціни", "висновк", "рекоменд", "стратег", "звіт",
+    "why", "compare", "analy", "summar", "review", "recommend",
+    "strateg", "conclusion", "report", "assess",
+)
+
+
+def _is_simple(message: str, history: list[dict]) -> bool:
+    """→ True для навігаційного питання («знайди тред про X») без історії.
+
+    Лише перший хід розмови: follow-up може спиратися на контекст, який
+    дешевша модель тримає гірше. Коротке, з явним навігаційним словом і без
+    жодного аналітичного.
+    """
+    if history or len(message) > 160:
+        return False
+    low = message.lower()
+    if any(cue in low for cue in _COMPLEX_CUES):
+        return False
+    return any(cue in low for cue in _SIMPLE_CUES)
+
+
+def _chat_light_model_setting() -> str:
+    """Порожній рядок = роутинг вимкнено (усе йде на chat_model). Дефолт ""
+    навмисно fail-safe: без рядка в settings поведінка не змінюється."""
+    with kbtools._db() as conn:
+        return _setting(conn, "chat_model_light", "").strip()
+
+
+def _cache_ttl_hours() -> int:
+    """0 вимикає кеш. Клемп і мовчазний дефолт — той самий принцип, що й
+    _brief_max_words: крива настройка деградує, а не 500-ить."""
+    with kbtools._db() as conn:
+        raw = _setting(conn, "chat_cache_ttl_hours", "24")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return 24
+    return max(0, min(720, n))
+
+
+def _normalize_question(message: str) -> str:
+    """Ключ кешу: нижній регістр, схлопнуті пробіли, без кінцевої пунктуації —
+    «Які гранти?» і «які гранти» мають бути одним питанням."""
+    return re.sub(r"\s+", " ", message.strip().lower()).rstrip("?!. ")
+
+
+def _scope_key(forums: list[str] | None) -> str:
+    return ",".join(sorted(forums)) if forums else ""
+
+
+def _cache_lookup(question_norm: str, scope: str, web: bool) -> dict | None:
+    """Свіжий запис за точним ключем або None. Ніколи не кидає: кеш — то
+    оптимізація, зламана оптимізація не має ламати відповідь."""
+    try:
+        ttl = _cache_ttl_hours()
+        if ttl <= 0:
+            return None
+        with kbtools._db() as conn:
+            return conn.execute(
+                """
+                SELECT reply_md, model, created_at FROM kb.chat_cache
+                 WHERE question_norm = %s AND scope = %s AND web = %s
+                   AND created_at > now() - make_interval(hours => %s)
+                 ORDER BY created_at DESC LIMIT 1
+                """,
+                (question_norm, scope, web, ttl),
+            ).fetchone()
+    except Exception:  # noqa: BLE001 — див. докстрінг
+        log.exception("chat: cache lookup failed; answering without cache")
+        return None
+
+
+def _cache_store(
+    question_norm: str, scope: str, web: bool,
+    reply_md: str, model: str, tokens_in: int, tokens_out: int,
+) -> None:
+    try:
+        with kbtools._db() as conn:
+            conn.execute(
+                """
+                INSERT INTO kb.chat_cache
+                    (question_norm, scope, web, reply_md, model,
+                     tokens_in, tokens_out)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (question_norm, scope, web, reply_md, model,
+                 tokens_in, tokens_out),
+            )
+            conn.commit()
+    except Exception:  # noqa: BLE001 — кеш не вартий зламаної відповіді
+        log.exception("chat: cache store failed; answer already delivered")
 
 
 def _brief_max_words(conn) -> int:
@@ -483,7 +602,11 @@ def _stub_query(message: str) -> str:
     return " OR ".join(dict.fromkeys(words[:8])) or message[:60]
 
 
-def _stub_reply(message: str) -> str:
+def _stub_reply(message: str, forums: list[str] | None = None) -> str:
+    """`forums` — той самий scope розмови, що й у LLM-рівні: людина обрала
+    форуми в композері, і keyword-фолбек не має право показувати хіти з
+    інших (знайдено на локальному E2E 2026-08-11: scope=compound, а перший
+    хіт — з форуму Arbitrum)."""
     # Архів англомовний (body_tsv = to_tsvector('english', …)): запит без
     # жодного латинського слова не «знайде мало» — він знайде ВИПАДКОВЕ.
     # Краще чесно попросити ключові слова, ніж показувати сміття, яке
@@ -498,7 +621,7 @@ def _stub_reply(message: str) -> str:
         )
 
     query = _stub_query(message)
-    result = kbtools.search_impl(query, limit=5)
+    result = kbtools.search_impl(query, forums=forums, limit=5)
     hits = result.get("post_hits") or []
 
     if not hits:
@@ -526,26 +649,40 @@ def _stub_reply(message: str) -> str:
 # ── LLM tier — agentic loop over the archive ────────────────────────
 
 
-def _dispatch_tool(name: str, tool_input: dict) -> str:
+def _dispatch_tool(name: str, tool_input: dict, forums: list[str] | None = None) -> str:
     """Runs one tool call and returns its JSON string result. Each call opens
     its own connection via kbtools — see module docstring for why we never
-    hold one across client.messages.create()."""
+    hold one across client.messages.create().
+
+    `forums` — scope розмови (вибір людини в композері): пошук жорстко
+    обмежується ним, а спроба моделі вийти за нього дістає чесну помилку, а
+    не мовчазний нуль хітів, який виглядав би як «в архіві нічого нема»."""
     if name == "search_kb":
+        forum = tool_input.get("forum")
+        if forums and forum and forum not in forums:
+            forum = None  # scope людини виграє над вибором моделі
         result = kbtools.search_impl(
             tool_input["query"],
-            forum=tool_input.get("forum"),
+            forum=forum,
             limit=tool_input.get("limit", 20),
+            forums=forums,
         )
     elif name == "get_topic":
-        # Модель могла попросити 200 (стеля get_topic), але для чату токени
-        # дорожчі за повноту — тут окрема, нижча стеля.
-        max_posts = min(int(tool_input.get("max_posts", 60)), 60)
-        result = kbtools.topic_impl(
-            tool_input["forum"],
-            str(tool_input["topic_id"]),  # 008: text-колонка, Snapshot-ід — hex
-            offset=tool_input.get("offset", 0),
-            max_posts=max_posts,
-        )
+        if forums and tool_input.get("forum") not in forums:
+            result = {
+                "error": "This conversation is scoped to these forums only: "
+                         + ", ".join(forums)
+            }
+        else:
+            # Модель могла попросити 200 (стеля get_topic), але для чату токени
+            # дорожчі за повноту — тут окрема, нижча стеля.
+            max_posts = min(int(tool_input.get("max_posts", 60)), 60)
+            result = kbtools.topic_impl(
+                tool_input["forum"],
+                str(tool_input["topic_id"]),  # 008: text-колонка, Snapshot-ід — hex
+                offset=tool_input.get("offset", 0),
+                max_posts=max_posts,
+            )
     elif name == "list_findings":
         result = kbtools.findings_impl(
             ecosystem=tool_input.get("ecosystem"),
@@ -598,6 +735,46 @@ def _roll_cache_breakpoint(messages: list[dict]) -> None:
             return
 
 
+_PRESEED_MAX_CHARS = 4000
+
+
+def _preseed_block(message: str, forums: list[str] | None) -> str:
+    """Готовий keyword-пошук ДО першого виклику моделі — економить цілу
+    ітерацію циклу: перший хід моделі майже завжди «викличу search_kb зі
+    словами питання», а тут той самий результат уже лежить у контексті за
+    нуль LLM-вартості (це детермінований пошук stub-рівня).
+
+    Порожній рядок, коли сіяти нічим: архів англомовний (tsvector 'english'),
+    тож без ≥2 латинських термів OR-запит поверне випадкове сміття, яке
+    зіб'є модель більше, ніж допоможе.
+    """
+    latin = [w for w in _stub_terms(message) if re.fullmatch(r"[a-z]+", w)]
+    if len(latin) < 2:
+        return ""
+    try:
+        result = kbtools.search_impl(_stub_query(message), forums=forums, limit=8)
+    except Exception:  # noqa: BLE001 — сідінг не вартий зламаної відповіді
+        log.exception("chat: preseed search failed; continuing without it")
+        return ""
+    hits = result.get("post_hits") or []
+    if not hits:
+        return ""
+    lines = [
+        "Pre-run keyword search over the archive for this question (already "
+        "done, zero extra cost). If these snippets settle the question, "
+        "answer from them; otherwise call search_kb with better phrasings:",
+        "",
+    ]
+    for hit in hits:
+        ref = f"{hit.get('forum', '?')}/{hit.get('topic_id', '?')}"
+        lines.append(
+            f"- [{ref}] {hit.get('title', '')} — {hit.get('post_url', '')}"
+        )
+        if hit.get("snippet"):
+            lines.append(f"  {hit['snippet']}")
+    return "\n".join(lines)[:_PRESEED_MAX_CHARS]
+
+
 def _web_research(client, messages: list[dict], model: str) -> str:
     """Один виклик Anthropic із САМИМ веб-пошуком (жодних локальних
     інструментів) → текст знайденого, або "" якщо не вийшло.
@@ -605,11 +782,21 @@ def _web_research(client, messages: list[dict], model: str) -> str:
     Ніколи не кидає: свіжі дані — приємний бонус до архіву, а не умова
     відповіді; провалений пошук не має валити всю розмову в stub.
     """
-    last_user = next(
-        (m["content"] for m in reversed(messages)
-         if m.get("role") == "user" and isinstance(m.get("content"), str)),
-        None,
-    )
+    # Питання людини: рядок АБО перший text-блок (preseed вище міг уже
+    # перетворити content на список блоків [питання, сніпети]).
+    last_user = None
+    for m in reversed(messages):
+        if m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, str):
+            last_user = content
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    last_user = block["text"]
+                    break
+        break
     if not last_user:
         return ""
     try:
@@ -633,6 +820,7 @@ def _web_research(client, messages: list[dict], model: str) -> str:
 
 def _llm_reply(
     messages: list[dict], model: str, channel: str, web_search: bool = False,
+    forums: list[str] | None = None,
 ) -> tuple[str, int, int]:
     """Manual tool-use loop (bounded, no beta dependency) — mechanics copied
     from briefing._llm_brief. Raises on any SDK/network problem or on
@@ -641,7 +829,7 @@ def _llm_reply(
 
     web_search=False is the default so direct callers (and existing tests)
     keep today's exact behavior; answer() passes the live settings.chat_web_search
-    value in."""
+    value in. `forums` — scope розмови, наскрізно до _dispatch_tool."""
     import anthropic  # лінивий імпорт, як і в briefing.py — не всім деплоям
     # потрібен цей SDK (stub-only сетапи не мають ANTHROPIC_API_KEY узагалі).
 
@@ -652,8 +840,32 @@ def _llm_reply(
     tools = list(_TOOLS)
     if channel == "telegram":
         system.append({"type": "text", "text": _TELEGRAM_SYSTEM})
+    if forums:
+        # Додатковий system-блок ПІСЛЯ кешованого _CHAT_SYSTEM (брейкпойнт на
+        # ньому лишається дійсним — кешується префікс до нього включно).
+        system.append({"type": "text", "text": (
+            "The user limited this conversation's archive scope to these "
+            "forums: " + ", ".join(forums) + ". Every search_kb/get_topic "
+            "call is already constrained to them; do not claim to have "
+            "searched any other forum."
+        )})
 
     messages = list(messages)
+
+    # Pre-seed (важіль економії 2026-08-11): готовий keyword-пошук у ТОМУ Ж
+    # user-ході, другим text-блоком — ДО веб-гілки нижче, щоб її ін'єкції
+    # лишалися останніми репліками перед циклом.
+    if (
+        messages
+        and messages[-1].get("role") == "user"
+        and isinstance(messages[-1].get("content"), str)
+    ):
+        seed = _preseed_block(messages[-1]["content"], forums)
+        if seed:
+            messages[-1] = {"role": "user", "content": [
+                {"type": "text", "text": messages[-1]["content"]},
+                {"type": "text", "text": seed},
+            ]}
 
     # Веб-пошук — ОКРЕМИЙ одноразовий крок ПЕРЕД циклом, а не ще один
     # інструмент у ньому (прод 2026-08-11). Змішувати не можна: серверний
@@ -724,7 +936,7 @@ def _llm_reply(
             if block.type != "tool_use":
                 continue
             try:
-                payload = _dispatch_tool(block.name, block.input)
+                payload = _dispatch_tool(block.name, block.input, forums=forums)
                 results.append({"type": "tool_result", "tool_use_id": block.id,
                                  "content": payload})
             except Exception as exc:  # noqa: BLE001 — feed the error back to the model
@@ -989,6 +1201,7 @@ def answer(payload: dict) -> tuple[dict, int]:
     session_key = payload["session_key"]
     who = payload.get("who") or ""
     message = payload["message"].strip()
+    forums = payload.get("forums") or None
     storage_key = f"{channel}:{session_key}"
 
     if _recent_user_count(storage_key) >= RATE_LIMIT_PER_MINUTE:
@@ -1013,34 +1226,76 @@ def answer(payload: dict) -> tuple[dict, int]:
     model_used: str | None = None
     tokens_in = tokens_out = None
     reply_md: str | None = None
+    cached = False
 
-    if ANTHROPIC_API_KEY and not budget_exceeded:
+    # A: per-request override ("включити в будь-який момент уже в чаті")
+    # OR-ed with the global settings toggle — `is True` guards against
+    # payload["web"] being absent (None) or explicitly False, short-circuiting
+    # the settings read when the request itself asks. Обчислюється ДО кешу:
+    # web-прапорець — частина ключа (відповідь з інтернетом і без — різні).
+    web_search_on = False
+    if ANTHROPIC_API_KEY:
+        web_search_on = (
+            payload.get("web") is True
+            # Telegram — інтернет УВІМКНЕНИЙ ЗАВЖДИ (рішення Миколи
+            # 2026-08-11): у месенджері нема куди покласти чекбокс, а
+            # вимагати команду-тумблер від людини, яка просто пише
+            # питання, — гірше за трохи дорожчі відповіді.
+            or channel == "telegram"
+            or _web_search_enabled()
+            or _wants_web(message)
+        )
+
+    # Кеш повторюваних питань — ЛИШЕ перший хід розмови (follow-up залежить
+    # від усієї історії, ключа для нього не існує) і ДО бюджетного бар'єра:
+    # готова відповідь коштує нуль токенів, тож віддається навіть коли день
+    # уже вичерпано.
+    question_norm = _normalize_question(message)
+    scope = _scope_key(forums)
+    first_turn = not history
+    if first_turn and ANTHROPIC_API_KEY:
+        row = _cache_lookup(question_norm, scope, web_search_on)
+        if row:
+            reply_md = row["reply_md"] + (
+                "\n\n(cached answer — originally generated "
+                f"{row['created_at']:%Y-%m-%d %H:%M} UTC)"
+            )
+            tier, model_used = "llm", row["model"]
+            tokens_in = tokens_out = 0
+            cached = True
+
+    if reply_md is None and ANTHROPIC_API_KEY and not budget_exceeded:
         try:
             model = _chat_model_setting()
-            # A: per-request override ("включити в будь-який момент уже в
-            # чаті") OR-ed with the global settings toggle — `is True` guards
-            # against payload["web"] being absent (None) or explicitly False,
-            # short-circuiting the settings read when the request itself asks.
-            web_search_on = (
-                payload.get("web") is True
-                # Telegram — інтернет УВІМКНЕНИЙ ЗАВЖДИ (рішення Миколи
-                # 2026-08-11): у месенджері нема куди покласти чекбокс, а
-                # вимагати команду-тумблер від людини, яка просто пише
-                # питання, — гірше за трохи дорожчі відповіді.
-                or channel == "telegram"
-                or _web_search_enabled()
-                or _wants_web(message)
-            )
+            # Важіль економії: навігаційні питання — на дешеву модель.
+            # Не при веб-пошуку: синтез архів+інтернет краще тримає основна.
+            if not web_search_on and _is_simple(message, history):
+                light = _chat_light_model_setting()
+                if light:
+                    model = light
             reply_md, tokens_in, tokens_out = _llm_reply(
-                anthropic_messages, model, channel, web_search=web_search_on
+                anthropic_messages, model, channel,
+                web_search=web_search_on, forums=forums,
             )
             tier, model_used = "llm", model
+            # У кеш — лише повноцінні відповіді: відмова чи обрізаний хвіст
+            # не варті повторного показу наступній людині.
+            if (
+                first_turn
+                and reply_md
+                and reply_md != _REFUSAL_TEXT
+                and not reply_md.endswith(_TRUNCATION_NOTE)
+            ):
+                _cache_store(
+                    question_norm, scope, web_search_on,
+                    reply_md, model, tokens_in, tokens_out,
+                )
         except Exception:  # noqa: BLE001 — LLM trouble degrades, never 500s
             log.exception("chat: llm reply failed; falling back to stub tier")
             reply_md = None
 
     if reply_md is None:
-        reply_md = _stub_reply(message)
+        reply_md = _stub_reply(message, forums=forums)
         tier, model_used, tokens_in, tokens_out = "stub", None, None, None
         if budget_exceeded:
             reply_md = f"{_BUDGET_NOTE}\n\n{reply_md}"
@@ -1055,5 +1310,6 @@ def answer(payload: dict) -> tuple[dict, int]:
         "reply_md": reply_md,
         "tier": tier,
         "model": model_used,
+        "cached": cached,
         "tokens": {"in": tokens_in, "out": tokens_out},
     }, 200
