@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {#- «Знахідки» (розділ 4.3 + розширення «фільтри й outcomes» + редизайн
-    фільтрів/read-unread/бріфів, задачі 1-4 аудиту 2026-08-11). Контекст дає
-    items_page() у admin/app.py: items, status, q, ecosystem, lane,
-    min_confidence, period, outcome, page, ecosystem_options, filters_active,
-    qs_no_page.
+    фільтрів/read-unread/бріфів, задачі 1-4 аудиту 2026-08-11; дієта колонок +
+    useful-оцінка, задачі 1-2 аудиту 2026-08-12). Контекст дає items_page() у
+    admin/app.py: items, status, q, ecosystem, lane, min_confidence, period,
+    outcome, useful, page, ecosystem_options, filters_active, qs_no_page.
 
     Дефолт «усі» НЕ змінюється: `done` не означає ліда (F5), а зміна дефолту
     тихо перевизначила б сенс наявних посилань /items?status= — закладки і
@@ -16,8 +16,17 @@
     status, ecosystem, пошук) — рівна сітка .form-grid, label ЗВЕРХУ кожного
     поля, БЕЗ .field__hint під контролем (він ламав вирівнювання висоти —
     підказки тепер у title= самого select/input, місце нікуди не зникає).
-    Другорядні (lane, min_confidence, outcome) — у <details class="disclosure">
-    «More filters», відкритому, якщо будь-який із них активний.
+    Другорядні (lane, min_confidence, outcome, useful) — у
+    <details class="disclosure"> «More filters», відкритому, якщо будь-який
+    із них активний.
+
+    Задача 1 аудиту 2026-08-12 («скролиться по горизонталі») — дієта колонок:
+    Status | Title | Verdict | Source | First seen | Outcome | Actions,
+    .table--dense. «Attempts» і «Delivered» прибрані як окремі колонки — їхні
+    значення НЕ зникли, а переїхали в title= (Status-бейдж і LEAD-чіп
+    відповідно): це діагностика, потрібна рідко, не щоденний погляд.
+    Category+Confidence об'єднані в одну вузьку «Verdict». Source обрізається
+    до ~14ch (.cell--truncate-sm), повна назва — в title=.
 
     Задача 2: колонка дій — «Open brief» лінк замість форми створення, коли
     для item_uid вже є kb.briefs-рядок (i.brief_id, LEFT JOIN LATERAL у
@@ -25,6 +34,12 @@
     (BRIEF_MODEL_CHOICES, глобал із app.py — той самий список опцій, що й
     #save-report-form у chat.html, одне джерело правди для UI й для
     серверного вайтліста BRIEF_MODEL_ALLOWED).
+
+    Задача 2 аудиту 2026-08-12 — колонка Outcome тепер несе ДВІ незалежні
+    оцінки в різних гілках, ніколи не разом на одному рядку: лід
+    (delivered_at) — Won/Lost/clear, як і був; не-лід pending/done —
+    компактні 👍/👎 (POST /items/{uid}/useful, seen_items.useful, міграція
+    014); filtered/seeded — «—» (сміття не оцінюємо).
 
     Задача 3 (read/unread як у месенджерах): непрочитаний рядок
     (i.viewed_at is none) — крапка .unread-dot перед заголовком + ледь
@@ -88,7 +103,7 @@
       якщо будь-який із них уже активний (той самий прийом, що й
       <details class="disclosure"{% if error %} open{% endif %}> на
       /sources). -#}
-  <details class="disclosure" {{ 'open' if lane or min_confidence or outcome }}>
+  <details class="disclosure" {{ 'open' if lane or min_confidence or outcome or useful }}>
     <summary>{{ t("pg.items.more_filters", "More filters") }}</summary>
     <div class="disclosure__body form-grid">
       <div class="field">
@@ -116,6 +131,17 @@
           {% for oc in ['won', 'lost', 'open'] %}
           <option value="{{ oc }}" {{ 'selected' if outcome == oc }}>{{ OUTCOME_UA.get(oc, oc) }}</option>
           {% endfor %}
+        </select>
+      </div>
+      {#- Задача 2 аудиту 2026-08-12 — фільтр за власною 👍/👎-оцінкою
+          (seen_items.useful), окремою від Outcome (той — доля угоди). -#}
+      <div class="field">
+        <label class="field__label" for="f-useful">{{ t("f.useful", "Usefulness") }}</label>
+        <select id="f-useful" name="useful" title="{{ t('f.useful.hint', 'Your 👍/👎 rating on non-lead findings') }}">
+          <option value="">{{ t("st.any", "all") }}</option>
+          <option value="useful" {{ 'selected' if useful == 'useful' }}>{{ t("f.useful.useful", "useful") }}</option>
+          <option value="noise" {{ 'selected' if useful == 'noise' }}>{{ t("f.useful.noise", "noise") }}</option>
+          <option value="unrated" {{ 'selected' if useful == 'unrated' }}>{{ t("f.useful.unrated", "unrated") }}</option>
         </select>
       </div>
     </div>
@@ -163,13 +189,13 @@
 {% endif %}
 <section class="panel">
   <div class="tablewrap">
-    <table>
+    <table class="table--dense">
       <thead>
         <tr>
           <th>{{ t("f.status", "Status") }}</th><th>{{ t("f.title", "Title") }}</th>
-          <th>{{ t("f.category", "Category") }}</th><th>{{ t("f.confidence", "Confidence") }}</th>
-          <th>{{ t("f.source", "Source") }}</th><th>{{ t("f.attempts", "Attempts") }}</th>
-          <th>{{ t("f.first_seen", "First seen") }}</th><th>{{ t("f.delivered", "Delivered") }}</th>
+          <th>{{ t("f.verdict", "Verdict") }}</th>
+          <th>{{ t("f.source", "Source") }}</th>
+          <th>{{ t("f.first_seen", "First seen") }}</th>
           <th>{{ t("f.outcome", "Outcome") }}</th>
           <th><span class="visually-hidden">{{ t("f.actions", "Actions") }}</span></th>
         </tr>
@@ -185,39 +211,47 @@
         {% if i.delivered_at %}{% set _ = row_cls.append('item-row--lead') %}{% endif %}
         {% if i.viewed_at is none %}{% set _ = row_cls.append('item-row--unread') %}{% endif %}
         <tr class="{{ row_cls | join(' ') }}">
-          <td class="cell--nowrap"><span class="badge b-{{ i.status }}">{{ STATUS_UA.get(i.status, i.status) }}</span></td>
+          {#- Задача 1 аудиту 2026-08-12: колонку «Attempts» прибрано —
+              значення живе в title= бейджа статусу (діагностика, не
+              щоденний погляд). -#}
+          <td class="cell--nowrap"><span class="badge b-{{ i.status }}" title="{{ t('f.attempts', 'Attempts') }}: {{ i.attempts }}">{{ STATUS_UA.get(i.status, i.status) }}</span></td>
           <td>
             {#- Крапка — ВСЕРЕДИНІ якоря, а не сиблінгом: обрізаний
                 nowrap-якір на вузькій колонці переносився на новий рядок
                 ЦІЛИМ, лишаючи крапку саму (бачено наживо) — всередині ж
                 вони фізично нерозривні. -#}
             <a class="cell--truncate" href="{{ i.url }}" target="_blank" rel="noopener noreferrer" title="{{ i.title or i.item_uid }}">{% if i.viewed_at is none %}<span class="unread-dot" title="{{ t('msg.unread.title', 'Unread') }}"></span>{% endif %}{{ i.title or i.item_uid[:16] }}</a>
-            {% if i.delivered_at %}<span class="badge b-lead" title="{{ t('chip.lead.title', 'This finding became a lead') }}">{{ t("chip.lead", "LEAD") }}</span>{% endif %}
+            {#- Задача 1 аудиту 2026-08-12: колонку «Delivered» прибрано —
+                дата доставки живе в title= цього ж чіпа; сам факт лідності
+                вже показує чіп. -#}
+            {% if i.delivered_at %}<span class="badge b-lead" title="{{ t('chip.lead.title', 'This finding became a lead') }} — {{ i.delivered_at.strftime('%Y-%m-%d %H:%M') }}">{{ t("chip.lead", "LEAD") }}</span>{% endif %}
             {% if i.canonical_project %}<div class="muted">{{ i.canonical_project }}</div>{% endif %}
           </td>
-          <td>
+          {#- Задача 1 аудиту 2026-08-12: Category + Confidence об'єднані в
+              одну вузьку «Verdict» — бейдж категорії, під ним дрібним
+              muted-числом впевненість класифікатора. -#}
+          <td class="cell--nowrap">
             {% if i.category %}
             <span class="badge {{ {'RFP': 'b-rfp', 'FUNDING': 'b-funding', 'GRANT': 'b-on'}.get(i.category, 'b-neutral') }}">{{ i.category }}</span>
             {% else %}<span class="muted">—</span>{% endif %}
+            {#- Впевненість лише коли Є: «— / —» двома рядками читалось як
+                верстковий брак, а не як «нема вердикту». -#}
+            {% if i.confidence is not none %}<div class="verdict__conf">{{ '%.2f' | format(i.confidence) }}</div>{% endif %}
           </td>
-          <td class="cell--num">{{ '%.2f' | format(i.confidence) if i.confidence is not none else '—' }}</td>
-          <td class="muted">{{ i.source_name }}</td>
-          <td class="cell--num">{{ i.attempts }}</td>
-          <td class="muted cell--nowrap">{{ i.first_seen.strftime('%Y-%m-%d %H:%M') }}</td>
-          {#- Два різні `done` (F5). `FINAL: mark done (A1)` ставить done РАЗОМ із
-              delivered_at — це справжня доставка. Нода `Mark handled (no lead)`
-              ставить done БЕЗ delivered_at — елемент пройшов пайплайн, але ліда
-              з нього не вийшло. Рендерити їх однаково означало б брехати. -#}
-          <td class="cell--nowrap">
-            {% if i.delivered_at %}
-              <span class="badge b-done">{{ t("st.delivered", "delivered") }}</span>
-              <span class="muted">{{ i.delivered_at.strftime('%Y-%m-%d %H:%M') }}</span>
-            {% elif i.status == 'done' %}
-              <span class="badge b-seeded" title="{{ t('st.handled.title', 'processed without creating a lead') }}">{{ t("st.handled", "processed") }}</span>
-            {% else %}
-              <span class="muted">—</span>
-            {% endif %}
-          </td>
+          {#- Задача 1 аудиту 2026-08-12: джерело обрізається до ~14ch —
+              повна назва лишається в title=. -#}
+          <td class="muted"><span class="cell--truncate cell--truncate-sm" title="{{ i.source_name }}">{{ i.source_name }}</span></td>
+          {#- Задача 1 аудиту 2026-08-12: без року (MM-DD HH:MM) — рік
+              однаково завжди поточний на живій сторінці, зайві символи
+              лише пливуть колонку. -#}
+          <td class="muted cell--nowrap">{{ i.first_seen.strftime('%m-%d %H:%M') }}</td>
+          {#- Задача 2 аудиту 2026-08-12: три взаємовиключні гілки — лід
+              (Won/Lost/clear, як і був), не-лід pending/done (👍/👎 —
+              seen_items.useful), і сміття filtered/seeded/dead («—», не
+              оцінюємо). Два різні `done` (F5) тут більше не пишуться окремим
+              бейджем «processed» — статус уже видно в колонці Status
+              зліва, дублювати його тут («Delivered» колонки більше нема)
+              сенсу не було. -#}
           <td class="cell--nowrap">
             {% if i.delivered_at %}
               {% if i.outcome %}
@@ -242,11 +276,43 @@
                 <button class="btn btn--sm" type="submit">{{ t("act.lost", "Lost") }}</button>
               </form>
               {% endif %}
+            {% elif i.status in ('done', 'pending') %}
+              {% if i.useful is none %}
+              <form class="inline" method="post" action="/items/{{ i.item_uid }}/useful">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="qs" value="{{ request.url.query }}">
+                <input type="hidden" name="value" value="yes">
+                <button class="btn btn--sm btn--ghost" type="submit"
+                        aria-label="{{ t('act.useful.aria', 'Useful') }}"
+                        title="{{ t('act.useful.title', 'Useful — good catch, keep more like this') }}">👍</button>
+              </form>
+              <form class="inline" method="post" action="/items/{{ i.item_uid }}/useful">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="qs" value="{{ request.url.query }}">
+                <input type="hidden" name="value" value="no">
+                <button class="btn btn--sm btn--ghost" type="submit"
+                        aria-label="{{ t('act.not_useful.aria', 'Not useful') }}"
+                        title="{{ t('act.not_useful.title', 'Not useful — noise, fewer like this') }}">👎</button>
+              </form>
+              {% else %}
+              <span class="badge {{ 'b-ok' if i.useful else 'b-neutral' }}">{{ t("chip.useful", "useful") if i.useful else t("chip.noise", "noise") }}</span>
+              <form class="inline" method="post" action="/items/{{ i.item_uid }}/useful">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="qs" value="{{ request.url.query }}">
+                <input type="hidden" name="value" value="clear">
+                <button class="btn btn--sm btn--ghost" type="submit">{{ t("act.clear", "clear") }}</button>
+              </form>
+              {% endif %}
             {% else %}
               <span class="muted">—</span>
             {% endif %}
           </td>
-          <td class="cell--nowrap">
+          {#- cell--actions, НЕ cell--nowrap: один нерозривний рядок
+              [select+brief+Ask AI] давав колонці 210px і був останнім
+              джерелом h-скролу (заміряно наживо). Тепер [select+brief]
+              тримаються разом (form.inline сам nowrap), а «Ask AI»
+              переноситься другим рядком. -#}
+          <td class="cell--actions">
             {#- Задача 2: якщо для item_uid вже є kb.briefs-рядок (LEFT JOIN
                 LATERAL у app.py, найновіший — bf.id), «Open brief» лінк
                 замість другої кнопки створення. -#}
@@ -277,7 +343,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="10">
+          <td colspan="7">
             <div class="empty">
               <div class="empty__title">{{ t("msg.nothing_found", "Nothing found") }}</div>
               <div class="empty__hint">

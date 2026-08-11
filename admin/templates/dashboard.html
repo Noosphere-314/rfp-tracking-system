@@ -11,7 +11,13 @@
     Свідомо НЕ повертаємо сирі таблиці «Source health» (повний реєстр на 12
     рядків) і «Queued and stuck» (черга на 20 рядків) — їхню роль тепер
     грає «Needs attention»: лише проблеми, кожна — рядок із лінком на
-    сторінку дії. Порожньо — зелений порожній стан, а не порожня таблиця. -#}
+    сторінку дії. Порожньо — зелений порожній стан, а не порожня таблиця.
+
+    Задача 3 аудиту 2026-08-12 («дай віджети чи таблиці, які візуалізують
+    важливі дані») — під «This week» додано ще три панелі: activity/
+    ecosystems/latest_leads з dashboard(). Бари — CSP-safe: жодного style=,
+    ширина йде класом .w-N (app.css, крок 5%), бакетований у Python
+    (`_bar_pct`), а не в шаблоні. -#}
 {% block title %}{{ t("pg.overview.h1", "Overview") }}{% endblock %}
 {% block h1 %}{{ t("pg.overview.h1", "Overview") }}{% endblock %}
 {% block sub %}{{ t("pg.overview.sub", "What's new, what needs you, and how the week is going") }}{% endblock %}
@@ -135,6 +141,138 @@
       </a>
     </div>
   </div>
+</section>
+
+{#- 4. Activity + Top ecosystems (задача 3 аудиту 2026-08-12) — два вузьких
+    віджети поруч (.panels--2, той самий прийом, що й Include/Exclude на
+    /keywords). Бари — .bar/.bar__fill (app.css розділ 19): CSP-safe
+    ширина класом .w-N, БЕЗ style=, бакетована в Python (dashboard():
+    activity[].collected_pct/leads_pct, ecosystems[].pct). -#}
+<div class="panels panels--2">
+  <section class="panel">
+    <div class="panel__head"><h2>{{ t("pg.overview.activity", "Activity, last 14 days") }}</h2></div>
+    {% if activity_has_data %}
+    <div class="tablewrap">
+      <table class="table--dense">
+        <thead>
+          <tr>
+            <th>{{ t("f.day", "Day") }}</th>
+            <th>{{ t("pg.overview.funnel.collected", "Collected") }}</th>
+            <th>{{ t("pg.overview.funnel.leads", "Leads") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in activity %}
+          <tr>
+            <td class="muted cell--nowrap">{{ d.day.strftime('%m-%d') }}</td>
+            <td>
+              <div class="bar-cell" title="{{ t('pg.overview.funnel.collected', 'Collected') }}: {{ d.collected }}">
+                <div class="bar"><div class="bar__fill w-{{ d.collected_pct }}"></div></div>
+                <span class="num">{{ d.collected }}</span>
+              </div>
+            </td>
+            <td>
+              <div class="bar-cell" title="{{ t('pg.overview.funnel.leads', 'Leads') }}: {{ d.leads }}">
+                <div class="bar"><div class="bar__fill bar__fill--lead w-{{ d.leads_pct }}"></div></div>
+                <span class="num">{{ d.leads }}</span>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="panel__body">
+      <div class="empty">
+        <div class="empty__title">{{ t("pg.overview.activity.empty", "No activity in the last 14 days") }}</div>
+      </div>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="panel__head"><h2>{{ t("pg.overview.top_ecosystems", "Top ecosystems (7d)") }}</h2></div>
+    {% if ecosystems %}
+    <div class="tablewrap">
+      <table class="table--dense">
+        <thead>
+          <tr>
+            <th>{{ t("f.ecosystem", "Ecosystem") }}</th>
+            <th>{{ t("f.findings_7d", "Findings (7d)") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in ecosystems %}
+          <tr>
+            <td><a href="/items?ecosystem={{ e.ecosystem | urlencode }}&amp;period=7d">{{ e.ecosystem }}</a></td>
+            <td>
+              <div class="bar-cell">
+                <div class="bar"><div class="bar__fill w-{{ e.pct }}"></div></div>
+                <span class="num">{{ e.n }}</span>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="panel__body">
+      <div class="empty">
+        <div class="empty__title">{{ t("pg.overview.top_ecosystems.empty", "No findings in the last 7 days") }}</div>
+      </div>
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+{#- 5. Latest leads (задача 3 аудиту 2026-08-12) — на всю ширину, 5 останніх
+    лідів. «Open brief»/кнопка створення СВІДОМО спрощена до самого лінка,
+    коли бріф уже є (bf.id, LEFT JOIN LATERAL у dashboard()) — повторювати
+    тут форму створення з вибором моделі (як на /items) означало б дублювати
+    ту саму розмітку заради компактного віджета; повний функціонал лишається
+    на /items?view=leads24 за посиланням у шапці панелі. -#}
+<section class="panel">
+  <div class="panel__head">
+    <h2>{{ t("pg.overview.latest_leads", "Latest leads") }}</h2>
+    <span class="toolbar__spacer"></span>
+    <a class="btn btn--sm" href="/items?view=leads24">{{ t("act.all_leads", "All leads →") }}</a>
+  </div>
+  {% if latest_leads %}
+  <div class="tablewrap">
+    <table class="table--dense">
+      <thead>
+        <tr>
+          <th>{{ t("f.title", "Title") }}</th>
+          <th>{{ t("f.ecosystem", "Ecosystem") }}</th>
+          <th>{{ t("f.delivered", "Delivered") }}</th>
+          <th><span class="visually-hidden">{{ t("f.actions", "Actions") }}</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in latest_leads %}
+        <tr>
+          <td><a class="cell--truncate" href="{{ l.url }}" target="_blank" rel="noopener noreferrer" title="{{ l.title or l.item_uid }}">{{ l.title or l.item_uid[:16] }}</a></td>
+          <td><span class="badge b-info">{{ l.source_ecosystem }}</span></td>
+          <td class="muted cell--nowrap">{{ l.delivered_at.strftime('%m-%d %H:%M') }}</td>
+          <td class="cell--nowrap">
+            {% if l.brief_id %}
+            <a class="btn btn--sm" href="/briefs/{{ l.brief_id }}">{{ t("act.open_brief", "Open brief") }}</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="panel__body">
+    <div class="empty">
+      <div class="empty__title">{{ t("pg.overview.latest_leads.empty", "No leads yet") }}</div>
+    </div>
+  </div>
+  {% endif %}
 </section>
 
 {% endblock %}

@@ -152,12 +152,101 @@
   });
 
   /* ── 4. Підтвердження небезпечних дій ─────────────────────────────────── */
-  document.querySelectorAll("[data-confirm]").forEach(function (el) {
-    var evt = el.tagName === "FORM" ? "submit" : "click";
-    el.addEventListener(evt, function (ev) {
-      if (!window.confirm(el.dataset.confirm)) { ev.preventDefault(); ev.stopPropagation(); }
+  /* Кастомний <dialog class="confirm"> (задача 4 аудиту 2026-08-12) замість
+     window.confirm(): один діалог на сторінку, створюється лінькво (лише
+     якщо на сторінці є бодай один [data-confirm]) і переюзається для
+     кожного. Без JS — форма шле POST одразу, як і раніше (той самий
+     інваріант файлу): це прогресивне посилення, а не заміна поведінки.
+
+     DOM — виключно createElement/textContent, як і в розділі 7 (чат): текст
+     підтвердження приходить із data-confirm у розмітці (уже екранований
+     Jinja'ю при рендері), тут лише переносимо його в textContent, без
+     жодного innerHTML. */
+  (function confirmDialog() {
+    var targets = document.querySelectorAll("[data-confirm]");
+    if (!targets.length) return;
+
+    var dialog = null, textEl = null, pending = null;
+
+    function ensureDialog() {
+      if (dialog) return dialog;
+      dialog = document.createElement("dialog");
+      dialog.className = "confirm";
+
+      var body = document.createElement("div");
+      body.className = "confirm__body";
+      textEl = document.createElement("p");
+      textEl.className = "confirm__text";
+      body.appendChild(textEl);
+      dialog.appendChild(body);
+
+      var actions = document.createElement("div");
+      actions.className = "confirm__actions";
+
+      var cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "btn btn--ghost";
+      cancelBtn.textContent = document.body.dataset.confirmCancel || "Cancel";
+      cancelBtn.addEventListener("click", function () {
+        pending = null;
+        dialog.close();
+      });
+
+      var okBtn = document.createElement("button");
+      okBtn.type = "button";
+      okBtn.className = "btn btn--danger";
+      okBtn.textContent = document.body.dataset.confirmOk || "Confirm";
+      okBtn.addEventListener("click", function () {
+        var el = pending;
+        pending = null;
+        dialog.close();
+        if (!el) return;
+        /* dataset.confirmed="1" — прапорець-перехоплення: далі (нижче)
+           слухач того самого data-confirm бачить його, пропускає показ
+           діалогу вдруге і скидає прапорець назад, інакше дія зациклилась
+           би сама на собі. */
+        el.dataset.confirmed = "1";
+        if (el.tagName === "FORM") {
+          if (typeof el.requestSubmit === "function") el.requestSubmit();
+          else el.submit();
+        } else {
+          el.click();
+        }
+      });
+
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      dialog.appendChild(actions);
+
+      /* Клік по ::backdrop = cancel: <dialog> не дає власної події для
+         цього, тож порівнюємо ev.target === dialog — клік ПОЗА
+         .confirm__body/.confirm__actions потрапляє саме на сам <dialog>
+         (backdrop — псевдоелемент довкола нього, не окремий вузол DOM). */
+      dialog.addEventListener("click", function (ev) {
+        if (ev.target === dialog) { pending = null; dialog.close(); }
+      });
+      /* Escape — вбудована поведінка <dialog> (подія "cancel", потім
+         "close"); тут лише скидаємо pending, щоб застаріла дія не
+         виконалась, якщо діалог відкриють знову для іншого елемента. */
+      dialog.addEventListener("cancel", function () { pending = null; });
+
+      document.body.appendChild(dialog);
+      return dialog;
+    }
+
+    targets.forEach(function (el) {
+      var evt = el.tagName === "FORM" ? "submit" : "click";
+      el.addEventListener(evt, function (ev) {
+        if (el.dataset.confirmed === "1") { el.dataset.confirmed = ""; return; }
+        ev.preventDefault();
+        ev.stopPropagation();
+        pending = el;
+        ensureDialog();
+        textEl.textContent = el.dataset.confirm;
+        dialog.showModal();
+      });
     });
-  });
+  })();
 
   /* ── 5a. Друк у PDF (сторінка бріфа) ──────────────────────────────────
      Без цього блоку кнопка «Зберегти як PDF» — прогресивне покращення, якого

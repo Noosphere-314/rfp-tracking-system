@@ -65,8 +65,9 @@ def _fake_db(monkeypatch, sink=None, extra_rows=None):
     return conn
 
 
-# dashboard() робить РІВНО п'ять execute() у своєму `with db()`: 0 tiles,
-# 1 attention, 2 top_problem_sources, 3 funnel, 4 last_verdict. Дефолтний
+# dashboard() робить РІВНО вісім execute() у своєму `with db()`: 0 tiles,
+# 1 attention, 2 top_problem_sources, 3 funnel, 4 last_verdict, 5 activity
+# (задача 3 аудиту 2026-08-12), 6 top_ecosystems, 7 latest_leads. Дефолтний
 # набір нижче тримає кожен на «нуль/порожньо», щоб dashboard() не впав
 # TypeError на None-рядку (fetchone() на порожньому списку віддає None, а
 # `attention[field]` вимагає непорожнього рядка) — тести перевизначають
@@ -80,6 +81,9 @@ _DASHBOARD_DEFAULTS = {
     2: [],
     3: [{"collected": 0, "passed_filter": 0, "leads": 0, "closed": 0}],
     4: [],
+    5: [],
+    6: [],
+    7: [],
 }
 
 
@@ -154,13 +158,13 @@ def test_leads_badge_context_unread_reuses_leads24_and_review24_where(monkeypatc
 
 
 def test_dashboard_renders_new_leads_and_unread_tiles(client, monkeypatch):
-    # Індекс 5 — контекст-процесор бейджа/плиток (рахується ПІСЛЯ п'яти
+    # Індекс 8 — контекст-процесор бейджа/плиток (рахується ПІСЛЯ восьми
     # власних запитів dashboard(), бо викликається лише коли
     # templates.TemplateResponse(...) реально рендерить сторінку).
     _login(client)
     _fake_db(
         monkeypatch,
-        extra_rows=_dashboard_extra_rows({5: [{"leads_24h": 4, "unread_count": 9}]}),
+        extra_rows=_dashboard_extra_rows({8: [{"leads_24h": 4, "unread_count": 9}]}),
     )
 
     html = client.get("/").text
@@ -297,3 +301,103 @@ def test_dashboard_no_longer_renders_raw_source_health_or_queue_tables(client, m
     html = client.get("/").text
     assert "Source health" not in html
     assert "Queued and stuck" not in html
+
+
+# ── _bar_pct: чиста функція, бакетування ширини бару (задача 3, 2026-08-12) ──
+
+
+def test_bar_pct_buckets_to_the_nearest_five():
+    assert admin_app._bar_pct(3, 10) == 30       # 30% — точно на кроці
+    assert admin_app._bar_pct(1, 3) == 35         # 33.3% -> найближчі 35
+    assert admin_app._bar_pct(10, 10) == 100      # максимум = повний бар
+    assert admin_app._bar_pct(0, 10) == 0
+
+
+def test_bar_pct_zero_or_negative_max_value_returns_zero_without_crashing():
+    assert admin_app._bar_pct(5, 0) == 0
+    assert admin_app._bar_pct(5, -1) == 0
+
+
+# ── GET /: «Activity, last 14 days» (задача 3 аудиту 2026-08-12) ─────────
+
+
+def test_dashboard_activity_widget_renders_bucketed_bar_width_classes(client, monkeypatch):
+    from datetime import date
+
+    _login(client)
+    activity_rows = [
+        {"day": date(2026, 8, 1), "collected": 10, "leads": 2},
+        {"day": date(2026, 8, 2), "collected": 5, "leads": 5},
+    ]
+    _fake_db(monkeypatch, extra_rows=_dashboard_extra_rows({5: activity_rows}))
+
+    html = client.get("/").text
+    assert "Activity, last 14 days" in html
+    assert "08-01" in html and "08-02" in html
+    # max_collected=10 (день1=100%,день2=50%); max_leads=5 (день1=40%,день2=100%)
+    assert 'class="bar__fill w-100"' in html
+    assert 'class="bar__fill w-50"' in html
+    assert 'class="bar__fill bar__fill--lead w-40"' in html
+    assert 'class="bar__fill bar__fill--lead w-100"' in html
+
+
+def test_dashboard_activity_widget_shows_empty_state_when_nothing_collected(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, extra_rows=_dashboard_extra_rows())  # index 5 -> []
+    html = client.get("/").text
+    assert "No activity in the last 14 days" in html
+
+
+# ── GET /: «Top ecosystems (7d)» (задача 3 аудиту 2026-08-12) ────────────
+
+
+def test_dashboard_top_ecosystems_widget_renders_bars_and_links(client, monkeypatch):
+    _login(client)
+    eco_rows = [
+        {"ecosystem": "Optimism", "n": 10},
+        {"ecosystem": "Arbitrum", "n": 5},
+    ]
+    _fake_db(monkeypatch, extra_rows=_dashboard_extra_rows({6: eco_rows}))
+
+    html = client.get("/").text
+    assert "Top ecosystems (7d)" in html
+    assert 'href="/items?ecosystem=Optimism&amp;period=7d"' in html
+    assert 'class="bar__fill w-100"' in html  # Optimism, максимум
+    assert 'class="bar__fill w-50"' in html   # Arbitrum, половина максимуму
+
+
+def test_dashboard_top_ecosystems_widget_shows_empty_state_without_findings(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, extra_rows=_dashboard_extra_rows())  # index 6 -> []
+    html = client.get("/").text
+    assert "No findings in the last 7 days" in html
+
+
+# ── GET /: «Latest leads» (задача 3 аудиту 2026-08-12) ───────────────────
+
+
+def test_dashboard_latest_leads_widget_renders_rows_with_brief_link(client, monkeypatch):
+    from datetime import datetime, timezone
+
+    _login(client)
+    leads_rows = [{
+        "item_uid": "uid-1", "title": "Fund an oracle relayer",
+        "url": "https://example.test/rfp/1",
+        "delivered_at": datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
+        "source_ecosystem": "Optimism", "brief_id": 7,
+    }]
+    _fake_db(monkeypatch, extra_rows=_dashboard_extra_rows({7: leads_rows}))
+
+    html = client.get("/").text
+    assert "Latest leads" in html
+    assert "Fund an oracle relayer" in html
+    assert 'href="https://example.test/rfp/1"' in html
+    assert 'href="/briefs/7"' in html
+    assert 'href="/items?view=leads24"' in html
+
+
+def test_dashboard_latest_leads_widget_shows_empty_state_without_leads(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, extra_rows=_dashboard_extra_rows())  # index 7 -> []
+    html = client.get("/").text
+    assert "No leads yet" in html

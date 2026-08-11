@@ -315,6 +315,12 @@ def _item_row(**overrides) -> dict:
         "first_seen": datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc),
         "delivered_at": None,
         "outcome": None,
+        # Задача 2 аудиту 2026-08-12 — NULL = ще не оцінено (seen_items.useful,
+        # міграція 014). Явний дефолт тут, а не Jinja Undefined: шаблон
+        # перевіряє `i.useful is none`, і Undefined (ключ відсутній узагалі)
+        # НЕ проходить цю перевірку так само, як None — тест тихо показував
+        # би невірну гілку (badge замість кнопок 👍/👎).
+        "useful": None,
     }
     row.update(overrides)
     return row
@@ -522,3 +528,253 @@ def test_set_outcome_rejects_invalid_value(client, monkeypatch):
 # (test_auth.py < test_items.py) означає, що такий тест тут ловив би
 # несправжній негатив, залежний від порядку колекції, а не від реальної
 # відсутності захисту.
+
+
+# ── Задача 1 аудиту 2026-08-12: дієта колонок — Attempts/Delivered у title= ─
+
+
+def test_items_page_status_badge_carries_attempts_in_title(client, monkeypatch):
+    _login(client)
+    row = _item_row(status="pending", attempts=3)
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert 'title="Attempts: 3"' in html
+    # Колонки «Attempts» окремо більше немає.
+    assert "<th>Attempts</th>" not in html
+
+
+def test_items_page_lead_chip_carries_delivered_date_in_title(client, monkeypatch):
+    from datetime import datetime, timezone
+
+    _login(client)
+    row = _item_row(delivered_at=datetime(2026, 1, 6, 9, 30, tzinfo=timezone.utc))
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert "2026-01-06 09:30" in html
+    assert "<th>Delivered</th>" not in html
+
+
+def test_items_page_verdict_column_merges_category_and_confidence(client, monkeypatch):
+    _login(client)
+    row = _item_row(category="FUNDING", confidence=0.83)
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert "<th>Verdict</th>" in html
+    assert "<th>Category</th>" not in html
+    assert "<th>Confidence</th>" not in html
+    assert "b-funding" in html and "0.83" in html
+
+
+def test_items_page_source_cell_is_truncated_with_full_name_in_title(client, monkeypatch):
+    _login(client)
+    row = _item_row(source_name="A Very Long Forum Name That Should Truncate")
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert 'cell--truncate-sm' in html
+    assert 'title="A Very Long Forum Name That Should Truncate"' in html
+
+
+def test_items_page_column_order_is_status_title_verdict_source_seen_outcome_actions(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+
+    html = client.get("/items").text
+    order = ["Status", "Title", "Verdict", "Source", "First seen", "Outcome"]
+    positions = [html.index(f"<th>{label}</th>") for label in order]
+    assert positions == sorted(positions)
+
+
+# ── Задача 2 аудиту 2026-08-12: 👍/👎 useful на не-лід рядках ─────────────
+
+
+def test_items_page_shows_useful_buttons_for_pending_row_without_a_lead(client, monkeypatch):
+    _login(client)
+    row = _item_row(status="pending", delivered_at=None, useful=None)
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert 'action="/items/uid-abc123/useful"' in html
+    assert 'value="yes"' in html and 'value="no"' in html
+    assert "👍" in html and "👎" in html
+
+
+def test_items_page_shows_rated_badge_and_clear_when_useful_is_set(client, monkeypatch):
+    _login(client)
+    row = _item_row(status="done", delivered_at=None, useful=True)
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert "useful" in html
+    # Рейтинг УЖЕ виставлено — форм із value="yes"/"no" (кнопки 👍/👎) для
+    # цього рядка більше немає, лишається лише badge + «clear». Перевіряємо
+    # саме форми, а не самі емодзі: ті легітимно лишаються в title=
+    # фільтра «Usefulness» вище на сторінці (f.useful.hint).
+    assert 'value="yes"' not in html and 'value="no"' not in html
+    assert 'action="/items/uid-abc123/useful"' in html
+    assert 'value="clear"' in html
+
+
+def test_items_page_shows_noise_badge_when_useful_is_false(client, monkeypatch):
+    _login(client)
+    row = _item_row(status="done", delivered_at=None, useful=False)
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert "noise" in html
+
+
+def test_items_page_filtered_row_shows_dash_not_useful_buttons(client, monkeypatch):
+    _login(client)
+    row = _item_row(status="filtered", delivered_at=None, useful=None)
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert "/useful" not in html
+
+
+def test_items_page_seeded_row_shows_dash_not_useful_buttons(client, monkeypatch):
+    _login(client)
+    row = _item_row(status="seeded", delivered_at=None, useful=None)
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert "/useful" not in html
+
+
+def test_items_page_lead_row_shows_outcome_buttons_not_useful_buttons(client, monkeypatch):
+    """Лід (delivered_at) завжди показує Won/Lost, навіть коли useful IS NULL
+    — дві оцінки взаємовиключні на одному рядку (розділ задачі 2)."""
+    from datetime import datetime, timezone
+
+    _login(client)
+    row = _item_row(
+        delivered_at=datetime(2026, 1, 6, 9, 0, tzinfo=timezone.utc), useful=None
+    )
+    _fake_db(monkeypatch, rows=[row])
+
+    html = client.get("/items").text
+    assert "/useful" not in html
+    assert "Won" in html and "Lost" in html
+
+
+def test_items_useful_filter_maps_to_where_clause(client, monkeypatch):
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, rows=[], sink=sink)
+
+    response = client.get("/items", params={"useful": "useful"})
+    assert response.status_code == 200
+    sql, _ = sink[0]
+    assert "i.useful IS TRUE" in sql
+
+
+def test_items_noise_filter_maps_to_where_clause(client, monkeypatch):
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, rows=[], sink=sink)
+
+    response = client.get("/items", params={"useful": "noise"})
+    assert response.status_code == 200
+    sql, _ = sink[0]
+    assert "i.useful IS FALSE" in sql
+
+
+def test_items_unrated_filter_scopes_to_done_and_pending_status(client, monkeypatch):
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, rows=[], sink=sink)
+
+    response = client.get("/items", params={"useful": "unrated"})
+    assert response.status_code == 200
+    sql, _ = sink[0]
+    assert "i.useful IS NULL AND i.status IN ('done', 'pending')" in sql
+
+
+def test_items_unknown_useful_value_is_ignored(client, monkeypatch):
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, rows=[], sink=sink)
+
+    response = client.get("/items", params={"useful": "bogus"})
+    assert response.status_code == 200
+    sql, params = sink[0]
+    assert "i.useful" not in sql
+    assert params == (0,)
+
+
+# ── POST /items/{uid}/useful ───────────────────────────────────────────────
+
+
+def test_set_useful_yes_writes_true_and_redirects_with_qs(client, monkeypatch):
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, sink=sink)
+
+    response = client.post(
+        "/items/abc123/useful",
+        data={"value": "yes", "qs": "status=pending&page=1", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/items?status=pending&page=1"
+    sql, params = sink[0]
+    assert "useful = %s" in sql
+    assert params == (True, "abc123")
+
+
+def test_set_useful_no_writes_false(client, monkeypatch):
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, sink=sink)
+
+    response = client.post(
+        "/items/abc123/useful",
+        data={"value": "no", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/items"
+    sql, params = sink[0]
+    assert params == (False, "abc123")
+
+
+def test_set_useful_clear_nulls_the_column(client, monkeypatch):
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, sink=sink)
+
+    response = client.post(
+        "/items/abc123/useful",
+        data={"value": "clear", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    sql, params = sink[0]
+    assert "useful = NULL" in sql
+    assert params == ("abc123",)
+
+
+def test_set_useful_rejects_invalid_value(client, monkeypatch):
+    _login(client)
+    monkeypatch.setattr(admin_app, "db", lambda: (_ for _ in ()).throw(
+        AssertionError("не мав дійти до БД")
+    ))
+    response = client.post(
+        "/items/abc123/useful",
+        data={"value": "maybe", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+    )
+    assert response.status_code == 400
+
+
+# CSRF-покриття /items/{item_uid}/useful — той самий аргумент, що й для
+# /items/{item_uid}/outcome вище: test_every_post_route_is_csrf_covered у
+# test_auth.py ітерує app.routes і ловить будь-який новий POST на
+# роутері `mutations` без Depends(csrf_guard).

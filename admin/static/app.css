@@ -801,6 +801,16 @@ form.inline,.inline{display:inline}
    <select> (padding 7px 10px, розділ 8) — .select--sm тримає його на
    висоті .btn--sm поруч. */
 select.select--sm{padding:2px 6px; font-size:var(--fs-sm); min-width:0}
+/* У щільній таблиці /items закритий select розтягується під НАЙДОВШУ
+   опцію («Sonnet · faster») і саме він давав останні ~80px горизонтального
+   скролу (заміряно наживо 1071 проти 994). Обрізаний текст у закритому
+   стані — чесна ціна за таблицю без скролу; випадний список показує повні
+   назви як завжди. */
+.table--dense select.select--sm{max-width:76px; text-overflow:ellipsis}
+/* Другий і останній внесок у «без h-скролу»: 46ch заголовка лишали 37px
+   переливу на 1280px — 40ch прибирають його з запасом, а повна назва
+   однаково живе в title= (задача 1, заміряно наживо scrollWidth 1031→994). */
+.table--dense .cell--truncate{max-width:40ch}
 
 /* ───────────  18. Overview: needs attention і воронка (задача 6)  ────── */
 /* «Unread findings» — та сама пара --brand-2/--info, що й .unread-dot/NAV-
@@ -830,3 +840,72 @@ select.select--sm{padding:2px 6px; font-size:var(--fs-sm); min-width:0}
 .funnel__num{font-size:var(--fs-2xl); font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums}
 .funnel__lbl{margin-top:2px; font-size:var(--fs-sm); color:var(--text-dim)}
 .funnel__arrow{color:var(--text-faint); font-size:var(--fs-lg)}
+
+/* ──────────  19. Findings: дієта колонок (задача 1 аудиту 2026-08-12)  ─── */
+/* Об'єднана колонка «Verdict» (Category+Confidence, items.html): дрібне
+   muted-число впевненості під бейджем категорії — той самий візуальний
+   принцип, що й .stat__lbl під .stat__num (розділ 9), лише в межах клітинки
+   таблиці, тому власний, вужчий розмір. */
+.verdict__conf{margin-top:2px; font-size:var(--fs-xs); color:var(--text-dim)}
+/* Джерело обрізається помітно вужче за заголовок (46ch у .cell--truncate
+   вище) — та сама вертикальна межа max-width, підмінена нижчим числом.
+   Обидва класи стоять на одному елементі разом (items.html): порядок правил
+   тут і вирішує, яке значення max-width переможе (каскад за джерелом, не
+   специфічністю — обидва селектори рівні). */
+/* 11ch, не 14ch: останні 18px h-скролу на 1280px сиділи саме тут
+   (колонка Source 140px при сумі 1012 проти 994 доступних). */
+.cell--truncate-sm{max-width:11ch}
+/* Колонка дій /items: form.inline (select+brief) — нерозривна пара, а
+   «Ask AI» під нею другим рядком; в один рядок усе разом = 210px і h-скрол. */
+.cell--actions{width:140px}
+.cell--actions form.inline{white-space:nowrap}
+
+/* ────────────  20. Overview: CSS-бар-чарти (задача 3 аудиту 2026-08-12)  ── */
+/* Activity/Top ecosystems (dashboard.html) — CSP-safe ширина: НІЯКОГО
+   style=, лише клас .w-N (крок 5%), підставлений із Python-бакетування
+   (app.py: _bar_pct). .bar-cell — сам бар + число поруч, в одній клітинці
+   таблиці. */
+.bar-cell{display:flex; align-items:center; gap:var(--sp-2)}
+.bar{height:8px; background:var(--surface-2); border-radius:4px; min-width:120px}
+.bar__fill{height:100%; border-radius:4px; background:var(--neutral)}
+.bar__fill--lead{background:var(--brand-1)}
+
+.w-0{width:0%}
+.w-5{width:5%}
+.w-10{width:10%}
+.w-15{width:15%}
+.w-20{width:20%}
+.w-25{width:25%}
+.w-30{width:30%}
+.w-35{width:35%}
+.w-40{width:40%}
+.w-45{width:45%}
+.w-50{width:50%}
+.w-55{width:55%}
+.w-60{width:60%}
+.w-65{width:65%}
+.w-70{width:70%}
+.w-75{width:75%}
+.w-80{width:80%}
+.w-85{width:85%}
+.w-90{width:90%}
+.w-95{width:95%}
+.w-100{width:100%}
+
+/* ──────────  21. Кастомне підтвердження — <dialog> (задача 4 аудиту)  ──── */
+/* Заміна window.confirm() (app.js, розділ 4): один діалог на сторінку,
+   стилізований під решту панелей (surface/border/radius/sh-2), а не
+   браузерний дефолт (білий блок, чорний текст, системний шрифт). */
+dialog.confirm{
+  padding:0; border:1px solid var(--line); border-radius:var(--r-lg);
+  background:var(--surface); color:var(--text); box-shadow:var(--sh-2);
+  max-width:420px; width:calc(100vw - 2 * var(--sp-5));
+}
+dialog.confirm::backdrop{background:rgb(0 0 0/.55)}
+.confirm__body{padding:var(--sp-5) var(--sp-4) var(--sp-4)}
+.confirm__text{margin:0; font-size:var(--fs-md); white-space:pre-wrap}
+.confirm__actions{
+  display:flex; justify-content:flex-end; gap:var(--sp-2);
+  padding:var(--sp-3) var(--sp-4); border-top:1px solid var(--line-soft);
+  background:var(--surface-2); border-radius:0 0 var(--r-lg) var(--r-lg);
+}

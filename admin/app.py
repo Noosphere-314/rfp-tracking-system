@@ -188,16 +188,23 @@ def db() -> psycopg.Connection:
 # `request.url.path.startswith()` — останній зробив би «/» активним завжди.
 
 NAV_GROUPS = [("work", "Робота"), ("cfg", "Налаштування"), ("sys", "Система")]
+# Задача 5 аудиту 2026-08-12: «briefs» переїхав із "sys" у "work" — бріфи це
+# щоденна робоча сторінка (їх відкривають продажі), а не системна
+# діагностика, тож і місце їй поруч зі «Знахідками», не з «Історією збору».
+# Порядок у Work — навмисний: Overview → Findings → Briefs → Knowledge base →
+# AI chat, той самий шлях, яким лід проходить конвеєр (від огляду стану до
+# джерела знань). System тепер лишає рівно один пункт — «Історія збору»
+# (діагностика воркера, не щоденна робота).
 NAV = [
     {"id": "dashboard", "href": "/", "label": "Огляд", "group": "work"},
     {"id": "items", "href": "/items", "label": "Знахідки", "group": "work"},
+    {"id": "briefs", "href": "/briefs", "label": "Бріфи", "group": "work"},
     {"id": "kb", "href": "/kb", "label": "База знань", "group": "work"},
     {"id": "chat", "href": "/chat", "label": "AI-чат", "group": "work"},
     {"id": "sources", "href": "/sources", "label": "Джерела", "group": "cfg"},
     {"id": "keywords", "href": "/keywords", "label": "Ключові слова", "group": "cfg"},
     {"id": "settings", "href": "/settings", "label": "Параметри", "group": "cfg"},
     {"id": "runs", "href": "/runs", "label": "Історія збору", "group": "sys"},
-    {"id": "briefs", "href": "/briefs", "label": "Бріфи", "group": "sys"},
     # «Історія чатів» свідомо БЕЗ пункту меню: вона живе постійною панеллю
     # праворуч усередині AI-чату (/chat?hist=…, рішення Миколи 2026-08-11);
     # маршрути /chats* лишаються як повноекранний вигляд за прямим лінком
@@ -403,6 +410,22 @@ def compact_num(n: int | None) -> str:
     suffix = "k" if n < 1_000_000 else "M"
     text = f"{value:.1f}".rstrip("0").rstrip(".")
     return f"{text}{suffix}"
+
+
+def _bar_pct(value: int, max_value: int) -> int:
+    """→ бакетований відсоток (крок 5, 0..100) для CSS-класу `.w-N` на
+    Overview (задача 3 аудиту 2026-08-12: CSS-бар-чарти «Activity» і «Top
+    ecosystems»). CSP тут principled — той самий інваріант, що і скрізь у
+    файлі (жодного style=): ширина бару приходить КЛАСОМ, а не інлайн-стилем,
+    тож app.css мусить мати статичний набір `.w-0`..`.w-100` кроком 5, а
+    Python лише обирає, який із них підставити в шаблон.
+
+    `max_value <= 0` (порожній 14-денний зріз чи 0 знахідок за 7 днів) →
+    0 замість ділення на нуль — порожній бар, а не крах сторінки."""
+    if max_value <= 0:
+        return 0
+    pct = round(value / max_value * 100 / 5) * 5
+    return max(0, min(100, int(pct)))
 
 
 templates.env.filters["hl"] = hl
@@ -714,6 +737,93 @@ def dashboard(request: Request):
             "ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
 
+        # ── Задача 3 аудиту 2026-08-12: віджети даних під «This week» ──────
+        #
+        # «Activity, last 14 days» — один запит: generate_series дає РІВНО 14
+        # календарних днів (навіть ті, де воркер нічого не приніс), LEFT JOIN
+        # підтягує агрегати з seen_items — тож порожні дні лишаються рядками з
+        # нулями, а не зникають (графік не «стискається» на тижні без збору).
+        activity_rows = conn.execute(
+            """
+            WITH days AS (
+                SELECT generate_series(
+                    (now() - interval '13 days')::date, now()::date, interval '1 day'
+                )::date AS day
+            ), agg AS (
+                SELECT first_seen::date AS day,
+                       count(*) AS collected,
+                       count(*) FILTER (WHERE delivered_at IS NOT NULL) AS leads
+                  FROM seen_items
+                 WHERE first_seen > now() - interval '14 days'
+                 GROUP BY first_seen::date
+            )
+            SELECT d.day, coalesce(a.collected, 0) AS collected,
+                   coalesce(a.leads, 0) AS leads
+              FROM days d LEFT JOIN agg a ON a.day = d.day
+             ORDER BY d.day
+            """
+        ).fetchall()
+
+        # «Top ecosystems (7d)» — топ-5 за кількістю знахідок за 7 днів.
+        top_ecosystems = conn.execute(
+            """
+            SELECT s.ecosystem, count(*) AS n
+              FROM seen_items i
+              JOIN sources s ON s.id = i.source_id
+             WHERE i.first_seen > now() - interval '7 days'
+             GROUP BY s.ecosystem
+             ORDER BY n DESC
+             LIMIT 5
+            """
+        ).fetchall()
+
+        # «Latest leads» — 5 останніх лідів, з тим самим LEFT JOIN LATERAL на
+        # kb.briefs, що й /items (задача 2 аудиту 2026-08-11): якщо бріф уже
+        # існує, рядок отримує пряме посилання «Open brief» замість форми
+        # створення (та форма на Overview свідомо не дублюється, п.3 задачі 3
+        # аудиту 2026-08-12 — «можна спростити»).
+        latest_leads = conn.execute(
+            """
+            SELECT i.item_uid, i.title, i.url, i.delivered_at,
+                   s.ecosystem AS source_ecosystem, bf.id AS brief_id
+              FROM seen_items i
+              JOIN sources s ON s.id = i.source_id
+              LEFT JOIN LATERAL (
+                  SELECT b.id FROM kb.briefs b WHERE b.item_uid = i.item_uid
+                   ORDER BY b.id DESC LIMIT 1
+              ) AS bf ON true
+             WHERE i.delivered_at IS NOT NULL
+             ORDER BY i.delivered_at DESC
+             LIMIT 5
+            """
+        ).fetchall()
+
+    # Бакетовані ширини барів (app.css: .w-0..w-100) рахуються тут, а не в
+    # шаблоні (той самий принцип, що й issues вище): кожен ряд масштабується
+    # відносно МАКСИМУМУ у своєму власному 14-денному ряду — інакше один
+    # рідкісний сплеск лідів робив би решту днів невидимо тонкими смужками.
+    # `or 1` — не ділити на нуль, коли весь період порожній (усі бари w-0).
+    max_collected = max((r["collected"] for r in activity_rows), default=0) or 1
+    max_leads = max((r["leads"] for r in activity_rows), default=0) or 1
+    activity = [
+        {
+            "day": r["day"], "collected": r["collected"], "leads": r["leads"],
+            "collected_pct": _bar_pct(r["collected"], max_collected),
+            "leads_pct": _bar_pct(r["leads"], max_leads),
+        }
+        for r in activity_rows
+    ]
+    max_eco = max((r["n"] for r in top_ecosystems), default=0) or 1
+    ecosystems = [
+        {"ecosystem": r["ecosystem"], "n": r["n"], "pct": _bar_pct(r["n"], max_eco)}
+        for r in top_ecosystems
+    ]
+    # Порожній стан «Activity» — коли ЖОДЕН із 14 днів не приніс жодної
+    # знахідки (не лише «max_collected==1 з дефолту»): `any(...)` читає
+    # сирі рядки, а не пост-бакетовані pct, тож 1 знахідка за 14 днів усе
+    # одно рендерить графік (з майже порожніми барами), а НУЛЬ — порожній стан.
+    activity_has_data = any(r["collected"] for r in activity_rows)
+
     # Текст і число кожної проблеми — тут, не в шаблоні (той самий принцип,
     # що й _ask_ai_question вище): шаблон лише перекладає готовий
     # (ключ, %(n)s-рядок) через t() і рендерить лінк. Нуль проблем → шаблон
@@ -734,6 +844,10 @@ def dashboard(request: Request):
             "issues": issues,
             "top_problem_sources": top_problem_sources,
             "funnel": funnel,
+            "activity": activity,
+            "activity_has_data": activity_has_data,
+            "ecosystems": ecosystems,
+            "latest_leads": latest_leads,
             "stub_classifier": bool(
                 last_verdict and last_verdict["prompt_version"] == "stub-no-llm"
             ),
@@ -1443,6 +1557,11 @@ def items_page(
     # <select>, як view=leads24/review24 вже були.
     delivered: str = "",
     passed_filter: str = "",
+    # Задача 2 аудиту 2026-08-12 — фільтр по власній оцінці «корисно/шум»
+    # (seen_items.useful, міграція 014), окремий від outcome (той — доля
+    # УГОДИ по ліду, useful — якість самої знахідки; див. коментар
+    # set_item_useful нижче).
+    useful: str = "",
     view: str = "",
     page: int = 0,
 ):
@@ -1502,6 +1621,17 @@ def items_page(
             where.append("i.delivered_at IS NOT NULL")
         if passed_filter == "1":
             where.append("i.status <> 'filtered'")
+        # Задача 2 аудиту 2026-08-12 — «unrated» звужений до status IN
+        # ('done','pending'): це і є той самий підмножина рядків, що взагалі
+        # отримує кнопки 👍/👎 на items.html (filtered/seeded — «сміття», не
+        # оцінюємо), тож фільтр «unrated» не показує рядки, які людина
+        # фізично не могла оцінити.
+        if useful == "useful":
+            where.append("i.useful IS TRUE")
+        elif useful == "noise":
+            where.append("i.useful IS FALSE")
+        elif useful == "unrated":
+            where.append("i.useful IS NULL AND i.status IN ('done', 'pending')")
 
         # Хвіст запиту БЕЗ page — для лінків «новіші/старіші» і для «Скинути».
         # Лише активні фільтри: порожній параметр не повинен смітити URL.
@@ -1511,6 +1641,7 @@ def items_page(
                 "status": status, "q": q, "ecosystem": ecosystem, "lane": lane,
                 "min_confidence": min_confidence, "period": period, "outcome": outcome,
                 "delivered": delivered, "passed_filter": passed_filter,
+                "useful": useful,
             }.items()
             if v
         }
@@ -1559,6 +1690,7 @@ def items_page(
             "nav": "items", "items": rows,
             "status": status, "q": q, "ecosystem": ecosystem, "lane": lane,
             "min_confidence": min_confidence, "period": period, "outcome": outcome,
+            "useful": useful,
             "view": view,
             "page": page,
             "ecosystem_options": [r["ecosystem"] for r in ecosystem_options],
@@ -1566,6 +1698,17 @@ def items_page(
             "qs_no_page": qs_no_page,
         },
     )
+
+
+def _items_prg_target(qs: str) -> str:
+    """/items?<qs> для PRG-редіректів цієї секції (set_item_outcome,
+    set_item_useful) — одна спільна функція замість дублювання того самого
+    «\\r\\n на випадок зіпсованого POST + ліміт довжини» у кожному хендлері.
+    `qs` — лише рядок запиту (без "?"), тож ціль завжди лишається на /items
+    незалежно від того, що прийшло у формі — відкритого редіректу тут немає
+    навіть у теорії."""
+    safe_qs = qs.replace("\r", "").replace("\n", "")[:2000]
+    return f"/items?{safe_qs}" if safe_qs else "/items"
 
 
 @mutations.post("/items/{item_uid}/outcome")
@@ -1596,12 +1739,43 @@ def set_item_outcome(request: Request, item_uid: str, outcome: str = Form(...), 
             )
         conn.commit()
 
-    # `qs` — тільки рядок запиту (без "?"), тож ціль завжди лишається на
-    # /items незалежно від того, що прийшло у формі — відкритого редіректу
-    # тут немає навіть у теорії. \r\n на випадок ручного/зіпсованого POST.
-    safe_qs = qs.replace("\r", "").replace("\n", "")[:2000]
-    target = f"/items?{safe_qs}" if safe_qs else "/items"
-    return RedirectResponse(target, status_code=303)
+    return RedirectResponse(_items_prg_target(qs), status_code=303)
+
+
+@mutations.post("/items/{item_uid}/useful")
+def set_item_useful(item_uid: str, value: str = Form(...), qs: str = Form("")):
+    """👍/👎 на рядках-НЕ-лідах /items (задача 2 аудиту 2026-08-12,
+    seen_items.useful — міграція 014).
+
+    НАВМИСНО окреме поле від `outcome` (won/lost вище): outcome — доля
+    УГОДИ по ліду (win-rate для калібрування confidence_threshold), useful —
+    якість самої знахідки, до й незалежно від того, стала вона лідом чи ні
+    (сигнал для порогів/ключових слів на менш зрілому кінці лійки). Змішати
+    їх в одному стовпці означало б зіпсувати обидві метрики — тому й кнопки
+    рендеряться в різних гілках того самого стовпця Outcome на items.html:
+    рядок або лід (Won/Lost), або кандидат на оцінку (👍/👎), ніколи обидва.
+
+    `actor()` тут НЕ пишемо (на відміну від set_item_outcome): useful — це
+    сира сигнальна оцінка для подальшої аналітики порогів, а не рішення, за
+    яке хтось персонально відповідає перед командою — колонки useful_by тут
+    міграція 014 навмисно не додавала.
+    """
+    if value not in ("yes", "no", "clear"):
+        raise HTTPException(400, "value must be 'yes', 'no' or 'clear'")
+
+    with db() as conn:
+        if value == "clear":
+            conn.execute(
+                "UPDATE seen_items SET useful = NULL WHERE item_uid = %s", (item_uid,)
+            )
+        else:
+            conn.execute(
+                "UPDATE seen_items SET useful = %s WHERE item_uid = %s",
+                (value == "yes", item_uid),
+            )
+        conn.commit()
+
+    return RedirectResponse(_items_prg_target(qs), status_code=303)
 
 
 @mutations.post("/items/mark-read")
@@ -1694,10 +1868,38 @@ templates.env.filters["diag_key"] = diagnose_error
 templates.env.globals["DIAG_ADVICE_EN"] = DIAG_ADVICE_EN
 
 
-@app.get("/runs", response_class=HTMLResponse)
-def runs_page(request: Request, mode: str = "", limit: int = 50):
+# «Помилка в прогоні» — той самий критерій, що вже рендерить data-fail на
+# рядку runs.html (sources_failed АБО непорожній detail->'failures'):
+# фільтр ?errors=1 (задача 6 аудиту 2026-08-12) мусить показувати РІВНО ті
+# рядки, які й так позначені як проблемні оком, а не власний, розбіжний
+# критерій.
+_RUN_HAS_ERRORS_WHERE = (
+    "(sources_failed > 0 OR jsonb_array_length(coalesce(detail->'failures', '[]'::jsonb)) > 0)"
+)
+
+
+def _render_runs(
+    request: Request,
+    *,
+    mode: str = "",
+    limit: int = 50,
+    errors: int = 0,
+    test_results: list[dict] | None = None,
+):
+    """Одна точка рендеру /runs — і звичайний GET, і POST /runs/test-sources
+    нижче малюють ту саму сторінку (той самий прийом, що й _render_keywords/
+    _render_sources: PRG для «Test all sources now» свідомо зламаний,
+    результат — ефемерна відповідь живого тест-фетчу, а не стан, що
+    зберігається)."""
     limit = 200 if limit == 200 else 50
-    where = "WHERE mode = %s" if mode else ""
+    where_parts = []
+    params: list = []
+    if mode:
+        where_parts.append("mode = %s")
+        params.append(mode)
+    if errors:
+        where_parts.append(_RUN_HAS_ERRORS_WHERE)
+    where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
     with db() as conn:
         rows = conn.execute(
             f"""
@@ -1705,7 +1907,7 @@ def runs_page(request: Request, mode: str = "", limit: int = 50):
               FROM worker_runs {where}
              ORDER BY started_at DESC LIMIT {limit}
             """,
-            (mode,) if mode else (),
+            tuple(params),
         ).fetchall()
         modes = conn.execute(
             "SELECT DISTINCT mode FROM worker_runs ORDER BY mode"
@@ -1713,8 +1915,68 @@ def runs_page(request: Request, mode: str = "", limit: int = 50):
     return templates.TemplateResponse(
         request,
         "runs.html",
-        {"nav": "runs", "runs": rows, "mode": mode, "limit": limit, "modes": modes},
+        {
+            "nav": "runs", "runs": rows, "mode": mode, "limit": limit, "modes": modes,
+            "errors": errors, "test_results": test_results,
+        },
     )
+
+
+@app.get("/runs", response_class=HTMLResponse)
+def runs_page(request: Request, mode: str = "", limit: int = 50, errors: int = 0):
+    return _render_runs(request, mode=mode, limit=limit, errors=errors)
+
+
+def _test_all_sources() -> list[dict]:
+    """«Test all sources now» (задача 6 аудиту 2026-08-12): ПЕРЕВИКОРИСТОВУЄ
+    `_test_fetch` вище — той самий живий тест-фетч, що й add_source/Sources,
+    тож захист netguard (assert_public_url у worker/http.py) лишається на
+    місці і жодна SSRF-перевірка тут не обходиться і не дублюється.
+
+    Джерела читаємо ПОВНІШЕ, ніж буквально `id, name, url`: `Source.from_row`
+    (worker/fetchers/base.py) вимагає ще й `type`/`ecosystem`, і читає
+    `category`/`config`/`lane` — без них `_test_fetch` завжди падав би з
+    ValueError ще до першого HTTP-запиту.
+
+    Таймаут 5с на джерело: `HttpClient` (worker/http.py) власного таймауту
+    коротшого за конфіг воркера не має, тож 5с рахує ЦЕЙ виклик, окремим
+    потоком з `.result(timeout=5)`. Потік, що не встиг, лишається довиконувати
+    запит у фоні й тихо завершується сам — Python не вміє вбити потік ззовні,
+    а для рідкісної ручної кнопки на адмін-сторінці це прийнятний компроміс
+    (на відміну від воркера, тут немає накопичення: наступний клік стартує
+    свіжий пул). Послідовно (не паралельно) — навмисно: паралельний шторм
+    запитів по всіх джерелах одразу виглядав би для форумів як DDoS.
+    """
+    import concurrent.futures
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, type, name, ecosystem, url, category, config, lane "
+            "FROM sources WHERE enabled ORDER BY name"
+        ).fetchall()
+
+    results = []
+    for row in rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_test_fetch, row)
+            try:
+                count, error = future.result(timeout=5)
+            except concurrent.futures.TimeoutError:
+                count, error = 0, "timed out after 5s"
+        results.append({
+            "name": row["name"], "ecosystem": row["ecosystem"],
+            "ok": not error, "error": error, "count": count,
+        })
+    return results
+
+
+@mutations.post("/runs/test-sources")
+def test_all_sources(request: Request):
+    """Синхронний запит до ~60с (до 5с × кількість увімкнених джерел,
+    послідовно) — кнопка на /runs несе `data-busy` (розділ 3 app.js), інакше
+    подвійний клік послав би другий повний прогін паралельно з першим."""
+    results = _test_all_sources()
+    return _render_runs(request, test_results=results)
 
 
 # ── Knowledge base ─────────────────────────────────────────────────

@@ -1,11 +1,20 @@
 {% extends "base.html" %}
-{#- Історія збору (розділ 4.6). Контекст із runs_page: runs (рядки worker_runs
-    + duration_s), mode, limit, modes.
+{#- Історія збору (розділ 4.6; задача 6 аудиту 2026-08-12 — пояснювальна
+    панель, серверний фільтр помилок, «Test all sources now»). Контекст із
+    _render_runs (admin/app.py, спільна для GET /runs і POST
+    /runs/test-sources): runs (рядки worker_runs + duration_s), mode, limit,
+    modes, errors, test_results.
 
     r.detail.get('failures', []) навмисно БЕЗ (r.detail or {}): колонка
     worker_runs.detail — jsonb NOT NULL DEFAULT '{}', NULL там неможливий (F8).
     Раніше список помилок висипався в клітинку через <br>; тепер він згорнутий
-    у <details>, бо один зламаний прогін інакше розтягує рядок на пів екрана. -#}
+    у <details>, бо один зламаний прогін інакше розтягує рядок на пів екрана.
+
+    Задача 6: «errors only» переїхав із клієнтського фільтра (app.js, п.6) у
+    справжній параметр запиту ?errors=1 — WHERE у _render_runs, стан
+    лишається в URL і переживає перезавантаження/шеринг посилання, на
+    відміну від чекбокса, що жив лише в DOM. Без JS чекбокс однаково working:
+    звичайний GET-checkbox всередині форми фільтрів. -#}
 {% block title %}{{ t("pg.runs.h1", "Run history") }}{% endblock %}
 {% block h1 %}{{ t("pg.runs.h1", "Run history") }}{% endblock %}
 {% block sub %}{{ t("pg.runs.sub", "One row per worker run: how many sources were polled and what came of them") }}{% endblock %}
@@ -32,20 +41,66 @@
 
   <button class="btn">{{ t("act.filter", "Filter") }}</button>
 
-  {#- Клієнтський фільтр (app.js, п.6): без name, тож у GET-запит не потрапляє
-      і посилання лишається чистим. Ознака проблемного рядка — data-fail на
-      клітинці помилок. -#}
+  {#- Задача 6 аудиту 2026-08-12: справжній серверний фільтр, не клієнтський
+      (стан у URL — ?errors=1). Звичайний чекбокс-submit: без JS достатньо
+      натиснути «Filter» поруч, як і з рештою полів цієї форми. -#}
   <label class="check">
-    <input type="checkbox" data-filter-target="#runs-table" data-filter-only="[data-fail]"
-           data-filter-count="#runs-shown"> {{ t("pg.runs.only_errors", "errors only") }}
+    <input type="checkbox" name="errors" value="1"{% if errors %} checked{% endif %}>
+    {{ t("pg.runs.only_errors", "errors only") }}
   </label>
 
   <span class="toolbar__spacer"></span>
-  <span class="pager">{{ t("msg.shown", "shown") }} <span id="runs-shown" class="num">{{ runs | length }}</span></span>
+  <span class="pager">{{ t("msg.shown", "shown") }} <span class="num">{{ runs | length }}</span></span>
+</form>
+{#- Задача 6 п.3 — «Test all sources now»: окрема форма (не можна вкласти
+    <form> у <form> вище), синхронний запит до ~60с (до 5с × кількість
+    увімкнених джерел, послідовно) — data-busy обов'язковий, інакше подвійний
+    клік шле другий повний прогін паралельно з першим. -#}
+<form class="toolbar" method="post" action="/runs/test-sources"
+      data-busy="{{ t('pg.runs.testing_busy', 'Testing…') }}">
+  {% include "_csrf.html" %}
+  <button class="btn btn--sm" type="submit">{{ t("act.test_all_sources", "Test all sources now") }}</button>
+  <span class="muted">{{ t("pg.runs.test_hint", "Runs the same live test-fetch as the Sources page, once per enabled source — up to a minute.") }}</span>
 </form>
 {% endblock %}
 
 {% block data %}
+{#- Задача 6 п.1 — коротка пояснювальна панель зверху сторінки: ця сторінка
+    потрібна рідко (діагностика), день у день досить «Needs attention» на
+    Overview. -#}
+<div class="alert alert--info" role="status">
+  {{ t("pg.runs.explain",
+       "Each row is one collection run: how many items the worker saw, how many were new, filtered out, or failed. You only need this page when something looks wrong — day to day the Overview's Needs attention covers it.") }}
+</div>
+
+{#- Задача 6 п.3 — результати «Test all sources now» (POST /runs/test-sources,
+    рендериться напряму з POST-хендлера, той самий прийом, що й
+    /keywords/advice: PRG тут свідомо зламаний, результат — ефемерна
+    відповідь живого тест-фетчу, а не стан, що зберігається). -#}
+{% if test_results is not none %}
+<section class="panel">
+  <div class="panel__head"><h2>{{ t("pg.runs.test_results_h", "Source test results") }}</h2></div>
+  <div class="panel__body">
+    {% if test_results %}
+    <ul class="issues">
+      {% for r in test_results %}
+      <li class="issue">
+        <span class="issue__text">{{ r.name }} <span class="muted">· {{ r.ecosystem }}</span></span>
+        {% if r.ok %}
+        <span class="badge b-ok">{{ t("st.ok", "ok") }}</span>
+        {% else %}
+        <span><span class="badge b-bad">{{ t("st.error", "error") }}</span> <span class="muted">{{ r.error }}</span></span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">{{ t("pg.runs.test_no_sources", "No enabled sources to test.") }}</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
 <div class="panel">
   {% if runs %}
   <div class="tablewrap">

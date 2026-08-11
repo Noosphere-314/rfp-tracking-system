@@ -42,7 +42,14 @@
 <link rel="mask-icon" href="/assets/favicon.svg" color="#10B981">
 <meta name="theme-color" content="#0B1014">
 </head>
-<body class="app{% block body_class %}{% endblock %}">
+<body class="app{% block body_class %}{% endblock %}"
+      {#- Задача 4 аудиту 2026-08-12: тексти кнопок кастомного <dialog
+          class="confirm"> (app.js, розділ 4) — на <body>, а не хардкодом у
+          JS, бо саме тут (єдиний раз на сторінку, через context processor
+          i18n.template_context) уже є t() з поточною мовою. Діалог
+          створюється лінькво й переюзається для кожного [data-confirm]. -#}
+      data-confirm-ok="{{ t('act.confirm_ok', 'Confirm') }}"
+      data-confirm-cancel="{{ t('act.confirm_cancel', 'Cancel') }}">
 <a class="skip" href="#main">{{ t("app.skip", "Skip to content") }}</a>
 <input type="checkbox" id="nav-toggle" hidden>
 
