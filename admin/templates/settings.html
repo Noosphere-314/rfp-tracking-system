@@ -161,6 +161,16 @@
     </div>
   </div>
   {% endfor %}
+
+  {#- Аудит UX (задача 2, п.3): «Save all» була лише вгорі в controls —
+      після довгого списку параметрів людина мала скролити назад нагору.
+      Той самий submit тієї ж форми через form=, а не другий form-тег
+      (вкладені форми неприпустимі, і кнопка мусить лишатися всередині
+      #settings-form, щоб форма охоплювала обидві кнопки). -#}
+  <div class="toolbar">
+    <span class="toolbar__spacer"></span>
+    <button form="settings-form" class="btn btn--primary">{{ t("act.save_all", "Save all") }}</button>
+  </div>
 </form>
 
 {#- Картка «Сесії» — ЗА межами #settings-form: вкладені форми неприпустимі, а

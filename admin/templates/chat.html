@@ -1,248 +1,279 @@
 {% extends "base.html" %}
-{#- AI-чат (розділ 4.9, задача #30). Чат живе поверх бази знань через kbmcp:
-    admin лише проксує POST на {KBMCP_URL}/chat (admin/app.py: _chat_backend)
-    і читає готову історію з kb.chat_messages для відображення — сам туди
-    нічого не пише (пише kbmcp, той самий поділ ролей, що й у generate_brief
-    для kb.briefs). Тому «thinking» нижче — не спінер, а факт: останній
-    рядок історії — user, а assistant ще нема.
+{#- AI-чат (розділ 4.9, задача #30). Редизайн 2026-08-11 (рішення Миколи,
+    рескоуп задачі): постійна панель історії СПРАВА замість шухляди-по-URL,
+    усі кнопки — у спливаючі ⋯-меню (.menu, розділ 2 задачі — генеричний
+    компонент, піде по всій платформі), форумні чипи прибрані на користь
+    згрупованого випадаючого списку "forums" у композері.
 
-    .content--full і .chat__composer лишились від стаба (крок «довести
-    повноекранний лейаут, поки він дешевий») — тепер вони отримали справжній
-    вміст.
+    Чат живе поверх бази знань через kbmcp: admin лише проксує POST на
+    {KBMCP_URL}/chat (admin/app.py: _chat_backend) і читає готову історію з
+    kb.chat_messages для відображення — сам туди нічого не пише (пише kbmcp,
+    той самий поділ ролей, що й у generate_brief для kb.briefs). Тому
+    «thinking» нижче — не спінер, а факт: останній рядок історії — user, а
+    assistant ще нема.
 
     Композер — звичайна <form method="post" action="/chat/send"> із
     {% include "_csrf.html" %}: сторінка мусить повністю працювати без JS
     (PRG: POST → 303 на /chat). app.js лише перехоплює submit і підміняє
     похід на fetch(), щоб не було повного перезавантаження сторінки —
-    розмітка нижче для цього й тримає #chat-list/#chat-empty стабільними id.
+    розмітка нижче для цього й тримає #chat-list/#chat-empty/.chat__composer
+    стабільними (app.js: chatEnhance).
 
     Двомовність: англійський текст — другим аргументом t(), українська зі
     словника admin/i18n.py (pg.chat.*).
 
-    Розділ D («звязка чату зі щоденною роботою»):
+    `hist` (app.py: chat_page) — стан у URL, без JS:
+      "" (дефолт)     — жива розмова цього браузера: композер + список.
+      "<session_key>" — та сама сторінка read-only показує ОДНУ архівну
+                        розмову (banner + «Back to current chat»),
+                        композер прихований. Панель справа лишається.
+    Список розмов праворуч (.chat-side) рендериться ЗАВЖДИ, не лише в
+    архівному режимі — клік по розмові веде на /chat?hist=<key>.
+
+    Розділ D («звязка чату зі щоденною роботою», що лишився з попередньої
+    ітерації):
       D1 — приклади питань на порожньому стані нижче. Текст ПИТАННЯ (те, що
            реально піде в композер і в чат-бекенд) лишається англійським
            ЗАВЖДИ — той самий інваріант, що й у _ask_ai_question (app.py):
            stub-рівень відмовляється шукати за не-латинським запитом.
-           Перекладається лише ВИДИМИЙ підпис кнопки (окремий {{ t(...) }} із
-           тим самим англійським текстом за замовчуванням) — сама ask-фраза в
-           href/data-fill НЕ проходить через t().
+           Перекладається лише ВИДИМИЙ підпис кнопки.
       D2 — ask (app.py: chat_page) префилить textarea нижче МІЖ тегами:
-           автоескейпінг Jinja вже покриває XSS, без |safe.
-      D4 — forum_chips (app.py) — «All» + enabled-форуми з kb.forums. -#}
+           автоескейпінг Jinja вже покриває XSS, без |safe. -#}
 {% block title %}{{ t("pg.chat.h1", "AI chat") }}{% endblock %}
 {% block h1 %}{{ t("pg.chat.h1", "AI chat") }}{% endblock %}
 {% block sub %}{{ t("pg.chat.sub", "Ask the knowledge base in plain language") }}{% endblock %}
 {% block content_mod %} content--full{% endblock %}
 
-{% block data %}
-<div class="chat-split{% if hist %} chat-split--open{% endif %}">
-<div class="chat-split__main">
-{#- Обидва блоки рендеряться завжди — приховується непотрібний через
-    [hidden], а не {% if %}: JS перемикає видимість тим самим атрибутом при
-    оптимістичному додаванні першої бульбашки, без перебудови DOM. -#}
-<div id="chat-empty"{% if messages %} hidden{% endif %}>
-{% set empty_title = t("pg.chat.empty_title", "Ask the knowledge base") %}
-{% set empty_hint = t("pg.chat.empty_hint", "Plain-language questions over the forum archive: the model rephrases them itself, reads whole topics and uses what it found in the answer. The same archive is also searchable directly.") %}
-{% set empty_href = "/kb" %}
-{% set empty_link = t("pg.chat.kb_link", "Search the knowledge base") %}
-{% include "_empty.html" %}
-
-{#- D1 — 4 приклади питань. `ask` — завжди англійська фраза (і в href, і в
-    data-fill), `label_key` перекладає лише те, що людина БАЧИТЬ на кнопці;
-    без JS кнопка — звичайне посилання /chat?ask=…, з JS (app.js, розділ 8)
-    клік заповнює композер тим самим `ask` і фокусить textarea, замість
-    переходу. -#}
-{% set chat_examples = [
-     ("pg.chat.example.1", "What dev tooling grants were discussed on Optimism this quarter?"),
-     ("pg.chat.example.2", "Which ecosystems currently have open RFPs for oracle integrations?"),
-     ("pg.chat.example.3", "Summarize recent forum discussion about security audit funding."),
-     ("pg.chat.example.4", "What's a typical grant size for indexing infrastructure proposals?"),
-   ] %}
-<div class="chat__examples" role="group" aria-label="{{ t('pg.chat.examples_label', 'Try asking') }}">
-  {% for label_key, ask_text in chat_examples %}
-  <a class="btn btn--ghost btn--block" href="/chat?ask={{ ask_text | urlencode }}"
-     data-fill="{{ ask_text }}">{{ t(label_key, ask_text) }}</a>
-  {% endfor %}
-</div>
-</div>
-
-<div class="chat__list" id="chat-list"{% if not messages %} hidden{% endif %}>
-  {% for m in messages %}
-  <div class="chat__msg chat__msg--{{ m.role }}">
-    <div class="chat__bubble">
-      {% if m.role == 'assistant' %}
-      <p class="chat__text">{{ m.content | linkify }}</p>
-      {% else %}
-      <p class="chat__text">{{ m.content }}</p>
-      {% endif %}
-    </div>
-    <div class="chat__meta">
-      {% if m.role == 'user' %}
-      <span>{{ m.who or who }}</span>
-      {% else %}
-      {% if m.tier == 'stub' %}<span class="badge b-neutral">{{ t("pg.chat.stub_chip", "keyword tier") }}</span>{% endif %}
-      {% if m.model %}<span class="badge b-info">{{ m.model }}</span>{% endif %}
-      {% endif %}
-      <span>{{ m.created_at.strftime('%H:%M') if m.created_at else '' }}</span>
-    </div>
-    {#- Розділ B: «Save as brief» — лише на LLM-рівні (не stub: там немає
-        справжньої синтези над архівом, зберігати нічого). Форма шле лише
-        id рядка kb.chat_messages — app.py (save_chat_message_as_brief)
-        перевіряє role/tier/session_key сам, а не довіряє тому, що видно тут. -#}
-    {% if m.role == 'assistant' and m.tier == 'llm' %}
-    <form class="chat__savebrief" method="post" action="/chat/save-brief">
+{#- Меню сторінки (розділ 2 задачі): «Save chat as report» синтезує бріф із
+    УСІЄЇ поточної розмови (kbmcp читає ЖИВУ сесію цього браузера — тому
+    пункт прихований у read-only архівному перегляді, де messages нижче
+    належать ІНШІЙ розмові). «Open full history» — статичний лінк на /chats,
+    завжди присутній. «New chat» свідомо НЕ тут — він угорі .chat-side. -#}
+{% block topbar_actions %}
+<details class="menu">
+  <summary class="menu__btn" aria-haspopup="true" aria-label="{{ t('act.menu', 'Actions') }}">⋯</summary>
+  <div class="menu__list">
+    {%- if not archived and messages %}
+    <form method="post" action="/chat/save-report" class="menu__item-form"
+          data-busy="{{ t('pg.chat.report_busy', 'Synthesizing report…') }}">
       {% include "_csrf.html" %}
-      <input type="hidden" name="message_id" value="{{ m.id }}">
-      {#- Микола не помітив цю кнопку — той самий підпис, лише з title-
-          підказкою на наведення (без редизайну). -#}
-      <button class="btn btn--sm btn--ghost" type="submit"
-              title="{{ t('act.save_as_brief.title', 'Save this answer as a brief the sales team can read later') }}">{{ t("act.save_as_brief", "Save as brief") }}</button>
+      <button class="menu__item" type="submit"
+              title="{{ t('act.save_report.title', 'Build one brief synthesized from the whole conversation — not just one reply') }}">{{ t("act.save_report", "Save chat as report") }}</button>
     </form>
-    {% endif %}
+    {%- endif %}
+    <a class="menu__item" href="/chats">{{ t("pg.chat.open_full_history", "Open full history") }}</a>
   </div>
-  {% endfor %}
-  {#- Натяк «відповідь генерується», а не спінер: сторінка нічого не пінгує
-      сама (заборона на автополінг, app.js розділ 0) — рядок просто видно,
-      поки людина не оновить сторінку чи не отримає відповідь у своїй
-      вкладці. -#}
-  {% if thinking %}
-  <div class="chat__msg chat__msg--assistant chat__msg--thinking" aria-live="polite">
-    <div class="chat__bubble chat__bubble--thinking">
-      <span class="chat__dots"><span></span><span></span><span></span></span>
-      <span class="visually-hidden">{{ t("pg.chat.thinking", "Thinking…") }}</span>
-    </div>
-  </div>
-  {% endif %}
-</div>
-</div>
-
-{%- if hist %}
-{#- Шухляда історії (запит Миколи: історія — тут, а не в System). Стан у
-    URL (?hist=1 — список, ?hist=<key> — розмова) — жодного JS: перемикання
-    режимів це звичайні посилання, і без скриптів усе працює так само. -#}
-<aside class="chat-drawer" aria-label="{{ t('pg.chat.hist_title', 'Chat history') }}">
-  <div class="chat-drawer__head">
-    <strong>{{ t("pg.chat.hist_title", "Chat history") }}</strong>
-    <span class="toolbar__spacer"></span>
-    {% if hist != "1" %}<a class="btn btn--ghost btn--sm" href="/chat?hist=1">{{ t("pg.chat.hist_back", "← All") }}</a>{% endif %}
-    <a class="btn btn--ghost btn--sm" href="/chat" aria-label="{{ t('act.close', 'Close') }}">✕</a>
-  </div>
-
-  {% if hist == "1" %}
-  <div class="chat-drawer__list">
-    {% for s in hist_sessions %}
-    <a class="chat-drawer__item" href="{{ s.drawer_href }}">
-      <span class="chat-drawer__preview">{{ s.preview or '—' }}</span>
-      <span class="chat-drawer__meta">
-        <span class="badge {{ 'b-info' if s.channel == 'telegram' else 'b-neutral' }}">{{ s.channel }}</span>
-        <span>{{ s.who or '' }}</span>
-        <span>{{ s.last_at.strftime('%m-%d %H:%M') if s.last_at else '' }}</span>
-        <span>{{ s.questions }} · {{ s.tokens }} tok</span>
-      </span>
-    </a>
-    {% else %}
-    <p class="muted">{{ t("pg.chat.hist_empty", "No conversations yet.") }}</p>
-    {% endfor %}
-  </div>
-  {% else %}
-  <div class="chat-drawer__msgs">
-    {% for m in hist_messages %}
-    <div class="chat__msg chat__msg--{{ m.role }}">
-      <div class="chat__bubble">
-        {% if m.role == 'assistant' %}<p class="chat__text">{{ m.content | linkify }}</p>
-        {% else %}<p class="chat__text">{{ m.content }}</p>{% endif %}
-      </div>
-      <div class="chat__meta">
-        <span>{{ m.who or '' }}</span>
-        <span>{{ m.created_at.strftime('%m-%d %H:%M') if m.created_at else '' }}</span>
-      </div>
-    </div>
-    {% else %}
-    <p class="muted">{{ t("pg.chat.hist_gone", "This conversation is empty or was deleted.") }}</p>
-    {% endfor %}
-  </div>
-  {% if hist_messages %}
-  <div class="chat-drawer__actions">
-    <a class="btn btn--ghost btn--sm" href="{{ hist_full_href }}">{{ t("pg.chat.hist_full", "Full view") }}</a>
-    <form method="post" action="/chats/delete" class="inline"
-          data-confirm="{{ t('pg.chats.delete_confirm', 'Delete this conversation permanently?') }}">
-      {% include "_csrf.html" %}
-      <input type="hidden" name="key" value="{{ hist }}">
-      <input type="hidden" name="next" value="/chat?hist=1">
-      <button class="btn btn--sm btn--danger" type="submit">{{ t("act.delete_chat", "Delete conversation") }}</button>
-    </form>
-  </div>
-  {% endif %}
-  {% endif %}
-</aside>
-{%- endif %}
+</details>
 {% endblock %}
 
-{% block controls %}
-<div class="chat__controls">
-  <form class="chat__newchat" method="post" action="/chat/new">{% include "_csrf.html" %}
-    <button class="btn btn--ghost btn--sm" type="submit">{{ t("pg.chat.new_chat", "New chat") }}</button>
-  </form>
-  {%- if hist %}
-  <a class="btn btn--sm" href="/chat">{{ t("pg.chat.hist_close", "Close history") }}</a>
-  {%- else %}
-  <a class="btn btn--ghost btn--sm" href="/chat?hist=1">{{ t("pg.chat.hist_open", "History") }}</a>
-  {%- endif %}
+{% block data %}
+<div class="chat-wrap">
+  {#- Мобільний off-canvas для .chat-side (розділ 1 редизайну): чистий
+      checkbox-hack, без JS. Чекбокс — ПЕРШОЮ дитиною .chat-wrap, щоб
+      `~`-селектор нижче (app.css) бачив і .chat-col, і .chat-side, і
+      .chat-side__scrim як наступних сиблінгів. -#}
+  <input type="checkbox" id="chat-side-toggle" hidden>
 
-  {#- Розділ D — «Зберегти ЧАТ як звіт»: на відміну від chat__savebrief на
-      кожній бульбашці (одна репліка), тут kbmcp синтезує один бріф із УСІЄЇ
-      поточної розмови (app.py: /chat/save-report, session_key = сирий sid
-      цієї сторінки). Кнопка — лише коли є що синтезувати. -#}
-  {%- if messages %}
-  <form method="post" action="/chat/save-report"
-        data-busy="{{ t('pg.chat.report_busy', 'Synthesizing report…') }}">
-    {% include "_csrf.html" %}
-    <button class="btn btn--ghost btn--sm" type="submit"
-            title="{{ t('act.save_report.title', 'Build one brief synthesized from the whole conversation — not just one reply') }}">{{ t("act.save_report", "Save chat as report") }}</button>
-  </form>
-  {%- endif %}
+  <div class="chat-col">
+    <div class="chat-col__head">
+      <label class="btn btn--ghost btn--sm chat-col__histbtn" for="chat-side-toggle">
+        {{ t("pg.chat.hist_open", "History") }}
+      </label>
+      {%- if archived %}
+      <div class="alert alert--info chat__archived-banner" role="status">
+        <span>{{ t("pg.chat.archived_banner", "Archived conversation") }}</span>
+        <a class="btn btn--sm" href="/chat">{{ t("pg.chat.back_to_current", "Back to current chat") }}</a>
+      </div>
+      {%- endif %}
+    </div>
 
-  {#- D4 — форумні чипи. «All» веде на голий /chat (без ask). Кожен форумний
-      чип без JS — посилання на приклад, уже прив'язаний до цього форуму
-      (app.py: _forum_chip_href); з JS (app.js) клік ДОДАЄ " in <Forum>" до
-      поточного тексту композера, замість переходу — щоб не втратити
-      чернетку, яку людина вже почала друкувати. -#}
-  <div class="chips chat__forumchips" role="group"
-       aria-label="{{ t('pg.chat.forum_chips_label', 'Scope the next question to a forum') }}">
-    <a class="chip" href="/chat" data-forum="">{{ t("f.forum.any", "all forums") }}</a>
-    {% for fc in forum_chips %}
-    <a class="chip" href="{{ fc.href }}" data-forum="{{ fc.label }}">{{ fc.label }}</a>
-    {% endfor %}
+    {%- if archived and not messages %}
+    <div class="empty">
+      <div class="empty__title">{{ t("pg.chat.hist_gone", "This conversation is empty or was deleted.") }}</div>
+    </div>
+    {%- else %}
+    <div class="chat-col__scroll">
+    {#- Обидва блоки рендеряться завжди — приховується непотрібний через
+        [hidden], а не {% if %}: JS перемикає видимість тим самим атрибутом
+        при оптимістичному додаванні першої бульбашки, без перебудови DOM. -#}
+    <div id="chat-empty"{% if messages %} hidden{% endif %}>
+    {% set empty_title = t("pg.chat.empty_title", "Ask the knowledge base") %}
+    {% set empty_hint = t("pg.chat.empty_hint", "Plain-language questions over the forum archive: the model rephrases them itself, reads whole topics and uses what it found in the answer. The same archive is also searchable directly.") %}
+    {% set empty_href = "/kb" %}
+    {% set empty_link = t("pg.chat.kb_link", "Search the knowledge base") %}
+    {% include "_empty.html" %}
+
+    {#- D1 — 4 приклади питань. `ask` — завжди англійська фраза (і в href, і в
+        data-fill), `label_key` перекладає лише те, що людина БАЧИТЬ на кнопці;
+        без JS кнопка — звичайне посилання /chat?ask=…, з JS (app.js) клік
+        заповнює композер тим самим `ask` і фокусить textarea, замість
+        переходу. -#}
+    {% set chat_examples = [
+         ("pg.chat.example.1", "What dev tooling grants were discussed on Optimism this quarter?"),
+         ("pg.chat.example.2", "Which ecosystems currently have open RFPs for oracle integrations?"),
+         ("pg.chat.example.3", "Summarize recent forum discussion about security audit funding."),
+         ("pg.chat.example.4", "What's a typical grant size for indexing infrastructure proposals?"),
+       ] %}
+    <div class="chat__examples" role="group" aria-label="{{ t('pg.chat.examples_label', 'Try asking') }}">
+      {% for label_key, ask_text in chat_examples %}
+      <a class="btn btn--ghost btn--block" href="/chat?ask={{ ask_text | urlencode }}"
+         data-fill="{{ ask_text }}">{{ t(label_key, ask_text) }}</a>
+      {% endfor %}
+    </div>
+    </div>
+
+    <div class="chat__list" id="chat-list"{% if not messages %} hidden{% endif %}>
+      {% for m in messages %}
+      <div class="chat__msg chat__msg--{{ m.role }}">
+        <div class="chat__bubble">
+          {% if m.role == 'assistant' %}
+          <p class="chat__text">{{ m.content | linkify }}</p>
+          {% else %}
+          <p class="chat__text">{{ m.content }}</p>
+          {% endif %}
+        </div>
+        <div class="chat__meta">
+          {% if m.role == 'user' %}
+          <span>{{ m.who or who }}</span>
+          {% else %}
+          {% if m.tier == 'stub' %}<span class="badge b-neutral">{{ t("pg.chat.stub_chip", "keyword tier") }}</span>{% endif %}
+          {% if m.model %}<span class="badge b-info">{{ m.model }}</span>{% endif %}
+          {% endif %}
+          <span>{{ m.created_at.strftime('%H:%M') if m.created_at else '' }}</span>
+          {#- Розділ 2 редизайну: замість видимої кнопки «Save as brief» —
+              маленьке ⋯-меню. Лише на LLM-рівні живої розмови (не stub: там
+              немає справжньої синтези; не archived: kbmcp перевіряє
+              session_key = ЖИВА сесія цього браузера, — save_chat_message_as_brief
+              все одно відмовив би 404-кою на чужу розмову, тож пункт тут не
+              рендериться, щоб не обіцяти дію, яка провалиться). Форма шле
+              лише id рядка kb.chat_messages — app.py перевіряє role/tier/
+              session_key сам, а не довіряє тому, що видно тут. -#}
+          {% if not archived and m.role == 'assistant' and m.tier == 'llm' %}
+          <details class="menu chat__msgmenu">
+            <summary class="menu__btn" aria-haspopup="true" aria-label="{{ t('act.menu', 'Actions') }}">⋯</summary>
+            <div class="menu__list">
+              <form method="post" action="/chat/save-brief" class="menu__item-form">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="message_id" value="{{ m.id }}">
+                <button class="menu__item" type="submit"
+                        title="{{ t('act.save_as_brief.title', 'Save this answer as a brief the sales team can read later') }}">{{ t("act.save_as_brief", "Save as brief") }}</button>
+              </form>
+            </div>
+          </details>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+      {#- Натяк «відповідь генерується», а не спінер: сторінка нічого не
+          пінгує сама (заборона на автополінг, app.js розділ 0) — рядок
+          просто видно, поки людина не оновить сторінку чи не отримає
+          відповідь у своїй вкладці. -#}
+      {% if thinking %}
+      <div class="chat__msg chat__msg--assistant chat__msg--thinking" aria-live="polite">
+        <div class="chat__bubble chat__bubble--thinking">
+          <span class="chat__dots"><span></span><span></span><span></span></span>
+          <span class="visually-hidden">{{ t("pg.chat.thinking", "Thinking…") }}</span>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    </div>
+    {%- endif %}
+
+    {#- Композер — прихований цілком у read-only архівному режимі (спец.
+        рішення розділу 1: людина не може дописувати в чужу/минулу
+        розмову). Панель (surface/border/radius): textarea зверху на всю
+        ширину, нижній рядок — [KB-scope] [Web search] [spacer] [Send]. -#}
+    {%- if not archived %}
+    <form class="chat__composer" method="post" action="/chat/send"
+          data-busy="{{ t('pg.chat.sending', 'Sending…') }}"
+          data-error="{{ t('pg.chat.error', 'Could not send the message — try again') }}"
+          data-stub-chip="{{ t('pg.chat.stub_chip', 'keyword tier') }}"
+          data-who="{{ who }}">
+      {% include "_csrf.html" %}
+      <label class="visually-hidden" for="chat-input">{{ t("f.message", "Message") }}</label>
+      {#- D2 — `ask` (app.py: chat_page) префилить чернетку МІЖ тегами; сама
+          сторінка не сабмітить форму сама — жодного autofocus/autosubmit. -#}
+      <textarea id="chat-input" name="message" maxlength="4000" required
+                placeholder="{{ t('pg.chat.ph', 'e.g. which dev tooling grants were discussed in Optimism this quarter?') }}">{{ ask }}</textarea>
+      <div class="chat__composer-row">
+        {#- Розділ 3 редизайну — випадаючий список форумів бази знань:
+            менюшка .menu--up (розкривається вгору — композер унизу колонки,
+            вниз їй нікуди). Без вибору жоден чекбокс не позначений —
+            підказка першим рядком пояснює, що це означає «шукати всюди
+            самому», а не «нічого не шукати». Групи — за kind
+            (app.py: _forum_scope_groups), лише коли є що групувати. -#}
+        <details class="menu menu--up chat__scope" data-selected-tpl="{{ t('pg.chat.scope_selected', '{n} selected') }}">
+          <summary class="menu__btn" aria-haspopup="true">{{ t("pg.chat.scope_all", "All forums") }}</summary>
+          <div class="menu__list">
+            <p class="menu__hint">{{ t("pg.chat.scope_hint", "No selection = the assistant searches everywhere itself") }}</p>
+            {% for group in forum_groups %}
+            <p class="menu__group">{{ t(group.label_key, group.label_en) }}</p>
+            {% for slug in group.slugs %}
+            <label class="menu__item menu__item--check">
+              <input type="checkbox" name="forums" value="{{ slug }}"> {{ slug }}
+            </label>
+            {% endfor %}
+            {% endfor %}
+          </div>
+        </details>
+        <label class="check" for="chat-web"
+               title="{{ t('pg.chat.web_hint', 'Also searches the live internet for this message — billed separately by Anthropic, on top of the usual per-message token cost.') }}">
+          <input type="checkbox" id="chat-web" name="web" value="1">
+          {{ t("f.web_search", "Web search") }}
+        </label>
+        <span class="toolbar__spacer"></span>
+        <button class="btn btn--primary" type="submit">{{ t("act.send", "Send") }}</button>
+      </div>
+    </form>
+    {%- endif %}
   </div>
 
-  <form class="chat__composer" method="post" action="/chat/send"
-        data-busy="{{ t('pg.chat.sending', 'Sending…') }}"
-        data-error="{{ t('pg.chat.error', 'Could not send the message — try again') }}"
-        data-stub-chip="{{ t('pg.chat.stub_chip', 'keyword tier') }}"
-        data-who="{{ who }}">
-    {% include "_csrf.html" %}
-    <label class="visually-hidden" for="chat-input">{{ t("f.message", "Message") }}</label>
-    {#- D2 — `ask` (app.py: chat_page) префилить чернетку МІЖ тегами; сама
-        сторінка не сабмітить форму сама — жодного autofocus/autosubmit. -#}
-    <textarea id="chat-input" name="message" maxlength="4000" required
-              placeholder="{{ t('pg.chat.ph', 'e.g. which dev tooling grants were discussed in Optimism this quarter?') }}">{{ ask }}</textarea>
-    {#- Розділ C — тумблер веб-пошуку: вмикається будь-якої миті прямо в
-        чаті, а не лише в /settings (chat_web_search там — глобальний
-        дефолт, цей чекбокс — рішення на ОДНЕ повідомлення). Свідомо БЕЗ
-        `checked`: людина вмикає його сама, коли в запиті є натяк на
-        верифікацію («перевір в інтернеті») — інакше кожне повідомлення
-        мовчки тарифікувалось би пошуком. app.js нічого не скидає й нічого
-        не читає окремо — чекбокс уже всередині форми, тож FormData
-        (app.js, розділ 7) підхоплює його стан автоматично, і стан
-        лишається позначеним між повідомленнями (людина звіряє кілька
-        відповідей поспіль тим самим тумблером). -#}
-    <label class="check" for="chat-web"
-           title="{{ t('pg.chat.web_hint', 'Also searches the live internet for this message — billed separately by Anthropic, on top of the usual per-message token cost.') }}">
-      <input type="checkbox" id="chat-web" name="web" value="1">
-      {{ t("f.web_search", "Web search") }}
-    </label>
-    <button class="btn btn--primary" type="submit">{{ t("act.send", "Send") }}</button>
-  </form>
+  {#- Постійна панель історії СПРАВА (розділ 1 редизайну): рендериться
+      ЗАВЖДИ (app.py: hist_sessions, LIMIT 30), а не лише за колишнім
+      ?hist=1. Desktop (≥1100px) — видима завжди, власний скрол. Mobile —
+      оверлей через #chat-side-toggle. -#}
+  <aside class="chat-side" aria-label="{{ t('pg.chat.hist_title', 'Chat history') }}">
+    <form method="post" action="/chat/new" class="chat-side__newchat">
+      {% include "_csrf.html" %}
+      {#- Свідомо НЕ btn--primary: правило 3.3 (app.css) — насичений градієнт
+          рівно двічі на екран, марка + ОДНА головна дія, і ця дія тут «Send».
+          Помітність New chat дає позиція (верх панелі) і повна ширина. -#}
+      <button class="btn btn--block" type="submit">+ {{ t("pg.chat.new_chat", "New chat") }}</button>
+    </form>
+
+    <div class="chat-side__list">
+      {% for s in hist_sessions %}
+      <div class="chat-side__item{{ ' is-active' if s.is_active }}">
+        <a class="chat-side__link" href="{{ s.hist_href }}">
+          <span class="chat-side__preview">{{ s.preview or '—' }}</span>
+          <span class="chat-side__meta">
+            <span class="badge {{ 'b-info' if s.channel == 'telegram' else 'b-neutral' }}">{{ s.channel }}</span>
+            <span>{{ s.who or '' }}</span>
+            <span>{{ s.last_at.strftime('%m-%d %H:%M') if s.last_at else '' }}</span>
+            <span title="{{ t('f.questions', 'Questions') }}">{{ s.questions }}</span>
+          </span>
+        </a>
+        <details class="menu chat-side__menu">
+          <summary class="menu__btn" aria-haspopup="true" aria-label="{{ t('act.menu', 'Actions') }}">⋯</summary>
+          <div class="menu__list">
+            <a class="menu__item" href="{{ s.view_href }}">{{ t("pg.chat.open_full", "Open full") }}</a>
+            <form method="post" action="/chats/delete" class="menu__item-form"
+                  data-confirm="{{ t('pg.chats.delete_confirm', 'Delete this conversation permanently?') }}">
+              {% include "_csrf.html" %}
+              <input type="hidden" name="key" value="{{ s.session_key }}">
+              <input type="hidden" name="next" value="/chat">
+              <button class="menu__item menu__item--danger" type="submit">{{ t("act.delete_chat", "Delete conversation") }}</button>
+            </form>
+          </div>
+        </details>
+      </div>
+      {% else %}
+      <p class="muted">{{ t("pg.chat.hist_empty", "No conversations yet.") }}</p>
+      {% endfor %}
+    </div>
+  </aside>
+
+  <label class="chat-side__scrim" for="chat-side-toggle" aria-hidden="true"></label>
 </div>
 {% endblock %}

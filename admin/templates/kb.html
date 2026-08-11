@@ -69,6 +69,16 @@
 {% endblock %}
 
 {% block data %}
+{#- Задача «покриття архівів», п.2: нетехнічна команда плутає /sources
+    (звідки пайплайн ЛОВИТЬ нові знахідки) із цим архівом (форуми, СКАЧАНІ
+    на сервер для AI-чату й пошуку) — один і той самий сайт легко буває
+    в обох ролях одразу. Панель — зверху, до результатів пошуку. -#}
+<div class="alert alert--info" role="status">
+  {{ t("pg.kb.scope_note",
+       "Sources (the Sources page) are what the pipeline watches to catch new leads. "
+       "Knowledge base is forums downloaded to this server for AI chat and search. "
+       "The same site can be both at once — those are two different roles.") }}
+</div>
 {% if q %}
 <section class="panel">
   <div class="panel__head">
@@ -124,7 +134,9 @@
       <thead>
         <tr><th>{{ t("f.forum", "Forum") }}</th><th>{{ t("f.address", "Address") }}</th>
             <th>{{ t("f.state", "State") }}</th><th>{{ t("f.freshness", "Freshness") }}</th>
-            <th>{{ t("f.topics", "Topics") }}</th><th>{{ t("f.posts", "Posts") }}</th>
+            <th>{{ t("pg.kb.topics_th", "Topics (ours / site)") }}</th>
+            <th>{{ t("pg.kb.posts_th", "Posts (ours / site)") }}</th>
+            <th>{{ t("pg.kb.coverage_th", "Coverage %") }}</th>
             <th>{{ t("f.last_crawl", "Last crawl") }}</th><th></th></tr>
       </thead>
       <tbody>
@@ -145,8 +157,18 @@
             {% elif d < 30 %}<span class="badge b-warn">{{ d }} {{ t("f.days_short", "d") }} {{ t("pg.kb.no_news", "with no news") }}</span>
             {% else %}<span class="badge b-bad">{{ t("pg.kb.stale", "stale") }} · {{ d }} {{ t("f.days_short", "d") }}</span>{% endif %}
           </td>
-          <td class="cell--num">{{ f.topics }}</td>
-          <td class="cell--num">{{ f.posts }}</td>
+          {#- NULL remote_* = форум ще не мав жодного проходу воркера з
+              еталоном /about.json — «—», а не «0», щоб не читалось як
+              нульове покриття. -#}
+          <td class="cell--num cell--nowrap">{{ f.topics | compact }} / {% if f.remote_topics is none %}<span class="muted">—</span>{% else %}{{ f.remote_topics | compact }}{% endif %}</td>
+          <td class="cell--num cell--nowrap">{{ f.posts | compact }} / {% if f.remote_posts is none %}<span class="muted">—</span>{% else %}{{ f.remote_posts | compact }}{% endif %}</td>
+          <td class="cell--num">
+            {% if f.coverage_pct is none %}
+            <span class="badge b-neutral" title="{{ t('pg.kb.coverage_hint', 'reference numbers appear after the next crawl') }}">—</span>
+            {% else %}
+            <span class="badge {{ f.coverage_class }}"{% if f.stats_at %} title="{{ t('pg.kb.stats_at_title', 'Reference numbers as of') }} {{ f.stats_at.strftime('%Y-%m-%d %H:%M') }}"{% endif %}>{{ f.coverage_pct }}%</span>
+            {% endif %}
+          </td>
           <td class="muted cell--nowrap">{{ f.last_incremental_at.strftime('%m-%d %H:%M') if f.last_incremental_at else '—' }}</td>
           <td>
             <form class="inline" method="post" action="/kb/forums/{{ f.id }}/toggle"

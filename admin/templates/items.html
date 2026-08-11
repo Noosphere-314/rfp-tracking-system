@@ -46,6 +46,7 @@
         <option value="{{ ln }}" {{ 'selected' if lane == ln }}>{{ LANE_UA.get(ln, ln) }}</option>
         {% endfor %}
       </select>
+      <span class="field__hint">{{ t("f.lane.hint", "Which pipeline path delivered it") }}</span>
     </div>
     <div class="field">
       <label class="field__label" for="f-conf">{{ t("f.min_confidence", "Min. confidence") }}</label>
@@ -55,6 +56,7 @@
         <option value="{{ c }}" {{ 'selected' if min_confidence == c }}>&ge; {{ c }}</option>
         {% endfor %}
       </select>
+      <span class="field__hint">{{ t("f.min_confidence.hint", "How sure the classifier is, 0–1") }}</span>
     </div>
     <div class="field">
       <label class="field__label" for="f-period">{{ t("f.period", "Period") }}</label>
@@ -72,6 +74,7 @@
         <option value="{{ oc }}" {{ 'selected' if outcome == oc }}>{{ OUTCOME_UA.get(oc, oc) }}</option>
         {% endfor %}
       </select>
+      <span class="field__hint">{{ t("f.outcome.hint", "Won/Lost mark you set after the deal") }}</span>
     </div>
     <div class="field">
       <label class="field__label" for="f-q">{{ t("f.search_title", "Search in title") }}</label>

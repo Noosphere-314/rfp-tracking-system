@@ -140,7 +140,12 @@
           <td class="num">{{ k.id }}</td>
           <td><code>{{ k.pattern }}</code></td>
           <td class="cell--nowrap">{{ KIND_UA.get(k.kind, k.kind) }}</td>
-          <td class="field__hint field__hint--bad">{{ k.invalid_reason or t("msg.no_reason", "reason not recorded") }}</td>
+          <td class="field__hint field__hint--bad">
+            {{ k.invalid_reason or t("msg.no_reason", "reason not recorded") }}
+            {#- Аудит UX (задача 2, п.5): сирий текст помилки regex-компілятора
+                нічого не каже нетехнічній людині без цього пояснення. -#}
+            <div class="muted">{{ t("pg.keywords.invalid_reason_hint", "The pattern is not a valid regular expression — fix or delete it") }}</div>
+          </td>
           <td>
             {% if k.enabled %}<span class="badge b-on">{{ t("st.on", "enabled") }}</span>
             {% else %}<span class="badge b-off">{{ t("st.off", "disabled") }}</span>{% endif %}

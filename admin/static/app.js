@@ -221,7 +221,10 @@
     var form = document.querySelector(".chat__composer");
     if (!list || !empty || !form) return;
 
-    var dataBox = document.querySelector(".data");
+    // .chat-col__scroll — внутрішня скрол-зона колонки чату (розділ 1
+    // редизайну: .data більше сама не скролиться, композер і панель історії
+    // тепер сидять поза нею у фіксованих частинах .chat-col/.chat-side).
+    var dataBox = document.querySelector(".chat-col__scroll");
     var textarea = form.querySelector("textarea[name=message]");
     var button = form.querySelector("button[type=submit]");
     var URL_RE = /https?:\/\/[^\s<>"']+/g;
@@ -236,22 +239,26 @@
         ev.preventDefault();
         textarea.value = link.dataset.fill;
         textarea.focus();
+        autoGrow();
       });
     });
 
-    /* D4 — форумні чипи над композером: без JS це посилання на приклад,
-       уже підставлений під конкретний форум (app.py: _forum_chip_href), з
-       JS клік ДОДАЄ " in <Forum>" до вже набраного тексту, а не переходить —
-       інакше чернетка людини губилася б при переході на голий /chat. Чип
-       "All" (data-forum="") нічого не дописує — лише фокусить textarea. */
-    document.querySelectorAll(".chat__forumchips [data-forum]").forEach(function (chip) {
-      chip.addEventListener("click", function (ev) {
-        ev.preventDefault();
-        var forum = chip.dataset.forum;
-        if (forum) textarea.value = textarea.value + " in " + forum;
-        textarea.focus();
-      });
-    });
+    /* Автозростання textarea, 1..8 рядків (розділ 4 редизайну композера).
+       CSP `style-src 'self'` (Caddyfile) не дає гарантії на `.style.*` з JS
+       так само, як на style="" — тому висота керується атрибутом `rows`,
+       звичайним HTML-атрибутом textarea, а не інлайновим стилем. Оцінка
+       наближена (scrollHeight мінус вертикальний padding, поділене на
+       line-height), але для «росте разом із текстом» цього достатньо. */
+    function autoGrow() {
+      var cs = getComputedStyle(textarea);
+      var lineHeight = parseFloat(cs.lineHeight) || 18;
+      var padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+      textarea.rows = 1;
+      var lines = Math.round((textarea.scrollHeight - padY) / lineHeight) || 1;
+      textarea.rows = Math.min(8, Math.max(1, lines));
+    }
+    textarea.addEventListener("input", autoGrow);
+    autoGrow();
 
     function scrollDown() {
       if (dataBox) dataBox.scrollTop = dataBox.scrollHeight;
@@ -386,6 +393,7 @@
         .then(function () {
           textarea.value = "";
           resetBusy();
+          autoGrow();
           form.dataset.chatBusy = "";
           scrollDown();
         });
@@ -399,6 +407,54 @@
       }
     });
 
+    /* Розділ 3 редизайну — підпис випадаючого списку форумів: без JS
+       summary лишається статичним "All forums" (чекбокси все одно рахуються
+       на бекенді), з JS показує "N selected" після вибору — той самий
+       принцип data-* перекладу, що й data-busy/data-error вище: англійський
+       чи український рядок приходить із розмітки, JS лише підставляє {n}. */
+    var scope = form.querySelector(".chat__scope");
+    if (scope) {
+      var scopeSummary = scope.querySelector("summary");
+      var scopeAllLabel = scopeSummary.textContent;
+      var scopeTpl = scope.dataset.selectedTpl || "{n}";
+      var scopeBoxes = scope.querySelectorAll('input[name="forums"]');
+      var updateScopeSummary = function () {
+        var n = 0;
+        scopeBoxes.forEach(function (b) { if (b.checked) n++; });
+        scopeSummary.textContent = n ? scopeTpl.replace("{n}", n) : scopeAllLabel;
+      };
+      scopeBoxes.forEach(function (b) { b.addEventListener("change", updateScopeSummary); });
+    }
+
     scrollDown();
+  })();
+
+  /* ── 8. Спливаючі ⋯-меню (.menu) ────────────────────────────────────────
+     Генеричний компонент (app.css, розділ 9) — перший споживач AI-чат, далі
+     піде по всій платформі. Без JS <details class="menu"> просто закривається
+     повторним кліком по summary — прийнятний degrade. Тут лише зручність:
+     клік поза відкритим меню чи Escape закриває його, а відкриття одного
+     закриває решту (типова поведінка попапів, а не купа одночасно відкритих
+     меню). */
+  (function popupMenus() {
+    function openMenus() {
+      return document.querySelectorAll("details.menu[open]");
+    }
+    document.addEventListener("click", function (ev) {
+      openMenus().forEach(function (m) {
+        if (!m.contains(ev.target)) m.removeAttribute("open");
+      });
+    });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") openMenus().forEach(function (m) { m.removeAttribute("open"); });
+    });
+    document.querySelectorAll("details.menu").forEach(function (menu) {
+      menu.addEventListener("toggle", function () {
+        if (!menu.open) return;
+        openMenus().forEach(function (other) {
+          if (other !== menu) other.removeAttribute("open");
+        });
+      });
+    });
   })();
 })();

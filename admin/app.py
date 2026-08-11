@@ -148,9 +148,10 @@ NAV = [
     {"id": "settings", "href": "/settings", "label": "Параметри", "group": "cfg"},
     {"id": "runs", "href": "/runs", "label": "Історія збору", "group": "sys"},
     {"id": "briefs", "href": "/briefs", "label": "Бріфи", "group": "sys"},
-    # «Історія чатів» свідомо БЕЗ пункту меню: вона живе шухлядою всередині
-    # AI-чату (/chat?hist=…, рішення Миколи 2026-08-11); маршрути /chats*
-    # лишаються як повноекранний вигляд за прямим лінком із шухляди.
+    # «Історія чатів» свідомо БЕЗ пункту меню: вона живе постійною панеллю
+    # праворуч усередині AI-чату (/chat?hist=…, рішення Миколи 2026-08-11);
+    # маршрути /chats* лишаються як повноекранний вигляд за прямим лінком
+    # «Open full» із панелі.
 ]
 
 # ІНВАРІАНТ ЛОКАЛІЗАЦІЇ: українська ТІЛЬКИ в презентації. Значення в URL і в БД
@@ -341,9 +342,23 @@ def md_lite(text: str) -> Markup:
     return Markup("".join(html_parts))
 
 
+def compact_num(n: int | None) -> str:
+    """Компактний формат великих чисел для таблиці /kb (задача «покриття
+    архівів»): 1234 → «1.2k», 1_500_000 → «1.5M». Під тисячею — число як є,
+    без десяткової частини. `None` сюди не приходить — NULL обробляється
+    в шаблоні окремою гілкою (потрібен інший текст «—», а не «0»)."""
+    if n < 1000:
+        return str(n)
+    value = n / 1000 if n < 1_000_000 else n / 1_000_000
+    suffix = "k" if n < 1_000_000 else "M"
+    text = f"{value:.1f}".rstrip("0").rstrip(".")
+    return f"{text}{suffix}"
+
+
 templates.env.filters["hl"] = hl
 templates.env.filters["linkify"] = linkify
 templates.env.filters["md_lite"] = md_lite
+templates.env.filters["compact"] = compact_num
 # Константи презентації — глобалами Jinja, а не context-процесором: вони
 # однакові для кожного запиту, а context-процесори Starlette перезаписують
 # контекст сторінки (`context.update(...)` після нього), тож усе, що маршрут
@@ -1035,6 +1050,29 @@ SETTING_META = {
         "reco": "Off until you want fresher-than-archive answers — most questions are "
                 "already covered by the forum archive.",
     },
+    # Розділ 7 редизайну чату (рішення Миколи 2026-08-11) — два нові ключі,
+    # обидва читає kbmcp паралельно з цим PR: model routing на дешевшу
+    # модель для навігаційних питань і TTL кешу відповіді на перше питання
+    # розмови. Текст тут — англійський дефолт (переклад help/label/reco в
+    # admin/i18n.py, той самий патерн, що й в решти ai-ключів вище).
+    "chat_model_light": {
+        "group": "ai", "label": "Chat model (light)", "type": "text",
+        "help": "Cheaper Anthropic model used for simple navigational chat questions "
+                "(find/show/link-style). Empty value disables routing — every question "
+                "then uses the main chat model.",
+        "reco": "claude-haiku-4-5-20251001 — about 3x cheaper on simple questions; "
+                "clear the field if simple-question answers feel too shallow.",
+    },
+    "chat_cache_ttl_hours": {
+        "group": "ai", "label": "Chat answer cache TTL (hours)", "type": "int",
+        "min": 0, "max": 720,
+        "help": "How long a cached answer to a repeated opening question stays valid. "
+                "Within the TTL the same first question of a conversation (same forum "
+                "scope, same web flag) is answered from cache at zero token cost. "
+                "0 disables the cache.",
+        "reco": "24 — the archive updates hourly, but day-old answers to repeated "
+                "team questions are almost always still right.",
+    },
 }
 
 
@@ -1515,6 +1553,26 @@ def runs_page(request: Request, mode: str = "", limit: int = 50):
 HEADLINE_OPTS = "MaxWords=35, MinWords=15, StartSel=\x02, StopSel=\x03"
 
 
+def _kb_coverage(posts: int, remote_posts: int | None) -> tuple[int | None, str]:
+    """Відсоток покриття архіву постами (задача «покриття архівів», /kb):
+    наші пости проти еталону з /about.json форуму (kb.forums.remote_posts,
+    міграція 012 — воркер пише його щопрогону). Порахований тут, у Python, а
+    не в SQL: NULL (форум ще не мав жодного проходу воркера з еталоном, або
+    еталон — 0 постів) інакше довелося б розрізняти від 0% через CASE в
+    кожному місці, де читається значення, а тут — одна проста гілка.
+
+    Пороги — з аудиту (2026-08-11): ≥90% вважається достатнім покриттям,
+    60-89% — помітна прогалина, <60% — суттєва недостача постів в архіві."""
+    if not remote_posts:
+        return None, "b-neutral"
+    pct = round(100 * posts / remote_posts)
+    if pct >= 90:
+        return pct, "b-ok"
+    if pct >= 60:
+        return pct, "b-warn"
+    return pct, "b-bad"
+
+
 @app.get("/kb", response_class=HTMLResponse)
 def kb_page(request: Request, q: str = "", forum: str = ""):
     with db() as conn:
@@ -1529,6 +1587,13 @@ def kb_page(request: Request, q: str = "", forum: str = ""):
              GROUP BY f.id ORDER BY f.id
             """
         ).fetchall()
+        # remote_topics/remote_posts/stats_at приходять через f.* вище
+        # (міграція 012) — тут лише додаємо готовий відсоток і клас бейджа,
+        # щоб шаблон не рахував нічого сам.
+        for f in forums:
+            f["coverage_pct"], f["coverage_class"] = _kb_coverage(
+                f["posts"], f["remote_posts"]
+            )
 
         results = []
         if q:
@@ -1802,94 +1867,130 @@ def _chat_backend(payload: dict) -> dict:
     return response.json()
 
 
-# Англійський шаблон питання під форумний чип (розділ D4). Одна коротка фраза,
-# англійською навмисно (той самий інваріант, що й _ask_ai_question вище):
-# stub-рівень чату відмовляється шукати за не-латинським запитом, тож ask=…
-# із чипа має лишатися латиницею незалежно від мови кабінету.
-CHAT_FORUM_ASK_EN = "Which dev tooling grants were discussed in {forum} this quarter?"
+# Групи випадаючого списку форумів у композері (розділ 3 редизайну чату,
+# рішення Миколи 2026-08-11 — замінює колишні форумні чипи над композером).
+# kb.forums.kind обмежений CHECK-констрейнтом до цих чотирьох значень
+# (migrations/008_kb_kinds_snapshot.sql, 010_kb_github.sql) — порядок і
+# людські підписи фіксовані тут, а не в SQL ORDER BY: бажаний порядок показу
+# (Forums → Snapshot → GitHub → Sites) не збігається з алфавітним.
+CHAT_SCOPE_KIND_ORDER = ["discourse", "snapshot", "github", "site"]
+CHAT_SCOPE_KIND_LABELS = {
+    "discourse": ("pg.chat.scope.discourse", "Forums"),
+    "snapshot": ("pg.chat.scope.snapshot", "Snapshot"),
+    "github": ("pg.chat.scope.github", "GitHub"),
+    "site": ("pg.chat.scope.site", "Sites"),
+}
 
 
-def _forum_chip_href(display: str) -> str:
-    return "/chat?ask=" + quote(CHAT_FORUM_ASK_EN.format(forum=display), safe="")
+def _forum_scope_groups(rows: list[dict]) -> list[dict]:
+    """Групує enabled-рядки kb.forums за `kind` у фіксованому порядку вище —
+    випадаючий список композера (chat.html: .chat__scope) показує форуми під
+    заголовками «Forums»/«Snapshot»/«GitHub»/«Sites», а не плоским списком.
+
+    Невідомий `kind` (майбутня міграція додасть новий) не губиться — той
+    самий інваріант F13, що й STATUS_UA/LANE_UA/… вище: йде останньою
+    групою під власною, непере кладеною назвою, а не зникає мовчки.
+    """
+    by_kind: dict[str, list[str]] = {}
+    for r in rows:
+        by_kind.setdefault(r["kind"], []).append(r["forum_slug"])
+    groups = [
+        {"label_key": CHAT_SCOPE_KIND_LABELS[kind][0], "label_en": CHAT_SCOPE_KIND_LABELS[kind][1],
+         "slugs": by_kind[kind]}
+        for kind in CHAT_SCOPE_KIND_ORDER if kind in by_kind
+    ]
+    groups += [
+        {"label_key": f"pg.chat.scope.{kind}", "label_en": kind.capitalize(), "slugs": slugs}
+        for kind, slugs in by_kind.items() if kind not in CHAT_SCOPE_KIND_ORDER
+    ]
+    return groups
+
+
+# Валідація checkbox-значень "forums" у POST /chat/send нижче — той самий
+# алфавіт, що й forum_slug у БД (migrations/004_kb_schema.sql: text, свідомо
+# без формального CHECK на боці Postgres). Невалідне значення тут можливе
+# лише при ручному підробленні тіла POST (композер рендерить чекбокси лише
+# з реальних enabled-рядків) — тому мовчки відкидається, а не 400.
+_FORUM_SLUG_RE = re.compile(r"^[a-z0-9-]{1,64}$")
+CHAT_SCOPE_MAX_FORUMS = 12
 
 
 @app.get("/chat", response_class=HTMLResponse)
 def chat_page(request: Request, error: str = "", ask: str = "", hist: str = ""):
-    """AI-чат над базою знань (розділ 4.9, задача #30; розділ D — «Ask AI»
-    з /items, приклади й форумні чипи на порожньому стані).
+    """AI-чат над базою знань (розділ 4.9, задача #30; редизайн 2026-08-11 —
+    постійна панель історії СПРАВА замість колишньої шухляди-по-URL).
+
+    `hist` лишається станом у URL (інваріант «кожна фіча працює без JS»):
+    порожній — жива розмова цього браузера (сторінка = композер + список
+    повідомлень), непорожній — та сама сторінка показує ОДНУ архівну
+    розмову read-only, з композером прихованим і банером зверху («Archived
+    conversation» + «Back to current chat»). Колишня семантика "hist=1"
+    (окремий «список розмов» усередині шухляди) зникла разом із шухлядою:
+    список тепер завжди видно в .chat-side праворуч, тож "1" просто
+    ігнорується — сторінка поводиться як голий /chat.
 
     `ask` (розділ D2) лише ПРЕФІЛИТЬ композер на сервері — жодного
     автосабміту: людина сама вирішує, надсилати питання чи спершу
     відредагувати. Обрізання до 4000 — той самий ліміт, що й у POST
-    /chat/send (SETTING нижче в шаблоні валідує довжину ще раз на відправці,
-    тут це лише страховка від абсурдно довгого query-параметра). Textarea в
-    chat.html підставляє значення між тегами — автоескейпінг Jinja вже
-    покриває XSS, окремого екранування тут не треба.
+    /chat/send. Textarea в chat.html підставляє значення між тегами —
+    автоескейпінг Jinja вже покриває XSS, окремого екранування тут не треба.
     """
     who = auth.session_who(request)
     session_key = f"web:{_chat_key(request)}"
     ask = ask[:4000]
+    hist_key = hist if hist and hist != "1" else ""
+    archived = bool(hist_key)
 
     with db() as conn:
-        rows = conn.execute(
-            "SELECT id, role, who, content, tier, model, created_at "
-            "FROM kb.chat_messages WHERE session_key = %s ORDER BY id LIMIT 200",
-            (session_key,),
+        if archived:
+            # Read-only чужа/минула розмова — ті самі колонки, що й жива
+            # нижче, тож шаблон рендерить обидві гілки одним циклом бульбашок.
+            messages = conn.execute(
+                "SELECT id, role, who, content, tier, model, created_at "
+                "FROM kb.chat_messages WHERE session_key = %s ORDER BY id LIMIT 300",
+                (hist_key,),
+            ).fetchall()
+            forum_groups: list[dict] = []
+        else:
+            messages = conn.execute(
+                "SELECT id, role, who, content, tier, model, created_at "
+                "FROM kb.chat_messages WHERE session_key = %s ORDER BY id LIMIT 200",
+                (session_key,),
+            ).fetchall()
+            forum_rows = conn.execute(
+                "SELECT forum_slug, kind FROM kb.forums WHERE enabled ORDER BY kind, forum_slug"
+            ).fetchall()
+            forum_groups = _forum_scope_groups(forum_rows)
+
+        # Панель історії СПРАВА (розділ 1 редизайну): рендериться ЗАВЖДИ, а
+        # не лише за колишнім ?hist=1 — LIMIT 30, той самий агрегуючий запит,
+        # що раніше жив під шухлядою (без sum(tokens) — панель показує лише
+        # прев'ю/мету/кількість питань, детальні токени лишились на /chats).
+        hist_sessions = conn.execute(
+            """
+            SELECT session_key, channel,
+                   max(created_at) AS last_at,
+                   count(*) FILTER (WHERE role = 'user') AS questions,
+                   max(who) FILTER (WHERE role = 'user') AS who,
+                   left((array_agg(content ORDER BY id) FILTER (WHERE role = 'user'))[1], 60) AS preview
+              FROM kb.chat_messages
+             GROUP BY session_key, channel
+             ORDER BY last_at DESC LIMIT 30
+            """
         ).fetchall()
-        # Форумні чипи (розділ D4): лише enabled=true, ORDER BY forum_slug —
-        # forum_slug UNIQUE (migrations/004_kb_schema.sql), тож DISTINCT тут
-        # не потрібен. Дешево: та сама таблиця, що й на /kb, без JOIN.
-        # kind='discourse': після 008/010 у kb.forums живуть і snap-*/gh-*
-        # службові рядки — як чипи вони лише шумлять (людина мислить
-        # форумами, а Snapshot/GitHub-контент однаково шукається разом).
-        forum_rows = conn.execute(
-            "SELECT forum_slug FROM kb.forums "
-            "WHERE enabled = true AND kind = 'discourse' ORDER BY forum_slug"
-        ).fetchall()
+
+    for s in hist_sessions:
+        s["hist_href"] = "/chat?hist=" + quote(s["session_key"], safe="")
+        s["view_href"] = "/chats/view?key=" + quote(s["session_key"], safe="")
+        s["is_active"] = s["session_key"] == session_key
 
     # Останній рядок — user: відповідь, можливо, ще генерується (POST
     # /chat/send блокується до 300 с — той самий таймаут, що й у /brief) в
     # ІНШІЙ вкладці чи запиті, який саме зараз обробляється. Рядок-натяк, а
     # не спінер із поллінгом — автополінг заборонений (app.js, розділ 0):
-    # він тихо продовжував би сесію без участі людини.
-    thinking = bool(rows) and rows[-1]["role"] == "user"
-
-    forum_chips = [
-        {"label": r["forum_slug"].capitalize(),
-         "href": _forum_chip_href(r["forum_slug"].capitalize())}
-        for r in forum_rows
-    ]
-
-    # Висувна історія (запит Миколи 2026-08-11: історія — всередині розділу
-    # AI chat, а не окремою сторінкою в System). Стан живе в URL, тому працює
-    # без JS: hist="1" — список розмов, hist="<session_key>" — одна розмова
-    # прямо в шухляді. Закриття — звичайний лінк на /chat.
-    hist_sessions: list = []
-    hist_messages: list = []
-    if hist == "1":
-        with db() as conn:
-            hist_sessions = conn.execute(
-                """
-                SELECT session_key, channel,
-                       max(created_at) AS last_at,
-                       count(*) FILTER (WHERE role = 'user') AS questions,
-                       coalesce(sum(coalesce(tokens_in, 0) + coalesce(tokens_out, 0)), 0) AS tokens,
-                       max(who) FILTER (WHERE role = 'user') AS who,
-                       left((array_agg(content ORDER BY id) FILTER (WHERE role = 'user'))[1], 70) AS preview
-                  FROM kb.chat_messages
-                 GROUP BY session_key, channel
-                 ORDER BY last_at DESC LIMIT 30
-                """
-            ).fetchall()
-        for s in hist_sessions:
-            s["drawer_href"] = "/chat?hist=" + quote(s["session_key"], safe="")
-    elif hist:
-        with db() as conn:
-            hist_messages = conn.execute(
-                "SELECT id, channel, role, who, content, tier, model, created_at "
-                "FROM kb.chat_messages WHERE session_key = %s ORDER BY id LIMIT 300",
-                (hist,),
-            ).fetchall()
+    # він тихо продовжував би сесію без участі людини. Лише для живої
+    # розмови: у read-only режимі композера, який міг би це запустити, нема.
+    thinking = (not archived) and bool(messages) and messages[-1]["role"] == "user"
 
     return templates.TemplateResponse(
         request,
@@ -1897,23 +1998,25 @@ def chat_page(request: Request, error: str = "", ask: str = "", hist: str = ""):
         {
             "nav": "chat",
             "who": who,
-            "messages": rows,
+            "messages": messages,
             "thinking": thinking,
             "error": error,
             "ask": ask,
-            "forum_chips": forum_chips,
-            "hist": hist,
+            "archived": archived,
+            "hist_key": hist_key,
             "hist_sessions": hist_sessions,
-            "hist_messages": hist_messages,
-            "hist_full_href": (
-                "/chats/view?key=" + quote(hist, safe="") if hist and hist != "1" else "/chats"
-            ),
+            "forum_groups": forum_groups,
         },
     )
 
 
 @mutations.post("/chat/send")
-def send_chat_message(request: Request, message: str = Form(...), web: str = Form("")):
+def send_chat_message(
+    request: Request,
+    message: str = Form(...),
+    web: str = Form(""),
+    forums: list[str] = Form(default=[]),
+):
     """Одне повідомлення → один запит до kbmcp.
 
     Відповідь гілкується заголовком X-Requested-With: fetch — його ставить
@@ -1931,6 +2034,17 @@ def send_chat_message(request: Request, message: str = Form(...), web: str = For
     контракт kbmcp — опціональне булеве поле, і «відсутній» та «false»
     рівнозначні для нього, тож нема сенсу засмічувати payload зайвим ключем
     на КОЖНЕ повідомлення (переважна більшість — без веб-пошуку).
+
+    `forums` (розділ 3 редизайну — випадаючий список форумів у композері):
+    чекбокси `name="forums" value="<slug>"` усередині ТІЄЇ Ж форми, тож
+    FormData (app.js) підхоплює їх без окремого коду. Валідація тут — той
+    самий принцип м'якого відкидання, що й у add_source/validate_setting:
+    невалідний slug чи зайвий понад CHAT_SCOPE_MAX_FORUMS просто випадає зі
+    списку, а не валить запит 400-кою — композер рендерить чекбокси лише з
+    реальних enabled-рядків kb.forums, тож невалідне значення тут можливе
+    лише при ручному підробленні тіла POST. Порожній підсумковий список —
+    ключа "forums" у payload узагалі нема (той самий підхід, що й "web"
+    вище): «нічого не обрано» і «поле відсутнє» рівнозначні для kbmcp.
     """
     # СИРИЙ ключ, без префікса "web:" — kbmcp неймспейсить сам при записі
     # (контракт /chat забороняє ':' у session_key саме для того, щоб веб не
@@ -1953,9 +2067,13 @@ def send_chat_message(request: Request, message: str = Form(...), web: str = For
 
     import httpx
 
+    scoped_forums = [f for f in forums if _FORUM_SLUG_RE.match(f)][:CHAT_SCOPE_MAX_FORUMS]
+
     body = {"channel": "web", "session_key": session_key, "who": who, "message": text}
     if web:
         body["web"] = True
+    if scoped_forums:
+        body["forums"] = scoped_forums
 
     try:
         payload = _chat_backend(body)

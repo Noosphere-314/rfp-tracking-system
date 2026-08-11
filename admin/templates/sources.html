@@ -190,6 +190,14 @@
   </div>
   {% endif %}
 
-  <div class="panel__foot">{{ t("pg.sources.foot", "Enabling clears quarantine: the worker will try the source again on the next run.") }}</div>
+  <div class="panel__foot">
+    {{ t("pg.sources.foot", "Enabling clears quarantine: the worker will try the source again on the next run.") }}
+    <br>
+    {#- Задача «покриття архівів», п.3: дзеркало пояснювальної панелі /kb —
+        джерела тут ЛОВЛЯТЬ нові знахідки, форумний архів на /kb — окрема
+        роль, навіть коли це той самий сайт. -#}
+    {{ t("pg.sources.kb_note", "Looking for the downloaded forum archives?") }}
+    → <a href="/kb">{{ t("nav.kb", "Knowledge base") }}</a>
+  </div>
 </section>
 {% endblock %}

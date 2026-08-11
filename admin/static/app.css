@@ -213,19 +213,15 @@ img,svg{max-width:100%}
 /* ─────────────────  7. Заділ під AI-чат і правий рейл (2.6)  ─────────── */
 
 /* min-height:0 на КОЖНОМУ flex-предку обов'язковий — інакше стрічка не
-   скролиться всередині, а розтягує сторінку. */
+   скролиться всередині, а розтягує сторінку. Padding з .data знятий свідомо
+   (розділ 1 редизайну чату) — тепер його розподіляють .chat-col/.chat-side
+   нижче, кожен по-своєму, а .data лише тримає висоту й ховає переповнення
+   між ними (свій скрол — усередині .chat-col__scroll і .chat-side). */
 .content--full{
   display:flex; flex-direction:column; height:calc(100dvh - var(--topbar-h));
   max-width:none; padding:0; overflow:hidden;
 }
-.content--full .data{flex:1; min-height:0; overflow-y:auto; padding:var(--sp-5)}
-.content--full .data > * + *{margin-top:var(--sp-4)}
-.content--full .controls{
-  margin:0; flex:0 0 auto; border-top:1px solid var(--line);
-  padding:var(--sp-3) var(--sp-5); background:var(--surface);
-}
-.chat__composer{display:flex; align-items:flex-end; gap:var(--sp-3)}
-.chat__composer textarea{flex:1; min-height:44px; resize:vertical}
+.content--full .data{flex:1; min-height:0; overflow:hidden; padding:0}
 
 /* D1: приклади питань на порожньому стані чату — вертикальний стовпчик
    повноширинних ghost-кнопок під .empty вище, а не .chips (той пасує
@@ -417,6 +413,58 @@ tbody tr:hover{background:var(--surface-2)}
 .empty__title{margin-bottom:var(--sp-2); font-size:var(--fs-lg); font-weight:600; color:var(--text)}
 .empty__hint{font-size:var(--fs-sm)}
 
+/* Спливаюче ⋯-меню (розділ 2 редизайну AI-чату — перший споживач, компонент
+   генеричний і піде по всій платформі надалі). `<details class="menu">` —
+   без жодного JS відкривається/закривається кліком по summary; app.js
+   (розділ «Спливаючі ⋯-меню») лише додає закриття по кліку поза меню й по
+   Escape та ексклюзивність (відкриття одного закриває решту) — без JS
+   поведінка лишається коректною, просто менш зручною.
+     <details class="menu">
+       <summary class="menu__btn">⋯</summary>
+       <div class="menu__list"> …menu__item… </div>
+     </details>
+   `list-style:none` + приховування власного трикутника Chrome/Firefox —
+   меню не повинно виглядати як звичайний <details>.disclosure вище. */
+.menu{position:relative; display:inline-block}
+.menu__btn{
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:30px; padding:4px 8px; border:1px solid var(--line);
+  border-radius:var(--r-md); background:var(--surface-2); color:var(--text-dim);
+  font-size:var(--fs-md); line-height:1; cursor:pointer; list-style:none;
+}
+.menu__btn::-webkit-details-marker{display:none}
+.menu__btn:hover{background:var(--input); color:var(--text)}
+.menu[open] > .menu__btn{color:var(--text); border-color:#2C4150}
+.menu__list{
+  position:absolute; right:0; top:calc(100% + 4px); z-index:50;
+  min-width:220px; padding:4px;
+  background:var(--surface-2); border:1px solid var(--line);
+  border-radius:var(--r-md); box-shadow:var(--sh-2);
+}
+/* .menu--up — для композера внизу колонки: вниз меню розкриватись нікуди. */
+.menu--up > .menu__list{top:auto; bottom:calc(100% + 4px)}
+.menu__group{
+  margin:var(--sp-2) var(--sp-2) 2px; padding-top:var(--sp-1);
+  border-top:1px solid var(--line-soft);
+  font-size:var(--fs-xs); font-weight:600; color:var(--text-dim);
+}
+.menu__group:first-child{margin-top:0; padding-top:0; border-top:0}
+.menu__hint{margin:2px var(--sp-2) var(--sp-2); font-size:var(--fs-xs); color:var(--text-dim); max-width:26ch}
+/* menu__item — і посилання/кнопки, і форми (обгортка навколо кнопки) мусять
+   виглядати однаково: повноширинні, ліворуч, без рамки кнопки за замовчуванням. */
+.menu__item-form{display:block}
+a.menu__item,button.menu__item{
+  display:flex; width:100%; align-items:center; gap:var(--sp-2);
+  padding:6px 8px; border:0; border-radius:var(--r-sm);
+  background:none; color:var(--text); font:inherit; font-size:var(--fs-sm);
+  text-align:left; text-decoration:none; cursor:pointer; white-space:nowrap;
+}
+a.menu__item:hover,button.menu__item:hover{background:var(--input); text-decoration:none}
+.menu__item--danger{color:var(--bad)}
+.menu__item--danger:hover{background:var(--bad-bg)}
+.menu__item--check{cursor:pointer; font-weight:400}
+.menu__item--check input{margin-right:2px}
+
 details.disclosure{background:var(--surface); border:1px solid var(--line);
   border-radius:var(--r-lg)}
 details.disclosure > summary{
@@ -429,6 +477,13 @@ details.disclosure > summary::before{
 }
 details.disclosure[open] > summary::before{transform:rotate(90deg)}
 .disclosure__body{padding:0 var(--sp-4) var(--sp-4)}
+
+/* Задача 2 п.4 аудиту (/runs): список помилок одного прогону в комірці
+   таблиці — інакше десятки провалених джерел розтягують рядок на весь
+   екран. Новий вузький клас, а не правка глобального .disclosure вище —
+   решта розгорток на сторінках (форми реєстрації тощо) не мають скролитись
+   всередині коробки з обрізаною висотою. */
+.disclosure--scroll{max-height:300px; overflow-y:auto}
 
 /* .prose — тіло бріфа (brief.html), рендерене через md_lite (admin/app.py):
    справжні <h3>/<ul>/<p>/<strong>/<em>/<a>, не preformatted-текст, тож читана
@@ -569,10 +624,11 @@ form.inline,.inline{display:inline}
 }
 .chat__msg--user .chat__meta{flex-direction:row-reverse}
 
-/* Розділ B: «Save as brief» — під .chat__meta, той самий відступ (--sp-1),
-   .inline тут не годиться (та задає display:inline, а формі треба лишатися
-   block-level, щоб успадкувати align-items:flex-start від .chat__msg--assistant). */
-.chat__savebrief{margin-top:var(--sp-1)}
+/* Розділ 2 редизайну: «Save as brief» тепер маленьке ⋯-меню (.menu) просто
+   всередині .chat__meta, а не окрема видима кнопка/форма під бульбашкою —
+   компактніше в межах рядка з часом/бейджами. */
+.chat__msgmenu .menu__btn{min-width:auto; padding:0 6px; font-size:var(--fs-xs); border-color:transparent; background:none}
+.chat__msgmenu .menu__btn:hover{background:var(--surface-2); border-color:var(--line)}
 
 .chat__bubble--error{color:var(--bad); background:var(--bad-bg); border-color:#4A2229}
 
@@ -592,11 +648,30 @@ form.inline,.inline{display:inline}
   40%{opacity:1; transform:translateY(-3px)}
 }
 
-/* Композер: «Новий чат» — маленька дія над полем вводу, не претендує на
-   рівень із .btn--primary «Надіслати». */
-.chat__controls{display:flex; flex-direction:column; gap:var(--sp-2)}
-.chat__newchat{align-self:flex-end}
+/* Композер (розділ 4 редизайну): власні surface/border/radius, а НЕ спільний
+   .panel — той несе overflow:hidden (обрізає заокруглені кути під таблицями),
+   а тут усередині спливає .chat__scope (.menu--up): overflow:hidden обрізав
+   би його попап по межі композера. textarea на всю ширину зверху БЕЗ
+   власної рамки (рамку вже дає сама панель — подвійна виглядала б неохайно),
+   нижній рядок — [KB-scope] [Web search] [spacer] [Send]. Глобальне
+   textarea{font-family:var(--mono)} (розділ 8) тут навмисно перевизначене:
+   чат — жива мова, не код. */
+.chat__composer{
+  display:flex; flex-direction:column; gap:var(--sp-3); padding:var(--sp-3);
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
+}
+.chat__composer textarea{
+  font-family:var(--font); border:0; background:none; padding:var(--sp-2) var(--sp-1);
+  min-height:44px; max-height:16em; resize:vertical;
+}
+.chat__composer textarea:focus-visible{outline-offset:-2px}
 .chat__composer textarea:disabled{opacity:.6}
+.chat__composer-row{display:flex; align-items:center; gap:var(--sp-3); flex-wrap:wrap}
+/* left:0, не спадкове right:0 (.menu__list розраховане на кнопки при ПРАВОМУ
+   краї, як-от ⋯ у топбарі): кнопка scope стоїть при ЛІВОМУ краї композера, і
+   right:0 витягав би список ліворуч ЗА межі екрана — знайдено наживо
+   2026-08-11 на вузькому в'юпорті, чекбокси були обрізані до половини слова. */
+.chat__scope .menu__list{max-height:60vh; overflow-y:auto; left:0; right:auto; min-width:260px}
 
 /* ─────────────────────  13. Друк бріфа (4.8)  ─────────────────────────── */
 /* «Зберегти як PDF» = window.print() (app.js, data-print) — чистий білий
@@ -617,29 +692,59 @@ form.inline,.inline{display:inline}
   a{color:#000}
 }
 
-/* ── 13. Шухляда історії в AI-чаті (?hist=…) ─────────────────────────
-   Стан у URL, не в JS: .chat-split--open просто звужує колонку чату і
-   показує aside. Обидві колонки скролить спільний .data (.content--full). */
-.chat-split { display: flex; gap: var(--sp-4, 16px); align-items: flex-start; }
-.chat-split__main { flex: 1; min-width: 0; }
-.chat-drawer {
-  flex: 0 0 360px; max-width: 42%;
-  border-left: 1px solid var(--border, #26313d);
-  padding-left: var(--sp-4, 16px);
-  position: sticky; top: 0;
+/* ── 14. AI-чат: постійна панель історії справа (розділ 1 редизайну) ──
+   Замінює колишню шухляду-по-URL (?hist=1): .chat-side тепер видима
+   ЗАВЖДИ на десктопі, а не лише коли відкрита. Брейкпоінт 1100px —
+   узгоджений із рештою дашборда (та сама межа, що й .with-rail вище). */
+.chat-wrap{display:flex; height:100%; min-height:0}
+.chat-col{
+  flex:1 1 auto; min-width:0; display:flex; flex-direction:column; min-height:0;
+  padding:var(--sp-4) var(--sp-5); gap:var(--sp-3);
 }
-.chat-drawer__head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.chat-drawer__list { display: flex; flex-direction: column; gap: 6px; }
-.chat-drawer__item {
-  display: block; padding: 8px 10px; border-radius: 8px;
-  background: var(--panel-2, rgba(255,255,255,.03)); text-decoration: none;
+.chat-col__head{flex:0 0 auto; display:flex; align-items:center; gap:var(--sp-3)}
+/* Кнопка «History» — лише мобільний тригер оверлея нижче; на десктопі
+   панель і так завжди видима, тож дублювати кнопку нема сенсу. */
+.chat-col__histbtn{display:none}
+.chat__archived-banner{margin:0; flex:1 1 auto; display:flex; align-items:center; gap:var(--sp-3)}
+.chat-col__scroll{flex:1; min-height:0; overflow-y:auto}
+.chat-col__scroll > * + *{margin-top:var(--sp-4)}
+
+.chat-side__scrim{display:none}
+
+.chat-side{
+  flex:0 0 300px; width:300px; min-height:0; overflow-y:auto;
+  display:flex; flex-direction:column; gap:var(--sp-3);
+  border-left:1px solid var(--line); padding:var(--sp-4);
 }
-.chat-drawer__item:hover { background: var(--panel-3, rgba(255,255,255,.07)); }
-.chat-drawer__preview { display: block; margin-bottom: 4px; }
-.chat-drawer__meta { display: flex; gap: 8px; font-size: .82em; opacity: .75; flex-wrap: wrap; }
-.chat-drawer__msgs .chat__bubble { max-width: 100%; font-size: .92em; }
-.chat-drawer__actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
-@media (max-width: 900px) {
-  .chat-split--open .chat-split__main { display: none; }
-  .chat-drawer { flex: 1; max-width: 100%; border-left: 0; padding-left: 0; }
+.chat-side__newchat{flex:0 0 auto}
+.chat-side__list{display:flex; flex-direction:column; gap:6px; min-height:0; overflow-y:auto}
+.chat-side__item{
+  position:relative; display:flex; align-items:flex-start; gap:4px;
+  border-radius:var(--r-md);
+}
+.chat-side__item:hover{background:var(--surface-2)}
+.chat-side__item.is-active{background:var(--surface-2); box-shadow:inset 2px 0 0 0 var(--brand-1)}
+.chat-side__link{
+  flex:1 1 auto; min-width:0; display:block; padding:8px 4px 8px 10px;
+  color:var(--text); text-decoration:none;
+}
+.chat-side__link:hover{text-decoration:none}
+.chat-side__preview{
+  display:block; margin-bottom:4px; font-size:var(--fs-sm);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.chat-side__meta{display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:var(--fs-xs); color:var(--text-dim)}
+.chat-side__menu{flex:0 0 auto; margin:6px 6px 0 0}
+
+@media (max-width:1099px){
+  .chat-col__histbtn{display:inline-flex}
+  .chat-side{
+    position:fixed; inset:0 0 0 auto; z-index:40; width:320px; max-width:88vw;
+    height:100dvh; background:var(--bg); border-left:1px solid var(--line);
+    box-shadow:var(--sh-2); transform:translateX(100%); transition:transform .18s;
+  }
+  #chat-side-toggle:checked ~ .chat-side{transform:none}
+  #chat-side-toggle:checked ~ .chat-side__scrim{
+    display:block; position:fixed; inset:0; z-index:30; background:rgb(0 0 0/.55);
+  }
 }

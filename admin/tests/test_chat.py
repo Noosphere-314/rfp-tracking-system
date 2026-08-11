@@ -50,13 +50,16 @@ class _Cursor:
 
 
 class _Conn:
-    """Перший execute() у запиті бачить `rows` (сумісність з тестами, писаними
-    до розділу D4: там був рівно один SELECT на /chat). GET /chat відтоді
-    робить ДРУГИЙ SELECT — форумні чипи (kb.forums) — тож кожен наступний
-    виклик за замовчуванням отримує порожній список, а не ті самі `rows`:
-    інакше рядки повідомлень (id/role/content/…) підставлялися б замість
-    форумних (forum_slug) і падали б KeyError. `extra_rows` дозволяє новим
-    тестам задати результат саме для другого (і далі) виклику за індексом."""
+    """Перший execute() у запиті бачить `rows`. GET /chat (живий режим) робить
+    ще ДВА SELECT — KB-scope групи форумів (kb.forums, розділ 3 редизайну) і
+    hist_sessions для панелі .chat-side (розділ 1 редизайну) — тож кожен
+    наступний виклик за замовчуванням отримує порожній список, а не ті самі
+    `rows`: інакше рядки повідомлень (id/role/content/…) підставлялися б
+    замість форумних (forum_slug/kind) чи сесійних і падали б KeyError.
+    `extra_rows` дозволяє новим тестам задати результат саме для другого
+    (і далі) виклику за індексом. В archived-режимі (?hist=<key>) запит
+    forum_rows не виконується взагалі — там лише hist_messages (idx0) і
+    hist_sessions (idx1)."""
 
     def __init__(
         self,
@@ -184,6 +187,121 @@ def test_chat_page_shows_stub_tier_chip(client, monkeypatch):
     assert "keyword tier" in html  # pg.chat.stub_chip, дефолт en
 
 
+# ── GET /chat: постійна панель історії справа (розділ 1 редизайну) ───
+# Замінює колишню шухляду-по-URL (?hist=1 — список, ?hist=<key> — розмова
+# всередині шухляди): панель .chat-side рендериться ЗАВЖДИ, а ?hist=<key>
+# тепер перемикає ГОЛОВНУ колонку в read-only режим без композера.
+
+
+def test_chat_page_renders_history_panel_without_hist_param(client, monkeypatch):
+    """(б) Панель .chat-side рендериться ЗАВЖДИ, без ?hist — той самий
+    hist_sessions-запит (LIMIT 30), що раніше жив лише під ?hist=1."""
+    _login(client)
+    now = datetime.now(timezone.utc)
+    _fake_db(
+        monkeypatch,
+        rows=[],
+        extra_rows={2: [
+            {"session_key": "web:other-sid", "channel": "web", "last_at": now,
+             "questions": 3, "who": WHO, "preview": "What grants exist?"},
+        ]},
+    )
+    response = client.get("/chat")
+    assert response.status_code == 200
+    html = response.text
+    assert 'class="chat-side"' in html
+    assert "What grants exist?" in html
+    # Жива розмова — композер лишається видимим.
+    assert 'action="/chat/send"' in html
+
+
+def test_chat_hist_key_shows_read_only_archived_conversation_without_composer(client, monkeypatch):
+    """(в) ?hist=<session_key>: read-only перегляд ОДНІЄЇ архівної розмови —
+    банер «Archived conversation» + «Back to current chat», композер
+    (action="/chat/send") відсутній цілком."""
+    _login(client)
+    now = datetime.now(timezone.utc)
+    _fake_db(
+        monkeypatch,
+        rows=[
+            {"id": 1, "role": "user", "who": WHO, "content": "an old question",
+             "tier": None, "model": None, "created_at": now},
+        ],
+    )
+    response = client.get("/chat", params={"hist": "web:other-sid"})
+    assert response.status_code == 200
+    html = response.text
+    assert "an old question" in html
+    assert "Archived conversation" in html
+    assert "Back to current chat" in html
+    assert 'action="/chat/send"' not in html
+
+
+def test_chat_hist_key_reads_archived_session_by_the_given_key(client, monkeypatch):
+    sink: list = []
+    _login(client)
+    _fake_db(monkeypatch, rows=[], sink=sink)
+    client.get("/chat", params={"hist": "web:other-sid"})
+    sql, params = sink[0]
+    assert "kb.chat_messages" in sql
+    assert params == ("web:other-sid",)
+
+
+def test_chat_hist_equals_1_is_no_longer_a_separate_mode(client, monkeypatch):
+    """(г) Колишня семантика "?hist=1" (список розмов у шухляді) зникла
+    разом із шухлядою — сторінка поводиться як голий /chat: жива розмова,
+    композер видно, жодного банера «Archived»."""
+    _login(client)
+    _fake_db(monkeypatch, rows=[])
+    response = client.get("/chat", params={"hist": "1"})
+    assert response.status_code == 200
+    html = response.text
+    assert 'action="/chat/send"' in html
+    assert "Archived conversation" not in html
+
+
+def test_chat_hist_empty_reads_live_session_not_hist_1(client, monkeypatch):
+    """Продовження (г): з ?hist=1 перший SELECT все ще йде по ЖИВІЙ сесії
+    цього браузера ('web:' + sid), а не по буквальному ключу "1"."""
+    _login(client)
+    sid = auth.session_sid(
+        type("R", (), {"cookies": {auth.COOKIE_BASE: client.cookies[auth.COOKIE_BASE]}})()
+    )
+    sink: list = []
+    _fake_db(monkeypatch, rows=[], sink=sink)
+    client.get("/chat", params={"hist": "1"})
+    sql, params = sink[0]
+    assert "kb.chat_messages" in sql
+    assert params == (f"web:{sid}",)
+
+
+def test_chat_history_panel_highlights_the_active_session(client, monkeypatch):
+    """Активна поточна розмова (session_key == 'web:' + sid цього браузера)
+    підсвічена класом .is-active, чужа/минула — ні."""
+    _login(client)
+    sid = auth.session_sid(
+        type("R", (), {"cookies": {auth.COOKIE_BASE: client.cookies[auth.COOKIE_BASE]}})()
+    )
+    now = datetime.now(timezone.utc)
+    _fake_db(
+        monkeypatch,
+        rows=[],
+        extra_rows={2: [
+            {"session_key": f"web:{sid}", "channel": "web", "last_at": now,
+             "questions": 1, "who": WHO, "preview": "current conversation"},
+            {"session_key": "web:someone-else", "channel": "web", "last_at": now,
+             "questions": 1, "who": "Someone", "preview": "another conversation"},
+        ]},
+    )
+    html = client.get("/chat").text
+    active_idx = html.index("current conversation")
+    other_idx = html.index("another conversation")
+    active_item = html.rindex('class="chat-side__item', 0, active_idx)
+    other_item = html.rindex('class="chat-side__item', 0, other_idx)
+    assert "is-active" in html[active_item:active_idx]
+    assert "is-active" not in html[other_item:other_idx]
+
+
 # ── GET /chat?ask=…: префил композера (розділ D2) ────────────────────
 
 
@@ -233,32 +351,42 @@ def test_chat_page_without_ask_param_has_empty_textarea_body(client, monkeypatch
     assert tail.split(">", 1)[1].split("</textarea>", 1)[0] == ""
 
 
-# ── GET /chat: форумні чипи (розділ D4) ───────────────────────────────
+# ── GET /chat: KB-scope дропдаун композера (розділ 3 редизайну) ───────
+# Замінює колишні форумні чипи (розділ D4) — випадаючий список чекбоксів
+# name="forums", згрупований за kb.forums.kind (app.py: _forum_scope_groups).
 
 
-def test_chat_page_renders_all_chip_and_enabled_forum_chips(client, monkeypatch):
+def test_chat_page_renders_grouped_forum_scope_checkboxes(client, monkeypatch):
     _login(client)
     _fake_db(
         monkeypatch,
         rows=[],
-        extra_rows={1: [{"forum_slug": "optimism"}, {"forum_slug": "arbitrum"}]},
+        extra_rows={1: [
+            {"forum_slug": "optimism", "kind": "discourse"},
+            {"forum_slug": "arbitrum", "kind": "discourse"},
+            {"forum_slug": "aave", "kind": "snapshot"},
+        ]},
     )
 
     html = client.get("/chat").text
-    assert 'data-forum=""' in html  # чип "All"
-    assert 'data-forum="Optimism"' in html
-    assert 'data-forum="Arbitrum"' in html
-    # No-JS fallback href — ask= уже прив'язаний до конкретного форуму.
-    assert "/chat?ask=Which%20dev%20tooling%20grants%20were%20discussed%20in%20Optimism" in html
+    assert 'chat__scope' in html
+    assert '<input type="checkbox" name="forums" value="optimism">' in html
+    assert '<input type="checkbox" name="forums" value="arbitrum">' in html
+    assert '<input type="checkbox" name="forums" value="aave">' in html
+    # Групи за kind у фіксованому порядку (CHAT_SCOPE_KIND_ORDER, app.py):
+    # «Forums» (discourse) перед «Snapshot».
+    assert html.index("Forums") < html.index("optimism") < html.index("Snapshot") < html.index("aave")
 
 
-def test_chat_page_forum_chips_empty_when_no_forums_enabled(client, monkeypatch):
+def test_chat_page_scope_dropdown_has_no_groups_when_no_forums_enabled(client, monkeypatch):
     _login(client)
     _fake_db(monkeypatch, rows=[], extra_rows={1: []})
 
     html = client.get("/chat").text
-    assert 'data-forum=""' in html  # "All" завжди присутній
-    assert "chat__forumchips" in html
+    assert 'chat__scope' in html
+    assert 'name="forums"' not in html
+    # Підказка «шукає всюди сам» лишається завжди, з групами чи без.
+    assert "searches everywhere itself" in html
 
 
 # ── POST /chat/send: валідація ──────────────────────────────────────
@@ -370,6 +498,100 @@ def test_chat_composer_renders_web_search_checkbox(client, monkeypatch):
     html = client.get("/chat").text
     assert '<input type="checkbox" id="chat-web" name="web" value="1">' in html
     assert "Web search" in html
+
+
+# ── POST /chat/send: KB-scope форумів (розділ 3 редизайну) ───────────
+# Чекбокси `name="forums"` у .chat__scope замінили колишні форумні чипи —
+# FormData серіалізує кілька значень з тим самим іменем, FastAPI (тест а)
+# збирає їх у list[str] (Form(default=[])).
+
+
+def test_chat_send_passes_forums_list_to_backend(client, monkeypatch):
+    _login(client)
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        return {"ok": True, "reply_md": "ok", "tier": "llm", "model": None}
+
+    monkeypatch.setattr(admin_app, "_chat_backend", fake_backend)
+    response = client.post(
+        "/chat/send",
+        data={
+            "message": "hello",
+            "forums": ["optimism", "arbitrum"],
+            "csrf": _csrf(client),
+        },
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 200
+    assert seen["forums"] == ["optimism", "arbitrum"]
+
+
+def test_chat_send_omits_forums_key_when_none_selected(client, monkeypatch):
+    """Той самий підхід, що й «web» вище: порожній вибір — ключа "forums" у
+    payload узагалі нема, а не порожній список."""
+    _login(client)
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        return {"ok": True, "reply_md": "ok", "tier": "llm", "model": None}
+
+    monkeypatch.setattr(admin_app, "_chat_backend", fake_backend)
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 200
+    assert "forums" not in seen
+
+
+def test_chat_send_silently_drops_invalid_forum_slugs(client, monkeypatch):
+    """Композер рендерить чекбокси лише з реальних enabled-рядків kb.forums —
+    невалідне значення тут можливе лише при ручному підробленні POST-тіла.
+    _FORUM_SLUG_RE (app.py) відкидає його мовчки, а не валить запит 400-кою."""
+    _login(client)
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        return {"ok": True, "reply_md": "ok", "tier": "llm", "model": None}
+
+    monkeypatch.setattr(admin_app, "_chat_backend", fake_backend)
+    response = client.post(
+        "/chat/send",
+        data={
+            "message": "hello",
+            "forums": ["optimism", "UPPERCASE", "has spaces", "sql';drop--"],
+            "csrf": _csrf(client),
+        },
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 200
+    assert seen["forums"] == ["optimism"]
+
+
+def test_chat_send_caps_forums_at_twelve(client, monkeypatch):
+    """CHAT_SCOPE_MAX_FORUMS (app.py) — навіть якщо всі 20 валідні, у payload
+    їде лише перші 12."""
+    _login(client)
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        return {"ok": True, "reply_md": "ok", "tier": "llm", "model": None}
+
+    monkeypatch.setattr(admin_app, "_chat_backend", fake_backend)
+    many = [f"forum-{i}" for i in range(20)]
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "forums": many, "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 200
+    assert seen["forums"] == many[:12]
 
 
 # ── POST /chat/send: гілкування відповіді за X-Requested-With ───────

@@ -38,6 +38,10 @@
     <button class="btn" type="submit">{{ t("act.archive", "Archive") }}</button>
   </form>
   {% endif %}
+  {#- Аудит UX (задача 2, п.1): Delete раніше стояв упритул до Archive/
+      Unarchive — небезпечна дія зливалась зі звичайними. Другий spacer
+      відсуває її праворуч, окремо від кластера Download/Print/Archive. -#}
+  <span class="toolbar__spacer"></span>
   <form class="inline" method="post" action="/briefs/{{ brief.id }}/delete"
         data-confirm="{{ t('msg.confirm_delete_brief', 'Delete this brief? This cannot be undone.') }}">
     {% include "_csrf.html" %}
