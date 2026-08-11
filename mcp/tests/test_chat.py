@@ -1246,3 +1246,25 @@ def test_verification_hint_forces_web_even_with_toggle_and_setting_off(monkeypat
     )
     assert status == 200
     assert seen["web_search"] is True
+
+
+def test_telegram_always_gets_web_search(monkeypatch):
+    """Рішення Миколи 2026-08-11: у Telegram інтернет увімкнений завжди —
+    жодних команд-тумблерів; чекбокс лишається тільки у вебі."""
+    _stub_no_op_db(monkeypatch)
+    monkeypatch.setattr(chat, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(chat, "_chat_model_setting", lambda: "claude-sonnet-5")
+    monkeypatch.setattr(chat, "_web_search_enabled", _raise)  # не має читатись
+
+    seen = {}
+
+    def fake_llm_reply(messages, model, channel, web_search=False):
+        seen["web_search"] = web_search
+        return "answer", 1, 1
+
+    monkeypatch.setattr(chat, "_llm_reply", fake_llm_reply)
+    body, status = chat.answer(
+        {**VALID_PAYLOAD, "channel": "telegram", "message": "що там по грантах"}
+    )
+    assert status == 200
+    assert seen["web_search"] is True

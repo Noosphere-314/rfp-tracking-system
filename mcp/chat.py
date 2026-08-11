@@ -129,6 +129,73 @@ _WEB_SEARCH_TOOL = {
     "max_uses": 3,
 }
 
+_TOOLS = [
+    {
+        "name": "search_kb",
+        "description": (
+            "Full-text search over the DAO governance forum archive, across "
+            "all archived forums by default. Call it 2-3 times with "
+            "different phrasings before concluding the archive has nothing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "forum": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "name": "get_topic",
+        "description": (
+            "Read a full thread by forum + topic_id (from search_kb results) "
+            "before citing it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "forum": {"type": "string"},
+                # 008: topic_id — text у БД (Snapshot-ід це hex-хеш), тож
+                # схема приймає і число (Discourse), і рядок.
+                "topic_id": {"type": ["integer", "string"]},
+                "offset": {"type": "integer"},
+                "max_posts": {"type": "integer"},
+            },
+            "required": ["forum", "topic_id"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "name": "list_findings",
+        "description": (
+            "Shows what OUR pipeline collected — internal findings/leads with "
+            "classifier verdicts (agent 2.0), NOT the public forum archive. "
+            "Use it for questions about our own leads/findings."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ecosystem": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "done", "filtered"],
+                },
+                "days": {"type": "integer"},
+                "min_confidence": {"type": "number"},
+                "limit": {"type": "integer"},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+]
+
 
 # ── Contract validation ─────────────────────────────────────────────
 
@@ -847,6 +914,11 @@ def answer(payload: dict) -> tuple[dict, int]:
             # short-circuiting the settings read when the request itself asks.
             web_search_on = (
                 payload.get("web") is True
+                # Telegram — інтернет УВІМКНЕНИЙ ЗАВЖДИ (рішення Миколи
+                # 2026-08-11): у месенджері нема куди покласти чекбокс, а
+                # вимагати команду-тумблер від людини, яка просто пише
+                # питання, — гірше за трохи дорожчі відповіді.
+                or channel == "telegram"
                 or _web_search_enabled()
                 or _wants_web(message)
             )
