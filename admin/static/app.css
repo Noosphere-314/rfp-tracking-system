@@ -289,6 +289,16 @@ label{cursor:pointer}
 .check{display:inline-flex; align-items:center; gap:var(--sp-2); font-size:var(--fs-sm);
   color:var(--text-dim)}
 
+/* /sources «Discover» (задача «менше ручного JSON») — знайдені discourse-
+   категорії як чекбокси замість JSON вручну. .cfg-discovered — прокручувана
+   колонка (форуми на кшталт Optimism віддають десятки категорій разом із
+   підкатегоріями); .check--indent зсуває підкатегорію під її батька, той
+   самий відступ, що й у списках меню (розділ 9, .menu__group). */
+.cfg-discovered{display:flex; flex-direction:column; gap:var(--sp-1);
+  max-height:260px; overflow-y:auto; padding:var(--sp-2);
+  border:1px solid var(--line); border-radius:var(--r-md)}
+.check--indent{margin-left:var(--sp-5)}
+
 .field{display:flex; flex-direction:column; gap:var(--sp-1); min-width:0}
 .field--wide{grid-column:1 / -1}
 .field__label{font-size:var(--fs-sm); font-weight:600; color:var(--text-dim)}

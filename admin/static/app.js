@@ -292,6 +292,53 @@
     if (ctl.value || ctl.checked) apply();
   });
 
+  /* ── 6a. /sources — тип фетчера керує Config-підказкою й кнопкою Discover
+     (задача «менше ручного JSON»). Без цього блоку: Discover лишається
+     видимою для всіх типів (бекенд чесно каже "for discourse sources only"
+     при кліку — admin/app.py add_source), а підказка під Config — один
+     рядок з усіма типами одразу ([data-cfg-hint-all], завжди в розмітці).
+     Нічого з цього не чіпає бекенд-контракт: обидві гілки (з JS і без)
+     ведуть у той самий POST /sources/add. -#}
+  (function sourceTypeUX() {
+    var select = document.querySelector("[data-source-type]");
+    var configField = document.querySelector("[data-config-field]");
+    var discoverBtn = document.querySelector("[data-discover-btn]");
+    var hintAll = document.querySelector("[data-cfg-hint-all]");
+    var hints = document.querySelectorAll("[data-cfg-hint]");
+    if (!select) return;
+
+    function currentType() {
+      return select.value;
+    }
+
+    function syncHints() {
+      var type = currentType();
+      if (hintAll) hintAll.hidden = true;
+      hints.forEach(function (el) {
+        el.hidden = el.dataset.cfgHint !== type;
+      });
+      if (discoverBtn) discoverBtn.hidden = type !== "discourse";
+    }
+
+    // Шаблон підставляється лише в ПОРОЖНЮ (чи дефолтну "{}") textarea —
+    // те, що людина вже написала, підставою не перезаписується (задача,
+    // п.2). Це навмисно відбувається лише на "change", а не при завантаженні
+    // сторінки: form.config після помилки чи Discover мусить лишитись як є.
+    select.addEventListener("change", function () {
+      if (configField) {
+        var val = configField.value.trim();
+        if (val === "" || val === "{}") {
+          var opt = select.selectedOptions[0];
+          var tpl = opt && opt.dataset.configTpl;
+          if (tpl) configField.value = tpl;
+        }
+      }
+      syncHints();
+    });
+
+    syncHints();
+  })();
+
   /* ── 7. Чат: прогресивне посилення (розділ 4.9) ────────────────────────
      ІНВАРІАНТ файлу зверху лишається: без цього блоку форма — звичайний
      <form method="post" action="/chat/send"> і сама доїжджає по PRG (303 на

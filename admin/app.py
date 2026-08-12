@@ -860,6 +860,26 @@ def dashboard(request: Request):
 
 SOURCE_FORM_FIELDS = ("type", "name", "ecosystem", "url", "category", "lane", "config")
 
+# Дефолт-шаблони Config за типом фетчера (задача «менше ручного JSON», п.2):
+# app.js підставляє потрібний у порожню textarea при зміні select-а типу,
+# підказка під полем показує всі варіанти для тих, у кого немає JS. Типи без
+# config (rss, defillama) — жоден worker/fetchers/*.py файл не чіпає
+# source.config.get(...) для них, порожній об'єкт уже валідний.
+CONFIG_TEMPLATES: dict[str, str] = {
+    "discourse": '{"categories": []}',
+    "github_discussions": '{"repos": ["owner/repo"]}',
+    "snapshot": '{"spaces": ["example.eth"]}',
+    "rest_aggregator": '{"items_path": "data", "fields": {}}',
+    "rss": "{}",
+    "defillama": "{}",
+}
+
+# cats[] приходить з чекбоксів "Discover" як "<id>:<slug>" (розділ нижче) —
+# регулярка відсікає все, що не схоже на пару discourse id:slug, перш ніж
+# значення потрапить у JSON, що піде в БД.
+CATS_RE = re.compile(r"^\d+:[a-z0-9-]{1,80}$")
+MAX_DISCOVERED_CATS = 40
+
 
 def _render_sources(
     request: Request,
@@ -867,11 +887,16 @@ def _render_sources(
     message: str = "",
     error: str = "",
     form: dict | None = None,
+    discovered: list[dict] | None = None,
     status_code: int = 200,
 ):
     """Одна точка рендеру /sources — щоб помилкова гілка `add_source` могла
     повернути сторінку з уже введеними значеннями (розділ 4.2), а не редірект,
-    після якого 7 полів і JSON-конфіг доводиться набирати заново."""
+    після якого 7 полів і JSON-конфіг доводиться набирати заново.
+
+    `discovered` — результат "Discover" для discourse (нижче): список
+    знайдених категорій, який форма показує як чекбокси замість того, щоб
+    примушувати вручну писати JSON."""
     with db() as conn:
         rows = conn.execute(
             "SELECT * FROM sources ORDER BY enabled DESC, quarantined, type, name"
@@ -886,6 +911,8 @@ def _render_sources(
             "message": message,
             "error": error,
             "form": {key: (form or {}).get(key, "") for key in SOURCE_FORM_FIELDS},
+            "config_templates": CONFIG_TEMPLATES,
+            "discovered_categories": discovered or [],
         },
         status_code=status_code,
     )
@@ -927,16 +954,75 @@ def _test_fetch(row: dict) -> tuple[int, str]:
             return 0, f"{type(exc).__name__}: {exc}"
 
 
+def _flatten_discourse_categories(categories: list[dict], depth: int = 0) -> list[dict]:
+    """`categories.json?include_subcategories=true` вкладає підкатегорії в
+    `subcategory_list` кожного батька — тут це розгортається в плаский список
+    для чекбоксів форми, з `depth` для відступу в розмітці. Кожен рівень
+    (батьки між собою, діти під своїм батьком між собою) — спаданням за
+    topic_count, як просив власник: спершу найактивніші."""
+    out: list[dict] = []
+    for cat in sorted(categories, key=lambda c: c.get("topic_count") or 0, reverse=True):
+        cat_id, slug = cat.get("id"), cat.get("slug")
+        if cat_id is None or not slug:
+            continue
+        out.append({
+            "id": cat_id, "slug": slug,
+            "topic_count": cat.get("topic_count") or 0, "depth": depth,
+        })
+        subs = cat.get("subcategory_list") or []
+        if subs:
+            out.extend(_flatten_discourse_categories(subs, depth + 1))
+    return out
+
+
+def _discover_discourse(url: str) -> tuple[list[dict], str]:
+    """Живий, нічого не зберігаючий похід на `{url}/categories.json` — той
+    самий патерн read-only з'єднання, що й _test_fetch вище (netguard
+    всередині HttpClient/_get_checked, окремого обходу тут немає).
+    Повертає (категорії, помилка) — рівно як _test_fetch повертає (count, error)."""
+    endpoint = f"{url.rstrip('/')}/categories.json?include_subcategories=true"
+    with db() as conn, HttpClient(conn) as client:
+        try:
+            payload = client.get(endpoint, use_cache=False).json()
+            categories = ((payload.get("category_list") or {}).get("categories")) or []
+        except SourceBlocked as exc:
+            return [], f"blocked (403/429): {exc}"
+        except Exception as exc:  # noqa: BLE001 — мережа/SSRF/не-JSON — усе веде до помилки форми, не 500
+            return [], f"{type(exc).__name__}: {exc}"
+
+    if not categories:
+        return [], "No categories found in the response — is this a Discourse forum?"
+    return _flatten_discourse_categories(categories), ""
+
+
+def _cats_to_config(cats: list[str]) -> dict:
+    """"<id>:<slug>" з чекбоксів Discover → {"categories": [{"slug","id"}, …]}
+    у форматі, який worker/fetchers/discourse.py читає (source.config["categories"]).
+    Невалідні значення (не пройшли CATS_RE) мовчки відкидаються, решта — не
+    більше MAX_DISCOVERED_CATS."""
+    selected: list[dict] = []
+    for entry in cats:
+        if not CATS_RE.match(entry):
+            continue
+        cat_id, slug = entry.split(":", 1)
+        selected.append({"slug": slug, "id": int(cat_id)})
+        if len(selected) >= MAX_DISCOVERED_CATS:
+            break
+    return {"categories": selected} if selected else {}
+
+
 @mutations.post("/sources/add")
 def add_source(
     request: Request,
+    action: str = Form("save"),
     type: str = Form(...),
-    name: str = Form(...),
-    ecosystem: str = Form(...),
-    url: str = Form(...),
+    name: str = Form(""),
+    ecosystem: str = Form(""),
+    url: str = Form(""),
     category: str = Form(""),
     lane: str = Form("rfp"),
     config: str = Form("{}"),
+    cats: list[str] = Form(default=[]),
 ):
     """Додавання з живим тест-фетчем — та сама гарантія, що дає n8n-форма:
     джерело, яке зараз не може віддати жодного елемента, не зберігається
@@ -945,11 +1031,44 @@ def add_source(
     Помилкові гілки повертають ВІДРЕНДЕРЕНУ сторінку зі збереженими полями
     (розділ 4.2), а не редірект: тест-фетч триває до 30 с, і втрачати після
     нього сім полів разом із JSON-конфігом — найдорожча дрібниця цієї сторінки.
-    """
+
+    `action=discover` (друга кнопка форми, лише для discourse) — окрема гілка
+    ПЕРЕД валідацією name/ecosystem/url required: власник хоче спершу
+    побачити список категорій форуму, а тоді вже дописувати решту полів."""
     submitted = {
         "type": type, "name": name, "ecosystem": ecosystem, "url": url,
         "category": category, "lane": lane, "config": config,
     }
+
+    if action == "discover":
+        if type != "discourse":
+            return _render_sources(
+                request,
+                error="Discover works for discourse sources only",
+                form=submitted, status_code=400,
+            )
+        if not url.strip():
+            return _render_sources(
+                request, error="URL is required to discover categories",
+                form=submitted, status_code=400,
+            )
+        found, disc_error = _discover_discourse(url.strip())
+        if disc_error:
+            return _render_sources(
+                request, error=f"Discover failed: {disc_error}",
+                form=submitted, status_code=400,
+            )
+        return _render_sources(
+            request,
+            message=f"Found {len(found)} categories — tick the ones to track, then Test and save",
+            form=submitted, discovered=found, status_code=200,
+        )
+
+    if not name.strip() or not ecosystem.strip() or not url.strip():
+        return _render_sources(
+            request, error="Name, ecosystem and URL are required",
+            form=submitted, status_code=400,
+        )
     if type not in fetchers.FETCHERS:
         return _render_sources(
             request, error=f"Unknown source type: {type}",
@@ -964,6 +1083,12 @@ def add_source(
             request, error=f"Invalid JSON in config: {exc}",
             form=submitted, status_code=400,
         )
+
+    # Ручний config (людина щось написала в textarea) завжди має пріоритет —
+    # автозбір з чекбоксів "Discover" підставляється лише коли поле лишили
+    # порожнім/дефолтним {}.
+    if not config_obj and cats:
+        config_obj = _cats_to_config(cats)
 
     candidate = {
         "id": 0, "type": type, "name": name.strip(), "ecosystem": ecosystem.strip(),
