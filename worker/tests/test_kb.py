@@ -465,3 +465,18 @@ def test_backfill_updates_remote_stats_before_walking_categories():
 
     assert client.calls[0][0] == f"{forum.base_url}/about.json"
     assert any("remote_topics" in sql for sql, _ in conn.calls)
+
+
+def test_crawl_topic_tolerates_null_topic_json():
+    """Discourse може відповісти 200 з literal `null` (прихована/видалена
+    тема): раніше .get() на None валив УВЕСЬ прогін форуму (Celo
+    2026-08-11). Тепер — попередження і complete=True, щоб примара не
+    поверталась у кандидати вічно."""
+    forum = _forum()
+    conn = _FakeConn()
+    client = _FakeHttpClient([_FakeResponse(None)])
+
+    result = kb.crawl_topic(conn, client, forum, 999)
+
+    assert result.stored == 0
+    assert result.complete is True

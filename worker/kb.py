@@ -224,6 +224,14 @@ def crawl_topic(
     if response.not_modified:
         return CrawlResult(stored=0, complete=True)
     data = response.json()
+    # Discourse вміє відповісти 200 з літеральним `null` (прихована/щойно
+    # видалена тема) — data стає None, і будь-який .get() валить ЦІЛИЙ прогін
+    # форуму ('NoneType' object has no attribute 'get', Celo 2026-08-11,
+    # прогін зупинився за 20 хв до кінця). Нема тіла — нема що зберігати;
+    # complete=True, щоб примара не поверталась у кандидати вічно.
+    if not isinstance(data, dict):
+        log.warning("%s topic %s: empty/null topic JSON — skipped", forum.forum_slug, topic_id)
+        return CrawlResult(stored=0, complete=True)
 
     stream: list[int] = (data.get("post_stream") or {}).get("stream") or []
     included: list[dict] = (data.get("post_stream") or {}).get("posts") or []
@@ -268,7 +276,7 @@ def crawl_topic(
             complete = False
             break
         stored += _store_posts(
-            conn, topic_ref, (more.json().get("post_stream") or {}).get("posts") or []
+            conn, topic_ref, ((more.json() or {}).get("post_stream") or {}).get("posts") or []
         )
 
     conn.commit()
@@ -294,7 +302,7 @@ def _categories(client: HttpClient, forum: Forum) -> list[dict]:
     invisible until someone compared against /about.json by hand again.
     """
     response = client.get(f"{forum.base_url}/categories.json?include_subcategories=true")
-    payload = response.json()
+    payload = response.json() or {}
     flat: list[dict] = []
 
     def walk(categories: list[dict]) -> None:
@@ -397,7 +405,7 @@ def _update_remote_stats(conn: psycopg.Connection, client: HttpClient, forum: Fo
     """
     try:
         response = client.get(f"{forum.base_url}/about.json", use_cache=False)
-        about_stats = (response.json().get("about") or {}).get("stats") or {}
+        about_stats = ((response.json() or {}).get("about") or {}).get("stats") or {}
     except (FetchError, SourceBlocked) as exc:
         log.warning("%s: /about.json stats fetch failed: %s", forum.forum_slug, exc)
         return
@@ -472,7 +480,7 @@ def backfill(
                 _save_cursor(conn, forum, cursor_at(category["id"], page))
                 raise
 
-            topics = ((response.json().get("topic_list") or {}).get("topics")) or []
+            topics = (((response.json() or {}).get("topic_list") or {}).get("topics")) or []
             stats["pages_listed"] += 1
             if not topics:
                 break
@@ -560,7 +568,7 @@ def incremental(
     # New posts site-wide. One page spans days of activity on these forums, so
     # hourly polling cannot miss anything (KB-Module-Design §3).
     response = client.get(f"{forum.base_url}/posts.json", use_cache=False)
-    for post in response.json().get("latest_posts") or []:
+    for post in (response.json() or {}).get("latest_posts") or []:
         created = _ts(post.get("created_at"))
         if created and forum.last_post_seen_at and created <= forum.last_post_seen_at:
             continue
@@ -572,7 +580,7 @@ def incremental(
     # Bumped topics (catches edits that create no new post but bump the topic).
     known = _known_topics(conn, forum)
     latest = client.get(f"{forum.base_url}/latest.json?order=activity", use_cache=False)
-    for topic in ((latest.json().get("topic_list") or {}).get("topics")) or []:
+    for topic in (((latest.json() or {}).get("topic_list") or {}).get("topics")) or []:
         bumped = _ts(topic.get("bumped_at"))
         # str(): known — str-ключі (topic_id text у БД, див. _known_topics).
         prior = known.get(str(topic["id"]))
