@@ -680,7 +680,11 @@ def record_failure(conn: psycopg.Connection, forum: Forum, error: Exception) -> 
         (forum.id,),
     )
     conn.commit()
-    log.error("%s: crawl failed: %s", forum.forum_slug, error)
+    # exception, не error: record_failure завжди кличуть ЗСЕРЕДИНИ except,
+    # тож активний контекст винятку дає повний трейсбек. Без нього Celo
+    # 2026-08-12 дебажили наосліп: «'NoneType' object has no attribute
+    # 'get'» без жодного натяку, ДЕ саме.
+    log.exception("%s: crawl failed: %s", forum.forum_slug, error)
 
 
 def status(conn: psycopg.Connection) -> list[dict]:
