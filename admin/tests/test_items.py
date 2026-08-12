@@ -599,7 +599,8 @@ def test_items_page_shows_useful_buttons_for_pending_row_without_a_lead(client, 
     html = client.get("/items").text
     assert 'action="/items/uid-abc123/useful"' in html
     assert 'value="yes"' in html and 'value="no"' in html
-    assert "👍" in html and "👎" in html
+    # Текстові кнопки в семантичних відтінках замість емодзі (2026-08-12).
+    assert "btn--ok" in html and 'value="yes"' in html and 'value="no"' in html
 
 
 def test_items_page_shows_rated_badge_and_clear_when_useful_is_set(client, monkeypatch):

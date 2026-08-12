@@ -262,6 +262,10 @@ img,svg{max-width:100%}
 .btn--ghost{background:transparent}
 .btn--ghost:hover{background:var(--surface-2)}
 .btn--danger{color:var(--bad); border-color:var(--bad-bg); background:var(--bad-bg)}
+/* Зелений близнюк .btn--danger — для позитивних оцінок (Useful на /items):
+   та сама семантична пара, що й .b-ok/.alert--ok, жодних нових кольорів. */
+.btn--ok{color:var(--ok); border-color:var(--ok-bg); background:var(--ok-bg)}
+.btn--ok:hover{background:var(--ok-bg); border-color:var(--ok)}
 .btn--danger:hover{background:var(--bad-bg); border-color:var(--bad)}
 .btn--sm,button.small{padding:2px 10px; font-size:var(--fs-sm)}
 .btn--block{width:100%}
@@ -381,7 +385,11 @@ th{color:var(--text-dim); font-weight:600; font-size:var(--fs-sm);
   letter-spacing:.01em; white-space:nowrap}
 tbody tr:last-child td{border-bottom:none}
 tbody tr:hover{background:var(--surface-2)}
-.table--dense th,.table--dense td{padding:5px 10px; font-size:var(--fs-sm)}
+/* 6px, не 10px: прохання Миколи 2026-08-12 — вужчі відступи між
+   стовпчиками, щоб колонка дій ([select][brief][Ask AI]) трималась ОДНИМ
+   рядком без переносів і без горизонтального скролу (7 колонок × 2 боки ×
+   4px = 56px виграшу). */
+.table--dense th,.table--dense td{padding:5px 6px; font-size:var(--fs-sm)}
 .cell--num{text-align:right}
 .cell--nowrap{white-space:nowrap}
 
@@ -855,9 +863,9 @@ select.select--sm{padding:2px 6px; font-size:var(--fs-sm); min-width:0}
 /* 11ch, не 14ch: останні 18px h-скролу на 1280px сиділи саме тут
    (колонка Source 140px при сумі 1012 проти 994 доступних). */
 .cell--truncate-sm{max-width:11ch}
-/* Колонка дій /items: form.inline (select+brief) — нерозривна пара, а
-   «Ask AI» під нею другим рядком; в один рядок усе разом = 210px і h-скрол. */
-.cell--actions{width:140px}
+/* Колонка дій /items: ОДИН рядок без переносів (прохання Миколи
+   2026-08-12) — місце для цього звільнили вужчі падінги таблиці вище. */
+.cell--actions{white-space:nowrap}
 .cell--actions form.inline{white-space:nowrap}
 
 /* ────────────  20. Overview: CSS-бар-чарти (задача 3 аудиту 2026-08-12)  ── */

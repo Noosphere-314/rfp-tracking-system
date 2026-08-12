@@ -282,17 +282,18 @@
                 {% include "_csrf.html" %}
                 <input type="hidden" name="qs" value="{{ request.url.query }}">
                 <input type="hidden" name="value" value="yes">
-                <button class="btn btn--sm btn--ghost" type="submit"
-                        aria-label="{{ t('act.useful.aria', 'Useful') }}"
-                        title="{{ t('act.useful.title', 'Useful — good catch, keep more like this') }}">👍</button>
+                {#- Текстові кнопки в семантичних відтінках (--ok/--bad), а
+                    не емодзі 👍/👎: прохання Миколи 2026-08-12 — «менш
+                    смішні, щоб не виділялись з дизайну». -#}
+                <button class="btn btn--sm btn--ok" type="submit"
+                        title="{{ t('act.useful.title', 'Useful — good catch, keep more like this') }}">{{ t("act.useful_btn", "Useful") }}</button>
               </form>
               <form class="inline" method="post" action="/items/{{ i.item_uid }}/useful">
                 {% include "_csrf.html" %}
                 <input type="hidden" name="qs" value="{{ request.url.query }}">
                 <input type="hidden" name="value" value="no">
-                <button class="btn btn--sm btn--ghost" type="submit"
-                        aria-label="{{ t('act.not_useful.aria', 'Not useful') }}"
-                        title="{{ t('act.not_useful.title', 'Not useful — noise, fewer like this') }}">👎</button>
+                <button class="btn btn--sm btn--danger" type="submit"
+                        title="{{ t('act.not_useful.title', 'Not useful — noise, fewer like this') }}">{{ t("act.noise_btn", "Noise") }}</button>
               </form>
               {% else %}
               <span class="badge {{ 'b-ok' if i.useful else 'b-neutral' }}">{{ t("chip.useful", "useful") if i.useful else t("chip.noise", "noise") }}</span>

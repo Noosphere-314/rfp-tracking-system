@@ -90,10 +90,10 @@ UK: dict[str, str] = {
     "act.all_queue": "уся черга →",
     # Задача 2 аудиту 2026-08-12 — 👍/👎 на не-лід рядках /items
     # (seen_items.useful, міграція 014).
-    "act.useful.aria": "Корисно",
-    "act.useful.title": "Корисно — гарна знахідка, більше таких",
-    "act.not_useful.aria": "Не корисно",
-    "act.not_useful.title": "Не корисно — шум, менше таких",
+    "act.useful.title": "Корисна — гарна знахідка, більше таких",
+    "act.useful_btn": "Корисна",
+    "act.not_useful.title": "Не корисна — шум, менше таких",
+    "act.noise_btn": "Шум",
     # Задача 3 аудиту 2026-08-12 — панель «Latest leads» на Overview.
     "act.all_leads": "Усі ліди →",
     # Задача 6 аудиту 2026-08-12 — «Test all sources now» на /runs.
