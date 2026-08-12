@@ -35,8 +35,17 @@ class Source:
         Raises ValueError on a row the fetcher layer cannot act on; the caller
         quarantines it and alerts instead of skipping it silently.
         """
+        # `is None or == ""`, а НЕ `not row.get(...)`: id=0 — легальне
+        # значення для ще НЕ збереженого кандидата, яким admin робить
+        # тест-фетч перед INSERT (app.py: add_source). Truthiness-перевірка
+        # відкидала його як «missing required column `id`», і форма
+        # «Додати джерело» падала 500-кою на КОЖНОМУ джерелі (знайдено
+        # Миколою на проді 2026-08-12; тести цього не бачили, бо всі
+        # підміняють _test_fetch monkeypatch'ем). Порожній рядок і None
+        # лишаються помилкою, як і були.
         for field_name in ("id", "type", "name", "ecosystem", "url"):
-            if not row.get(field_name):
+            value = row.get(field_name)
+            if value is None or value == "":
                 raise ValueError(f"missing required column `{field_name}`")
 
         url = str(row["url"])
