@@ -345,6 +345,13 @@ UK: dict[str, str] = {
     "pg.sources.discovered_label": "Знайдені категорії — познач ті, що стежити",
     "pg.sources.topics": "тем",
     "pg.sources.discovered_hint": "Позначені категорії йдуть у конфіг лише якщо поле Config вище лишили порожнім",
+    # Задача «Detect type» (2026-08-12) — кнопка, що сама визначає тип
+    # джерела з URL (discourse/github_discussions/snapshot/rss), видима
+    # завжди, на відміну від Discover (лише для discourse).
+    "pg.sources.url_detect_hint": "Не певні, що це за сайт? Впишіть URL і натисніть «Визначити тип».",
+    "pg.sources.detect_label": "Тип джерела",
+    "act.detect_type": "Визначити тип",
+    "pg.sources.detect_button_hint": "Перевіряє URL на відомі патерни API/стрічок (Discourse, GitHub, Snapshot, RSS) і підставляє тип",
     "pg.keywords.h1": "Ключові слова",
     "pg.keywords.sub": "Регекси, що вирішують, які знахідки взагалі доходять до класифікатора",
     "pg.keywords.include": "Пропускають далі",

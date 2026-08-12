@@ -26,7 +26,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import psycopg
 import regex
@@ -867,7 +867,12 @@ SOURCE_FORM_FIELDS = ("type", "name", "ecosystem", "url", "category", "lane", "c
 # source.config.get(...) для них, порожній об'єкт уже валідний.
 CONFIG_TEMPLATES: dict[str, str] = {
     "discourse": '{"categories": []}',
-    "github_discussions": '{"repos": ["owner/repo"]}',
+    # ФОРМА, яку реально читає worker/fetchers/github_discussions.py:
+    # repo.get("owner") / repo.get("name"), тобто список ОБ'ЄКТІВ, а не
+    # рядків "owner/repo" (той варіант фетчер відкидає як "malformed repo
+    # entry"). Шаблон мусить збігатися з фетчером, інакше форма підказує
+    # конфіг, який гарантовано не працює.
+    "github_discussions": '{"repos": [{"owner": "owner", "name": "repo"}]}',
     "snapshot": '{"spaces": ["example.eth"]}',
     "rest_aggregator": '{"items_path": "data", "fields": {}}',
     "rss": "{}",
@@ -979,20 +984,173 @@ def _discover_discourse(url: str) -> tuple[list[dict], str]:
     """Живий, нічого не зберігаючий похід на `{url}/categories.json` — той
     самий патерн read-only з'єднання, що й _test_fetch вище (netguard
     всередині HttpClient/_get_checked, окремого обходу тут немає).
-    Повертає (категорії, помилка) — рівно як _test_fetch повертає (count, error)."""
+    Повертає (категорії, помилка) — рівно як _test_fetch повертає (count, error).
+
+    Задача 2 (2026-08-12): власник спробував https://ethereum.forum/ — це
+    SPA, що на БУДЬ-ЯКИЙ /*.json віддає HTML зі статусом 200, тож `.json()`
+    падав із сирим `JSONDecodeError` просто в повідомленні форми. Тепер
+    тіло, що не парситься як JSON, або парситься, але не має форми Discourse
+    (ні `category_list`, ні `about`) — один людський рядок з підказкою
+    натиснути "Detect type"; технічна деталь (перші 80 символів тіла) іде в
+    дужках наприкінці, для діагностики, а не як основне повідомлення."""
     endpoint = f"{url.rstrip('/')}/categories.json?include_subcategories=true"
+    host = urlparse(url).netloc or url
     with db() as conn, HttpClient(conn) as client:
         try:
-            payload = client.get(endpoint, use_cache=False).json()
-            categories = ((payload.get("category_list") or {}).get("categories")) or []
+            response = client.get(endpoint, use_cache=False)
         except SourceBlocked as exc:
             return [], f"blocked (403/429): {exc}"
-        except Exception as exc:  # noqa: BLE001 — мережа/SSRF/не-JSON — усе веде до помилки форми, не 500
+        except Exception as exc:  # noqa: BLE001 — мережа/SSRF — усе веде до помилки форми, не 500
             return [], f"{type(exc).__name__}: {exc}"
 
+        try:
+            payload = response.json()
+            if not isinstance(payload, dict) or not (
+                isinstance(payload.get("category_list"), dict)
+                or isinstance(payload.get("about"), dict)
+            ):
+                raise ValueError("unexpected JSON shape")
+        except Exception as exc:  # noqa: BLE001 — не-JSON або не-Discourse форма відповіді (ethereum.forum)
+            detail = response.text[:80].strip() if response.text else type(exc).__name__
+            return [], (
+                f'{host} did not answer with Discourse JSON — it is probably not a '
+                f'Discourse forum. Press "Detect type" to check what it is. ({detail})'
+            )
+
+    categories = ((payload.get("category_list") or {}).get("categories")) or []
     if not categories:
         return [], "No categories found in the response — is this a Discourse forum?"
     return _flatten_discourse_categories(categories), ""
+
+
+# ── Detect type ────────────────────────────────────────────────────────────
+#
+# Продовження задачі вище: власник хоче кнопку, яка САМА визначає тип форуму
+# з самого лише URL, замість того, щоб гадати й отримувати JSONDecodeError.
+# Регекс замість повного HTML-парсера — шукаємо рівно один патерн тегу
+# <link rel="alternate" type="application/…+xml" href="…">, а не довільну
+# розмітку (задача 1, п.4).
+_LINK_TAG_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
+_REL_ALTERNATE_RE = re.compile(r"""rel=["']alternate["']""", re.IGNORECASE)
+_FEED_TYPE_RE = re.compile(r"""type=["']application/(?:rss|atom)\+xml["']""", re.IGNORECASE)
+_HREF_RE = re.compile(r"""href=["']([^"']+)["']""", re.IGNORECASE)
+DETECT_HTML_READ_LIMIT = 100_000  # ~100 КБ — досить для <head>, без завантаження цілої сторінки в пам'ять
+
+
+def _find_feed_link(html: str) -> str | None:
+    """Перший `<link rel="alternate" type="application/rss+xml|atom+xml" href="…">`
+    у HTML — href може бути відносним, абсолютизує викликач (urljoin на origin)."""
+    for tag in _LINK_TAG_RE.findall(html):
+        if _REL_ALTERNATE_RE.search(tag) and _FEED_TYPE_RE.search(tag):
+            href = _HREF_RE.search(tag)
+            if href:
+                return href.group(1)
+    return None
+
+
+def _detect_source_type(url: str) -> tuple[str, str, str]:
+    """"Detect type" (задача 1, 2026-08-12) — третя кнопка форми /sources,
+    видима завжди (на відміну від Discover, лише для discourse): власник
+    вводить сам лише URL і хоче знати, ЯКИЙ це тип джерела, перш ніж писати
+    Config JSON вручну.
+
+    Перевірки йдуть по порядку від дешевих (лише хост, без мережі) до
+    мережевих (через HttpClient — той самий netguard/SSRF-захист, що й
+    _discover_discourse/_test_fetch вище):
+      1. snapshot.org у хості → snapshot
+      2. github.com/<owner>/<repo> → github_discussions
+      3. {origin}/about.json з РЕАЛЬНИМ about.stats → discourse (не просто
+         200 OK — SPA-хости на кшталт ethereum.forum віддають HTML-заглушку
+         зі статусом 200 на будь-який шлях)
+      4. <link rel="alternate" type="application/…+xml"> на кореневій
+         сторінці → rss
+      5. інакше — людська помилка з назвою хоста
+
+    Повертає (type, hint, error): рівно одне з (type і hint непорожні) або
+    (error непорожній) — ніколи виняток назовні, мережа/парсинг завжди
+    зводяться до людського тексту."""
+    raw = url.strip()
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    parsed = urlparse(raw)
+    host = parsed.netloc.lower()
+    if not host:
+        return "", "", f"«{url}» doesn't look like a URL"
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    # 1. Snapshot — простір голосувань живе під одним хостом, мережа не потрібна.
+    if "snapshot.org" in host:
+        return (
+            "snapshot",
+            'Snapshot space list goes in config: {"spaces": ["name.eth"]}',
+            "",
+        )
+
+    # 2. GitHub Discussions — owner/repo видно прямо в шляху URL.
+    if host == "github.com":
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) < 2:
+            return (
+                "", "",
+                "github.com URL must include owner and repo, "
+                "e.g. https://github.com/owner/repo",
+            )
+        owner, repo = parts[0], parts[1]
+        return (
+            "github_discussions",
+            # Той самий формат, що й CONFIG_TEMPLATES вище і що читає фетчер.
+            f'GitHub repo detected — use config: '
+            f'{{"repos": [{{"owner": "{owner}", "name": "{repo}"}}]}}',
+            "",
+        )
+
+    # 3. Discourse — {origin}/about.json з about.stats. Мовчазний except:
+    # будь-яка мережева/SSRF/не-JSON проблема тут просто означає "не Discourse",
+    # переходимо до перевірки RSS нижче, а не показуємо помилку одразу.
+    with db() as conn, HttpClient(conn) as client:
+        try:
+            payload = client.get(f"{origin}/about.json", use_cache=False).json()
+        except Exception:  # noqa: BLE001
+            payload = None
+
+    about_stats = None
+    if isinstance(payload, dict):
+        about_field = payload.get("about")
+        if isinstance(about_field, dict) and isinstance(about_field.get("stats"), dict):
+            about_stats = about_field["stats"]
+
+    if about_stats is not None:
+        # topicS_count / postS_count — саме так називає їх Discourse у
+        # /about.json (перевірено наживо на ethereum-magicians.org
+        # 2026-08-12: без «s» повідомлення показувало «? topics / ? posts»).
+        # Однина лишається запасним варіантом на випадок іншої версії.
+        topics = about_stats.get("topics_count") or about_stats.get("topic_count", "?")
+        posts = about_stats.get("posts_count") or about_stats.get("post_count", "?")
+        return (
+            "discourse",
+            f"Discourse forum: {topics} topics / {posts} posts — press Discover to pick categories",
+            "",
+        )
+
+    # 4. RSS/Atom — <link rel="alternate" …> на кореневій сторінці.
+    with db() as conn, HttpClient(conn) as client:
+        try:
+            html = client.get(origin, use_cache=False).text[:DETECT_HTML_READ_LIMIT]
+        except Exception:  # noqa: BLE001 — немає й RSS — впадемо в гілку 5 нижче
+            html = ""
+
+    href = _find_feed_link(html)
+    if href:
+        absolute = urljoin(origin, href)
+        return "rss", f"RSS feed found: {absolute} — use that URL as the source URL", ""
+
+    # 5. Нічого не підійшло.
+    return (
+        "", "",
+        f"No public API or feed found at {host}. This site is likely a JavaScript app "
+        "without an open API — it cannot be tracked. Try the project's Discourse forum "
+        "(…/about.json responds with JSON) or an RSS feed.",
+    )
 
 
 def _cats_to_config(cats: list[str]) -> dict:
@@ -1034,11 +1192,34 @@ def add_source(
 
     `action=discover` (друга кнопка форми, лише для discourse) — окрема гілка
     ПЕРЕД валідацією name/ecosystem/url required: власник хоче спершу
-    побачити список категорій форуму, а тоді вже дописувати решту полів."""
+    побачити список категорій форуму, а тоді вже дописувати решту полів.
+
+    `action=detect` (перша кнопка, "Detect type", задача 1 2026-08-12) —
+    ще одна гілка перед тією ж валідацією: потребує лише URL, викликає
+    `_detect_source_type` і при успіху перемикає `type` у формі, що
+    рендериться нижче, на визначений."""
     submitted = {
         "type": type, "name": name, "ecosystem": ecosystem, "url": url,
         "category": category, "lane": lane, "config": config,
     }
+
+    if action == "detect":
+        if not url.strip():
+            return _render_sources(
+                request, error="URL is required to detect the source type",
+                form=submitted, status_code=400,
+            )
+        detected_type, hint, detect_error = _detect_source_type(url.strip())
+        if detect_error:
+            return _render_sources(
+                request, error=detect_error,
+                form=submitted, status_code=400,
+            )
+        submitted["type"] = detected_type
+        return _render_sources(
+            request, message=hint,
+            form=submitted, status_code=200,
+        )
 
     if action == "discover":
         if type != "discourse":
