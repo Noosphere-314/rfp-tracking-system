@@ -69,6 +69,37 @@
           "default button" форми, tabindex=-1 прибирає з Tab-обходу. -#}
       <button type="submit" name="action" value="save" class="visually-hidden"
               tabindex="-1" aria-hidden="true"></button>
+      {#- ПОРЯДОК ФОРМИ = природний порядок дій (прохання власника
+          2026-08-12: «кнопки треба органічно й логічно, а Config —
+          допоміжне»). Три кроки згори вниз:
+            1. URL + Detect — з чого людина реально починає;
+            2. що знайшли (тип, категорії) + чим підписати (Name/Ecosystem);
+            3. Advanced — config-JSON, згорнутий, для рідкісних випадків.
+          Раніше форма починалась із Type і показувала textarea з JSON
+          посеред екрана, а обидві кнопки-помічники висіли ПІД нею —
+          тобто найчастіша дія була найнижче, а найрідкісніша — найвище. -#}
+
+      {#- КРОК 1 ─────────────────────────────────────────────────────── -#}
+      <p class="form-step">{{ t("pg.sources.step_url", "1. Paste the source URL") }}</p>
+      <div class="url-row">
+        <label class="field url-row__input">
+          <span class="visually-hidden">{{ t("f.url", "URL") }}</span>
+          <input class="input" name="url" required placeholder="https://forum.celo.org"
+                 value="{{ form.url }}">
+        </label>
+        {#- Detect (2026-08-12) — submit-кнопка ТІЄЇ Ж форми: action=detect
+            читає лише url, нічого не зберігає, повертає сторінку з
+            визначеним типом і людською підказкою. formnovalidate — працює
+            маючи лише URL. Стоїть ПОРУЧ із полем, а не окремим блоком
+            нижче: це продовження дії «вставив адресу», а не самостійний
+            розділ (через що й читалось як зайвий «Source type»). -#}
+        <button class="btn" type="submit" name="action" value="detect" formnovalidate
+                data-detect-btn>{{ t("act.detect_type", "Detect type") }}</button>
+      </div>
+      <p class="field__hint form-step__hint">{{ t("pg.sources.url_detect_hint", "Not sure what the site is? Press Detect type — it recognises Discourse, GitHub, Snapshot and RSS, and says so plainly when a site has no open API.") }}</p>
+
+      {#- КРОК 2 ─────────────────────────────────────────────────────── -#}
+      <p class="form-step">{{ t("pg.sources.step_details", "2. Check the type and name the source") }}</p>
       <div class="form-grid">
         <label class="field">
           <span class="field__label">{{ t("f.type", "Type") }}</span>
@@ -95,20 +126,6 @@
         </label>
 
         <label class="field">
-          <span class="field__label">{{ t("f.url", "URL") }}</span>
-          <input class="input" name="url" required placeholder="https://forum.celo.org"
-                 value="{{ form.url }}">
-          <span class="field__hint">{{ t("pg.sources.url_detect_hint", "Not sure what the site is? Fill in the URL and press Detect type.") }}</span>
-        </label>
-
-        <label class="field">
-          <span class="field__label">{{ t("f.category", "Category") }}</span>
-          <input class="input" name="category" placeholder="grants"
-                 value="{{ form.category }}">
-          <span class="field__hint">{{ t("pg.sources.category_hint", "Optional — the label of a section inside the source") }}</span>
-        </label>
-
-        <label class="field">
           <span class="field__label">{{ t("f.lane", "Lane") }}</span>
           {#- Значення лишаються англійськими (інваріант локалізації): українська
               тільки в підписі через LANE_UA. -#}
@@ -118,83 +135,77 @@
             {% endfor %}
           </select>
         </label>
-
-        <label class="field field--wide">
-          <span class="field__label">{{ t("f.config_json", "Config (JSON)") }}</span>
-          {#- rows=3 (задача «менше ручного JSON», п.3): textarea домінувала
-              над рештою семипольної форми, а для discourse Discover тепер
-              взагалі знімає потребу щось тут писати. app.js підставляє
-              CONFIG_TEMPLATES у порожню textarea при зміні типу — лише коли
-              вона порожня, щоб не затерти введене людиною. -#}
-          <textarea name="config" rows="3" data-config-field
-                    placeholder='{"categories": [{"slug": "grants", "id": 12}]}'>{{ form.config or '{}' }}</textarea>
-          {#- Без JS — один рядок з усіма типами одразу (спец. запит власника:
-              «маленьким списком»). З JS — app.js ховає цей рядок і показує
-              лише [data-cfg-hint] для вибраного типу нижче. -#}
-          <span class="field__hint" data-cfg-hint-all>
-            discourse: <code>{"categories": [{"slug": …, "id": …}]}</code> ·
-            github_discussions: <code>{"repos": [{"owner": "…", "name": "…"}]}</code> ·
-            snapshot: <code>{"spaces": ["example.eth"]}</code> ·
-            rest_aggregator: <code>items_path</code> {{ t("pg.sources.config_join", "and") }} <code>fields</code> ·
-            rss/defillama: {{ t("pg.sources.cfg_not_needed", "not needed for this type — leave as {}") }}
-          </span>
-          {% for ft, tpl in config_templates.items() %}
-          <span class="field__hint" data-cfg-hint="{{ ft }}" hidden>
-            {% if ft in ('rss', 'defillama') %}
-              {{ t("pg.sources.cfg_not_needed", "Not needed for this type — leave as {}") }}
-            {% else %}
-              <code>{{ tpl }}</code>
-            {% endif %}
-          </span>
-          {% endfor %}
-        </label>
-
-        {#- Detect type (задача «Detect type», 2026-08-12) — перша з двох
-            "помічникових" submit-кнопок ТІЄЇ Ж форми, ПЕРЕД Discover:
-            action=detect читає лише url, нічого не зберігає, повертає ту
-            саму сторінку з визначеним типом (перемикає <select name=type>)
-            і людською підказкою по конфігу. formnovalidate — працює маючи
-            лише URL, як і Discover нижче. На відміну від Discover, видима
-            ЗАВЖДИ (для будь-якого типу, не лише discourse) — JS її не ховає. -#}
-        <div class="field field--wide">
-          <span class="field__label">{{ t("pg.sources.detect_label", "Source type") }}</span>
-          <button class="btn btn--ghost" type="submit" name="action" value="detect" formnovalidate
-                  data-detect-btn>
-            {{ t("act.detect_type", "Detect type") }}
-          </button>
-          <span class="field__hint">{{ t("pg.sources.detect_button_hint", "Checks the URL against known API/feed patterns (Discourse, GitHub, Snapshot, RSS) and fills in the type") }}</span>
-        </div>
-
-        {#- Discover (задача «менше ручного JSON», п.1) — друга submit-кнопка
-            ТІЄЇ Ж форми: action=discover читає лише type+url, нічого не
-            зберігає, повертає ту саму сторінку зі списком категорій форуму
-            замість JSON, який треба писати вручну. formnovalidate — бо на
-            цьому кроці name/ecosystem можуть бути ще порожні. -#}
-        <div class="field field--wide">
-          <span class="field__label">{{ t("f.discourse_discover", "Discourse categories") }}</span>
-          <button class="btn btn--ghost" type="submit" name="action" value="discover" formnovalidate
-                  data-discover-btn>
-            {{ t("act.discover", "Discover") }}
-          </button>
-          <span class="field__hint">{{ t("pg.sources.discover_hint", "For discourse sources: fetch the forum's category list instead of typing config JSON by hand") }}</span>
-        </div>
-
-        {% if discovered_categories %}
-        <div class="field field--wide">
-          <span class="field__label">{{ t("pg.sources.discovered_label", "Found categories — tick the ones to track") }}</span>
-          <div class="cfg-discovered">
-            {% for c in discovered_categories %}
-            <label class="check{% if c.depth %} check--indent{% endif %}">
-              <input type="checkbox" name="cats" value="{{ c.id }}:{{ c.slug }}">
-              {{ c.slug }} ({{ c.topic_count }} {{ t("pg.sources.topics", "topics") }})
-            </label>
-            {% endfor %}
-          </div>
-          <span class="field__hint">{{ t("pg.sources.discovered_hint", "Ticked categories are used only if the Config field above is left empty") }}</span>
-        </div>
-        {% endif %}
       </div>
 
+      {#- Discover — там, де людина щойно підтвердила тип «discourse»:
+          action=discover читає лише type+url, нічого не зберігає, повертає
+          сторінку зі списком категорій замість JSON вручну. -#}
+      <div class="url-row url-row--discover" data-discover-row>
+        <button class="btn" type="submit" name="action" value="discover" formnovalidate
+                data-discover-btn>{{ t("act.discover", "Discover categories") }}</button>
+        <span class="field__hint">{{ t("pg.sources.discover_hint", "Discourse forums: fetch the category list and tick what to track — no JSON needed") }}</span>
+      </div>
+
+      {% if discovered_categories %}
+      <div class="field field--wide">
+        <span class="field__label">{{ t("pg.sources.discovered_label", "Found categories — tick the ones to track") }}</span>
+        <div class="cfg-discovered">
+          {% for c in discovered_categories %}
+          <label class="check{% if c.depth %} check--indent{% endif %}">
+            <input type="checkbox" name="cats" value="{{ c.id }}:{{ c.slug }}">
+            {{ c.slug }} ({{ c.topic_count }} {{ t("pg.sources.topics", "topics") }})
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      {#- КРОК 3 (необов'язковий) ────────────────────────────────────── -#}
+      {#- Config і Category — у згорнутому <details>: обидва потрібні рідко
+          (Discover/Detect закривають типовий шлях), а textarea з JSON
+          посеред форми читалась як головне поле. `open` лише тоді, коли
+          людина САМА щось туди вписала — тобто після помилки валідації
+          введене видно одразу, а не «зникло». -#}
+      <details class="disclosure disclosure--sub"{% if form.config and form.config not in ('{}', '') %} open{% endif %}>
+        <summary>{{ t("pg.sources.advanced", "Advanced — category label and config JSON") }}</summary>
+        <div class="disclosure__body form-grid">
+          <label class="field">
+            <span class="field__label">{{ t("f.category", "Category") }}</span>
+            <input class="input" name="category" placeholder="grants"
+                   value="{{ form.category }}">
+            <span class="field__hint">{{ t("pg.sources.category_hint", "Optional — the label of a section inside the source") }}</span>
+          </label>
+
+          <label class="field field--wide">
+            <span class="field__label">{{ t("f.config_json", "Config (JSON)") }}</span>
+            {#- app.js підставляє CONFIG_TEMPLATES у ПОРОЖНЮ textarea при
+                зміні типу — лише коли вона порожня, щоб не затерти введене. -#}
+            <textarea name="config" rows="3" data-config-field
+                      placeholder='{"categories": [{"slug": "grants", "id": 12}]}'>{{ form.config or '{}' }}</textarea>
+            {#- Без JS — один рядок з усіма типами одразу. З JS — app.js ховає
+                цей рядок і показує лише [data-cfg-hint] для вибраного типу. -#}
+            <span class="field__hint" data-cfg-hint-all>
+              discourse: <code>{"categories": [{"slug": …, "id": …}]}</code> ·
+              github_discussions: <code>{"repos": [{"owner": "…", "name": "…"}]}</code> ·
+              snapshot: <code>{"spaces": ["example.eth"]}</code> ·
+              rest_aggregator: <code>items_path</code> {{ t("pg.sources.config_join", "and") }} <code>fields</code> ·
+              rss/defillama: {{ t("pg.sources.cfg_not_needed", "not needed for this type — leave as {}") }}
+            </span>
+            {% for ft, tpl in config_templates.items() %}
+            <span class="field__hint" data-cfg-hint="{{ ft }}" hidden>
+              {% if ft in ('rss', 'defillama') %}
+                {{ t("pg.sources.cfg_not_needed", "Not needed for this type — leave as {}") }}
+              {% else %}
+                <code>{{ tpl }}</code>
+              {% endif %}
+            </span>
+            {% endfor %}
+            <span class="field__hint">{{ t("pg.sources.discovered_hint", "Ticked categories are used only if the Config field above is left empty") }}</span>
+          </label>
+        </div>
+      </details>
+
+      {#- КРОК 3 ─────────────────────────────────────────────────────── -#}
       <div class="toolbar">
         <span class="field__hint">{{ t("pg.sources.save_hint", "A source that fails the test fetch is not saved — the same guarantee the n8n form gives") }}</span>
         <span class="toolbar__spacer"></span>

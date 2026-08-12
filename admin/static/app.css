@@ -299,6 +299,24 @@ label{cursor:pointer}
   border:1px solid var(--line); border-radius:var(--r-md)}
 .check--indent{margin-left:var(--sp-5)}
 
+/* Форма «Додати джерело» = три кроки згори вниз (прохання власника
+   2026-08-12: кнопки мають стояти органічно, config — допоміжне).
+   .form-step — нумерований підзаголовок кроку; .url-row — поле URL і
+   кнопка-помічник В ОДНОМУ рядку (кнопка як продовження дії «вставив
+   адресу», а не окремий розділ під нею); .disclosure--sub — вкладений
+   <details> «Advanced» без власної рамки, щоб не виглядав як друга
+   панель усередині вже відкритої форми. */
+.form-step{margin:var(--sp-4) 0 var(--sp-2); font-size:var(--fs-sm);
+  font-weight:600; color:var(--text)}
+.form-step:first-of-type{margin-top:0}
+.form-step__hint{margin:var(--sp-2) 0 0}
+.url-row{display:flex; gap:var(--sp-3); align-items:flex-start; flex-wrap:wrap}
+.url-row__input{flex:1 1 320px}
+.url-row--discover{align-items:center; margin-top:var(--sp-3)}
+.disclosure--sub{margin-top:var(--sp-4); background:none; border-color:var(--line-soft)}
+.disclosure--sub > summary{font-weight:500; color:var(--text-dim)}
+.disclosure--sub .disclosure__body{padding-top:var(--sp-3)}
+
 .field{display:flex; flex-direction:column; gap:var(--sp-1); min-width:0}
 .field--wide{grid-column:1 / -1}
 .field__label{font-size:var(--fs-sm); font-weight:600; color:var(--text-dim)}

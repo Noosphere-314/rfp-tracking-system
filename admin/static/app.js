@@ -298,7 +298,14 @@
      при кліку — admin/app.py add_source), а підказка під Config — один
      рядок з усіма типами одразу ([data-cfg-hint-all], завжди в розмітці).
      Нічого з цього не чіпає бекенд-контракт: обидві гілки (з JS і без)
-     ведуть у той самий POST /sources/add. -#}
+     ведуть у той самий POST /sources/add.
+
+     ГРАБКА (знайдено наживо 2026-08-12): цей коментар закривався
+     Jinja-послідовністю замість JS-ної, тож блок нижче ЖОДНОГО разу не
+     виконався в браузері — Discover висіла для всіх типів, підказки не
+     перемикались. Синтаксична перевірка мовчить (файл лишається валідним,
+     просто половина стає коментарем), тести теж — вони не виконують JS.
+     Перевіряти такі речі можна лише в живому браузері. */
   (function sourceTypeUX() {
     var select = document.querySelector("[data-source-type]");
     var configField = document.querySelector("[data-config-field]");
@@ -317,7 +324,12 @@
       hints.forEach(function (el) {
         el.hidden = el.dataset.cfgHint !== type;
       });
-      if (discoverBtn) discoverBtn.hidden = type !== "discourse";
+      // Ховаємо ВЕСЬ рядок (кнопка + підказка поруч), а не саму кнопку:
+      // після переїзду Discover у крок 2 (2026-08-12) підказка живе
+      // сиблінгом, і схована кнопка лишала б висіти пояснення до неї.
+      var row = document.querySelector("[data-discover-row]");
+      if (row) row.hidden = type !== "discourse";
+      else if (discoverBtn) discoverBtn.hidden = type !== "discourse";
     }
 
     // Шаблон підставляється лише в ПОРОЖНЮ (чи дефолтну "{}") textarea —

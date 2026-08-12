@@ -335,12 +335,16 @@ UK: dict[str, str] = {
     "pg.sources.all": "Усі джерела",
     "pg.sources.empty_hint": "Додай перше через «＋ Додати джерело» вгорі — перед збереженням воно пройде живий тест-фетч.",
     "pg.sources.foot": "Увімкнення знімає карантин: воркер спробує джерело знову на найближчому прогоні.",
+    # Три кроки форми «Додати джерело» (реорганізація 2026-08-12).
+    "pg.sources.step_url": "1. Встав адресу джерела",
+    "pg.sources.step_details": "2. Перевір тип і підпиши джерело",
+    "pg.sources.advanced": "Додатково — мітка категорії та config JSON",
     "pg.sources.kb_note": "Шукаєш скачані архіви форумів?",
     # Задача «менше ручного JSON» (2026-08-12) — кнопка Discover для discourse
     # і Config-підказки за типом фетчера.
     "f.discourse_discover": "Категорії Discourse",
     "act.discover": "Знайти категорії",
-    "pg.sources.discover_hint": "Для discourse-джерел: підтягнути список категорій форуму замість того, щоб писати JSON-конфіг вручну",
+    "pg.sources.discover_hint": "Форуми Discourse: підтягнути список категорій і позначити потрібні — JSON писати не треба",
     "pg.sources.cfg_not_needed": "Для цього типу не потрібен — лишіть {}",
     "pg.sources.discovered_label": "Знайдені категорії — познач ті, що стежити",
     "pg.sources.topics": "тем",
@@ -348,10 +352,8 @@ UK: dict[str, str] = {
     # Задача «Detect type» (2026-08-12) — кнопка, що сама визначає тип
     # джерела з URL (discourse/github_discussions/snapshot/rss), видима
     # завжди, на відміну від Discover (лише для discourse).
-    "pg.sources.url_detect_hint": "Не певні, що це за сайт? Впишіть URL і натисніть «Визначити тип».",
-    "pg.sources.detect_label": "Тип джерела",
+    "pg.sources.url_detect_hint": "Не знаєш, що це за сайт? Натисни «Визначити тип» — система впізнає Discourse, GitHub, Snapshot і RSS, і чесно скаже, коли в сайту немає відкритого API.",
     "act.detect_type": "Визначити тип",
-    "pg.sources.detect_button_hint": "Перевіряє URL на відомі патерни API/стрічок (Discourse, GitHub, Snapshot, RSS) і підставляє тип",
     "pg.keywords.h1": "Ключові слова",
     "pg.keywords.sub": "Регекси, що вирішують, які знахідки взагалі доходять до класифікатора",
     "pg.keywords.include": "Пропускають далі",
