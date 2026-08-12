@@ -249,7 +249,12 @@ def crawl_topic(
                          or data.get("last_posted_at")
                          or data.get("created_at"),
             "posts_count": data.get("posts_count"),
-            "author": (data.get("details") or {}).get("created_by", {}).get("username"),
+            # `or {}` на КОЖНІЙ ланці, а не .get(key, {}): дефолт .get
+            # спрацьовує лише на ВІДСУТНІЙ ключ — а Discourse віддає
+            # created_by: null для анонімізованого/видаленого автора, і
+            # None.get() поклав прогін Celo (справжній корінь «NoneType has
+            # no attribute get» 2026-08-12; трейсбек дав log.exception).
+            "author": ((data.get("details") or {}).get("created_by") or {}).get("username"),
         },
         category_name,
     )

@@ -480,3 +480,19 @@ def test_crawl_topic_tolerates_null_topic_json():
 
     assert result.stored == 0
     assert result.complete is True
+
+
+def test_crawl_topic_tolerates_null_created_by():
+    """created_by: null (анонімізований/видалений автор) — справжній корінь
+    падіння Celo 2026-08-12: .get("created_by", {}) повертає None, коли ключ
+    ІСНУЄ зі значенням null (дефолт лише для відсутнього ключа)."""
+    forum = _forum()
+    conn = _FakeConn()
+    topic = _topic_payload(777, stream=[1], included=[_post(1, 1)])
+    topic["details"] = {"created_by": None}
+    client = _FakeHttpClient([_FakeResponse(topic)])
+
+    result = kb.crawl_topic(conn, client, forum, 777)
+
+    assert result.complete is True
+    assert result.stored == 1
