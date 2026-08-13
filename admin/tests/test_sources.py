@@ -417,3 +417,50 @@ def test_detect_nothing_found_is_a_human_error(client, monkeypatch):
     assert response.status_code == 400
     assert "staticsite.example" in response.text
     assert "JSONDecodeError" not in response.text
+
+
+# ── Автошаблон типу vs позначені категорії (баг gov.uniswap.org) ──────
+
+
+def test_empty_type_template_does_not_block_discovered_cats(client, monkeypatch):
+    """app.js підставляє {"categories": []} у порожню textarea при виборі
+    типу. Раніше `not config_obj` вважав це «ручним конфігом» і мовчки
+    ігнорував позначені чекбокси — Test and save падав сирим
+    «needs config.categories» (знайдено на живому gov.uniswap.org)."""
+    _login(client)
+    _fake_db(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        admin_app, "_test_fetch",
+        lambda row: (captured.update(row) or (3, "")),
+    )
+
+    response = _post_add(
+        client, action="save", type="discourse", name="Uniswap",
+        ecosystem="Uniswap", url="https://gov.uniswap.org", category="",
+        lane="rfp", config='{"categories": []}', cats=["8:governance"],
+    )
+
+    assert response.status_code in (200, 303)
+    assert captured["config"] == {"categories": [{"slug": "governance", "id": 8}]}
+
+
+def test_discourse_without_categories_gets_a_human_error(client, monkeypatch):
+    """Порожній discourse-конфіг ловиться ДО мережі: людині кажуть натиснути
+    Discover, а не показують технічний ValueError фетчера."""
+    _login(client)
+    _fake_db(monkeypatch)
+    monkeypatch.setattr(
+        admin_app, "_test_fetch",
+        lambda row: (_ for _ in ()).throw(AssertionError("must not fetch")),
+    )
+
+    response = _post_add(
+        client, action="save", type="discourse", name="Uniswap",
+        ecosystem="Uniswap", url="https://gov.uniswap.org", category="",
+        lane="rfp", config='{"categories": []}',
+    )
+
+    assert response.status_code == 400
+    assert "Discover categories" in response.text
+    assert "ValueError" not in response.text

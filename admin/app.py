@@ -1265,11 +1265,26 @@ def add_source(
             form=submitted, status_code=400,
         )
 
-    # Ручний config (людина щось написала в textarea) завжди має пріоритет —
-    # автозбір з чекбоксів "Discover" підставляється лише коли поле лишили
-    # порожнім/дефолтним {}.
-    if not config_obj and cats:
+    # Ручний config має пріоритет — але «ручним» вважається лише той, що
+    # НЕСЕ ДАНІ. Знайдено на живому додаванні gov.uniswap.org 2026-08-12:
+    # app.js підставляє в порожню textarea шаблон типу ({"categories": []}),
+    # і перевірка `not config_obj` бачила непорожній dict → позначені
+    # чекбокси Discover мовчки ігнорувались, а фетчер падав сирим
+    # «needs config.categories». Порожній шаблон = те саме, що порожнє поле.
+    if cats and not any(config_obj.values()):
         config_obj = _cats_to_config(cats)
+
+    # Discourse без жодної категорії далі впаде всередині фетчера технічним
+    # ValueError — ловимо ДО походу в мережу і кажемо, що саме зробити.
+    if type == "discourse" and not (config_obj.get("categories") or []):
+        return _render_sources(
+            request,
+            error=(
+                "Discourse sources need at least one category: press "
+                "\"Discover categories\" above and tick what to track."
+            ),
+            form=submitted, status_code=400,
+        )
 
     candidate = {
         "id": 0, "type": type, "name": name.strip(), "ecosystem": ecosystem.strip(),
