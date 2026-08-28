@@ -83,7 +83,10 @@ class HttpClient:
             except httpx.HTTPError as exc:
                 raise FetchError(f"GET {current} failed: {exc}") from exc
 
-            if not response.is_redirect:
+            # httpx зараховує 304 до `is_redirect` (той самий 3xx-діапазон),
+            # хоча "Not Modified" не несе Location і нікуди не веде —
+            # інакше тут KeyError на другому+ полінгу тієї самої URL.
+            if not response.is_redirect or response.status_code == 304:
                 return response
             if hop == MAX_REDIRECTS:
                 raise FetchError(f"GET {url}: більше за {MAX_REDIRECTS} редіректів")
