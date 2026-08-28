@@ -59,7 +59,7 @@
     {
       "parameters": {
         "chatId": "-1004424509619",
-        "text": "={{ $json.ok ? ($json.skipped ? ('Щотижневий звіт уже створено раніше: ' + $json.title + '\\nhttps://rfpfetch.online/briefs/' + $json.brief_id) : ('Щотижневий звіт: ' + $json.title + '\\n\\n' + $json.summary + '\\n\\nПовний звіт: https://rfpfetch.online/briefs/' + $json.brief_id)) : ('Щотижневий звіт (гранти й RFP) не згенерувався: ' + ($json.error || 'помилка — див. n8n executions')) }}",
+        "text": "={{ $json.ok ? ('Weekly report: ' + $json.title + '\\n\\n' + $json.summary + '\\n\\nFull report: https://rfpfetch.online/briefs/' + $json.brief_id) : ('Weekly grants & RFPs report could not be generated: ' + ($json.error || 'see the n8n executions log')) }}",
         "additionalFields": {}
       },
       "id": "wk-tg-grants",
@@ -118,7 +118,7 @@
     {
       "parameters": {
         "chatId": "-1004424509619",
-        "text": "={{ $json.ok ? ($json.skipped ? ('Щотижневий звіт уже створено раніше: ' + $json.title + '\\nhttps://rfpfetch.online/briefs/' + $json.brief_id) : ('Щотижневий звіт: ' + $json.title + '\\n\\n' + $json.summary + '\\n\\nПовний звіт: https://rfpfetch.online/briefs/' + $json.brief_id)) : ('Щотижневий звіт (нові чейни й сигнали) не згенерувався: ' + ($json.error || 'помилка — див. n8n executions')) }}",
+        "text": "={{ $json.ok ? ('Weekly report: ' + $json.title + '\\n\\n' + $json.summary + '\\n\\nFull report: https://rfpfetch.online/briefs/' + $json.brief_id) : ('Weekly discovery report could not be generated: ' + ($json.error || 'see the n8n executions log')) }}",
         "additionalFields": {}
       },
       "id": "wk-tg-discovery",

@@ -178,6 +178,65 @@ _KB_QUERIES = {
 
 _LANG_NAMES = {"en": "English", "uk": "Ukrainian"}
 
+# Дайджест для Telegram пише САМА модель тим самим викликом, що й звіт
+# (окремий рядок-маркер розділяє їх) — доплати немає, а якість незрівнянна
+# з механічним обрізанням: перші 400 символів різали речення посеред слова
+# й тягли в месенджер сиру розмітку. У групу йде дайджест + посилання на
+# повний бріф (рішення Миколи 2026-08-28: «скорочені бріфи + посилання»).
+_TELEGRAM_MARK = "---TELEGRAM---"
+_TELEGRAM_RULE = (
+    "After the report, output a line containing exactly " + _TELEGRAM_MARK +
+    " and then a Telegram digest of the same report: plain text ONLY — no "
+    "#, no **, no markdown links, no tables — at most 600 characters. "
+    "Give 3-5 lines, each starting with \"- \", each naming one concrete "
+    "item a reader must not miss (with the ecosystem and the deadline when "
+    "there is one), then a final line \"Next: \" with the single most "
+    "important action. It is read on a phone by people who may never open "
+    "the full report, so it must stand on its own."
+)
+
+# Дайджест і так має прийти чистим, але модель зрідка лишає розмітку —
+# у месенджері вона виглядає сміттям (правило Миколи: жодних ** і # у
+# Telegram), тож чистимо детерміновано.
+_MD_LINK_RE = re.compile(r"\[([^\]\n]{1,200})\]\((https?://[^\s()]+)\)")
+_MD_HEAD_RE = re.compile(r"^\s{0,3}#{1,6}\s*", re.M)
+_MD_BOLD_RE = re.compile(r"\*\*([^*\n]+)\*\*")
+_MD_ITALIC_RE = re.compile(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])")
+_MD_CODE_RE = re.compile(r"`([^`\n]+)`")
+_MD_BULLET_RE = re.compile(r"^\s*[-*]\s+", re.M)
+_MD_RULE_RE = re.compile(r"^\s*-{3,}\s*$", re.M)
+
+
+def _plain_text(md: str) -> str:
+    """Markdown → чистий текст для месенджера. Посилання розгортаються в
+    «підпис — URL»: у Telegram голий URL клікабельний сам, а «[текст](url)»
+    лишився б сирим синтаксисом."""
+    text = _MD_LINK_RE.sub(r"\1 — \2", md)
+    text = _MD_RULE_RE.sub("", text)
+    text = _MD_HEAD_RE.sub("", text)
+    text = _MD_BOLD_RE.sub(r"\1", text)
+    text = _MD_ITALIC_RE.sub(r"\1", text)
+    text = _MD_CODE_RE.sub(r"\1", text)
+    text = _MD_BULLET_RE.sub("- ", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _fallback_digest(report_md: str, limit: int = 500) -> str:
+    """Коли маркера немає (модель зігнорувала правило) або коли дайджест
+    треба для вже збереженого звіту (гілка skipped: у kb.briefs лежить сам
+    звіт, без дайджесту). Ріжемо ПО РЯДКАХ, не посеред речення."""
+    text = _plain_text(report_md)
+    out: list[str] = []
+    total = 0
+    for line in (ln.strip() for ln in text.split("\n")):
+        if not line:
+            continue
+        if total + len(line) > limit:
+            break
+        out.append(line)
+        total += len(line) + 1
+    return "\n".join(out) or text[:limit]
+
 # Стеля контексту в символах — синтез і так отримує вижимку, а не сирі
 # треди; без стелі 40 тем + 3 пошуки в поганий тиждень роздули б запит.
 _MAX_CONTEXT_CHARS = 9000
@@ -195,7 +254,7 @@ def _setting(conn: psycopg.Connection, key: str, default: str) -> str:
 def _recent(conn: psycopg.Connection, kind: str) -> dict | None:
     """Звіт цього виду за останні 3 доби, якщо є — ідемпотентний guard."""
     return conn.execute(
-        "SELECT id, title FROM kb.briefs "
+        "SELECT id, title, brief_md FROM kb.briefs "
         "WHERE title LIKE %s AND created_at > now() - interval '3 days' "
         "ORDER BY id DESC LIMIT 1",
         (_TITLE_PREFIX[kind] + " — %",),
@@ -281,10 +340,11 @@ def _kb_context(conn: psycopg.Connection, kind: str) -> str:
 def _synthesize(
     client, model: str, kind: str, language: str, today: str,
     web: str, kb_context: str,
-) -> tuple[str, int, int]:
-    system = _REPORT_SYSTEMS[kind].format(
+) -> tuple[str, str, int, int]:
+    """→ (звіт для kb.briefs, дайджест для Telegram, токени in, токени out)."""
+    system = (_REPORT_SYSTEMS[kind].format(
         language=_LANG_NAMES.get(language, language)
-    ) + "\n" + _FORMAT_RULE
+    ) + "\n" + _FORMAT_RULE + "\n" + _TELEGRAM_RULE)
     user = (
         f"Today is {today}.\n\n"
         f"=== Web findings ===\n{web or '(web research unavailable this week)'}\n\n"
@@ -296,10 +356,15 @@ def _synthesize(
         system=[{"type": "text", "text": system}],
         messages=[{"role": "user", "content": user}],
     )
-    report = "\n".join(b.text for b in response.content if b.type == "text").strip()
-    if not report:
+    raw = "\n".join(b.text for b in response.content if b.type == "text").strip()
+    if not raw:
         raise RuntimeError("synthesis returned no text")
-    return (report,
+    # Дайджест для Telegram відрізається ТУТ і в kb.briefs не потрапляє —
+    # у бріфі він був би дублем власного ж змісту.
+    report, _, digest = raw.partition(_TELEGRAM_MARK)
+    report = report.strip()
+    digest = _plain_text(digest)[:900] or _fallback_digest(report)
+    return (report, digest,
             getattr(response.usage, "input_tokens", 0) or 0,
             getattr(response.usage, "output_tokens", 0) or 0)
 
@@ -328,8 +393,11 @@ def generate(payload: dict) -> tuple[dict, int]:
         if not force:
             recent = _recent(conn, kind)
             if recent:
+                # Дайджест і тут — щоб повторний прогін ніс у Telegram суть,
+                # а не саме лише «звіт уже є» з голим посиланням.
                 return {"ok": True, "skipped": True,
-                        "brief_id": recent["id"], "title": recent["title"]}, 200
+                        "brief_id": recent["id"], "title": recent["title"],
+                        "summary": _fallback_digest(recent["brief_md"])}, 200
 
         if not ANTHROPIC_API_KEY:
             # Без stub-тира свідомо (див. докстрінг модуля): звалище сирих
@@ -352,7 +420,7 @@ def generate(payload: dict) -> tuple[dict, int]:
 
     web, web_in, web_out = _web_findings(client, model, kind, today)
     try:
-        report, syn_in, syn_out = _synthesize(
+        report, digest, syn_in, syn_out = _synthesize(
             client, model, kind, language, today, web, kb_context)
     except Exception:  # noqa: BLE001 — n8n покаже чесний текст у Telegram
         log.exception("weekly %s: synthesis failed", kind)
@@ -375,4 +443,4 @@ def generate(payload: dict) -> tuple[dict, int]:
     log.info("weekly %s: brief %s, %s in / %s out tokens",
              kind, row["id"], web_in + syn_in, web_out + syn_out)
     return {"ok": True, "skipped": False, "brief_id": row["id"],
-            "title": title, "summary": report[:400]}, 200
+            "title": title, "summary": digest}, 200

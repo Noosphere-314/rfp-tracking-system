@@ -84,18 +84,22 @@ def test_recent_report_short_circuits_without_llm(monkeypatch):
     # responses=[] — будь-який виклик fake-клієнта впав би AssertionError,
     # тож зелений тест і є доказом, що LLM не чіпали.
     _wire(monkeypatch,
-          _router(recent=[{"id": 55, "title": "Weekly grants & RFPs — 2026-08-27"}]),
+          _router(recent=[{"id": 55, "title": "Weekly grants & RFPs — 2026-08-27",
+                           "brief_md": "## New this week\n- Something"}]),
           [])
     result, status = weekly.generate({"kind": "grants"})
     assert status == 200
     assert result["skipped"] is True
     assert result["brief_id"] == 55
+    # Повторний прогін теж несе суть у Telegram, а не саме посилання.
+    assert "New this week" in result["summary"]
 
 
 def test_force_bypasses_the_recent_guard(monkeypatch):
     holder, _ = _wire(
         monkeypatch,
-        _router(recent=[{"id": 55, "title": "Weekly grants & RFPs — 2026-08-27"}]),
+        _router(recent=[{"id": 55, "title": "Weekly grants & RFPs — 2026-08-27",
+                           "brief_md": "## New this week\n- Something"}]),
         [FakeResponse([text_block("web findings")], "end_turn"),
          FakeResponse([text_block("## report")], "end_turn")],
     )
@@ -122,17 +126,24 @@ def test_happy_path_inserts_brief_and_returns_summary(monkeypatch):
                          "url": "https://gov.optimism.io/t/1"}]),
         [FakeResponse([text_block("Fresh grants found: X")], "end_turn",
                       tokens_in=100, tokens_out=50),
-         FakeResponse([text_block("## New this week\n- X grant")], "end_turn",
-                      tokens_in=200, tokens_out=80)],
+         FakeResponse([text_block(
+             "## New this week\n- X grant\n---TELEGRAM---\n"
+             "- X grant, Optimism, closes Sep 5\nNext: draft the bid")],
+             "end_turn", tokens_in=200, tokens_out=80)],
     )
     result, status = weekly.generate({"kind": "grants"})
     assert status == 200
     assert result["ok"] and result["skipped"] is False
     assert result["brief_id"] == 77
     assert result["title"].startswith("Weekly grants & RFPs — ")
-    assert result["summary"].startswith("## New this week")
+    # summary — ДАЙДЖЕСТ із-за маркера, не зріз звіту.
+    assert result["summary"].startswith("- X grant, Optimism")
+    assert "Next: draft the bid" in result["summary"]
 
     insert = next((sql, p) for sql, p in calls if "INSERT INTO kb.briefs" in sql)
+    # У kb.briefs — сам звіт, БЕЗ маркера й дайджесту.
+    assert "---TELEGRAM---" not in insert[1][1]
+    assert "Next: draft the bid" not in insert[1][1]
     assert insert[1][0].startswith("Weekly grants & RFPs — ")   # title-префікс
     assert insert[1][2] == "claude-opus-5"
     assert insert[1][3] == 300 and insert[1][4] == 130          # суми токенів
@@ -240,3 +251,61 @@ def test_grants_context_has_no_forum_lists(monkeypatch):
     context = holder["client"].messages.calls[-1]["messages"][0]["content"]
     assert "Deliberately rejected" not in context
     assert "Tracked forums" not in context
+
+
+# ── дайджест для Telegram ───────────────────────────────────────────
+
+
+def test_plain_text_strips_markdown_for_the_messenger():
+    """Правило Миколи: у Telegram жодних ** і # — лише чистий текст, а
+    посилання голим URL (він там клікабельний сам)."""
+    out = weekly._plain_text(
+        "## Head\n**bold** and *italic* and `code`\n"
+        "- [ENS RFP](https://discuss.ens.domains/t/1)\n---\n"
+    )
+    assert "#" not in out and "**" not in out and "`" not in out
+    assert "Head" in out and "bold" in out and "italic" in out
+    assert "ENS RFP — https://discuss.ens.domains/t/1" in out
+
+
+def test_plain_text_keeps_underscores_in_urls():
+    """Курсив підкресленнями НЕ чіпаємо: підкреслення живуть у URL-ах."""
+    out = weekly._plain_text("see https://example.com/a_b_c now")
+    assert "a_b_c" in out
+
+
+def test_fallback_digest_cuts_on_line_boundaries():
+    """Без маркера дайджест ріжеться ПО РЯДКАХ — механічний зріз на N
+    символів рвав речення посеред слова (та сама причина, чому summary
+    більше не report[:400])."""
+    report = "## Head\n" + "\n".join(f"- item number {i}" for i in range(60))
+    digest = weekly._fallback_digest(report, limit=100)
+    assert len(digest) <= 120
+    assert not digest.endswith("ite")
+    assert digest.split("\n")[-1].startswith("- item number")
+
+
+def test_synthesis_without_the_marker_falls_back(monkeypatch):
+    holder, calls = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block("## New this week\n- Only the report")],
+                      "end_turn")],
+    )
+    result, status = weekly.generate({"kind": "grants"})
+    assert status == 200
+    assert "Only the report" in result["summary"]
+
+
+def test_telegram_rule_reaches_the_prompt(monkeypatch):
+    holder, _ = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block("## r\n---TELEGRAM---\n- x")], "end_turn")],
+    )
+    weekly.generate({"kind": "grants"})
+    system = holder["client"].messages.calls[-1]["system"][0]["text"]
+    assert "---TELEGRAM---" in system
+    assert "600 characters" in system
