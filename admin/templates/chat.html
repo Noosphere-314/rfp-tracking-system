@@ -223,10 +223,14 @@
           data-error="{{ t('pg.chat.error', 'Could not send the message — try again') }}"
           data-stub-chip="{{ t('pg.chat.stub_chip', 'keyword tier') }}"
           data-who="{{ who }}"
-          data-thinking-0="{{ t('pg.chat.thinking', 'Thinking…') }}"
-          data-thinking-1="{{ t('pg.chat.stage1', 'Searching the forum archive…') }}"
-          data-thinking-2="{{ t('pg.chat.stage2', 'Reading the topics found…') }}"
-          data-thinking-3="{{ t('pg.chat.stage3', 'Composing the answer…') }}">
+          {#- БЕЗ дефіса перед цифрою: data-thinking-0 дає dataset-ключ
+              "thinking-0" (camelCase-перетворення працює лише для -літери),
+              а app.js читає dataset.thinking0 — тексти стадій мовчки
+              зникали. Видно ЛИШЕ живим кліком, pytest JS не виконує. -#}
+          data-thinking0="{{ t('pg.chat.thinking', 'Thinking…') }}"
+          data-thinking1="{{ t('pg.chat.stage1', 'Searching the forum archive…') }}"
+          data-thinking2="{{ t('pg.chat.stage2', 'Reading the topics found…') }}"
+          data-thinking3="{{ t('pg.chat.stage3', 'Composing the answer…') }}">
       {% include "_csrf.html" %}
       {#- continue_key (app.py: chat_page) — непорожній лише коли цю
           сторінку відкрито як ?hist=web:<sid>: raw sid БЕЗ префіксу
