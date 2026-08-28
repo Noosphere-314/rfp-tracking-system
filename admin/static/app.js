@@ -467,7 +467,11 @@
       return row;
     }
 
-    function thinkingRow() {
+    // Виміряно наживо 2026-08-28: типова відповідь у чаті — 45-60с
+    // (архів + tool-loop). Самі крапки без тексту читаються як "зависло",
+    // не "працює" — звідси розмови, де ніхто не пише другого повідомлення.
+    // Текст під крапками сам змінюється по стадіях, поки триває чекання.
+    function thinkingRow(form) {
       var row = document.createElement("div");
       row.className = "chat__msg chat__msg--assistant chat__msg--thinking";
       row.setAttribute("aria-live", "polite");
@@ -479,8 +483,30 @@
       dots.appendChild(document.createElement("span"));
       dots.appendChild(document.createElement("span"));
       body.appendChild(dots);
+
+      var stages = [
+        form.dataset.thinking0, form.dataset.thinking1,
+        form.dataset.thinking2, form.dataset.thinking3,
+      ].filter(function (s) { return s; });
+      var text = document.createElement("span");
+      text.className = "chat__thinking-text";
+      text.textContent = stages[0] || "";
+      body.appendChild(text);
+
       row.appendChild(body);
+      if (stages.length > 1) {
+        var i = 0;
+        row._thinkingTimer = setInterval(function () {
+          i = (i + 1) % stages.length;
+          text.textContent = stages[i];
+        }, 7000);
+      }
       return row;
+    }
+
+    function stopThinking(row) {
+      if (row._thinkingTimer) clearInterval(row._thinkingTimer);
+      row.remove();
     }
 
     function resetBusy() {
@@ -511,7 +537,7 @@
         { text: form.dataset.who || "" },
         { text: timeNow() },
       ]));
-      var pending = thinkingRow();
+      var pending = thinkingRow(form);
       list.appendChild(pending);
       scrollDown();
 
@@ -523,7 +549,7 @@
       })
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          pending.remove();
+          stopThinking(pending);
           if (data && data.ok) {
             var meta = [];
             if (data.tier === "stub") meta.push({ text: form.dataset.stubChip || "", badge: "b-neutral" });
@@ -535,7 +561,7 @@
           }
         })
         .catch(function () {
-          pending.remove();
+          stopThinking(pending);
           list.appendChild(errorRow(form.dataset.error));
         })
         .then(function () {

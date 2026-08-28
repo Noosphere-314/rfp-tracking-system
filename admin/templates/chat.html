@@ -182,7 +182,7 @@
       <div class="chat__msg chat__msg--assistant chat__msg--thinking" aria-live="polite">
         <div class="chat__bubble chat__bubble--thinking">
           <span class="chat__dots"><span></span><span></span><span></span></span>
-          <span class="visually-hidden">{{ t("pg.chat.thinking", "Thinking…") }}</span>
+          <span class="chat__thinking-text">{{ t("pg.chat.thinking", "Thinking…") }}</span>
         </div>
       </div>
       {% endif %}
@@ -199,7 +199,11 @@
           data-busy="{{ t('pg.chat.sending', 'Sending…') }}"
           data-error="{{ t('pg.chat.error', 'Could not send the message — try again') }}"
           data-stub-chip="{{ t('pg.chat.stub_chip', 'keyword tier') }}"
-          data-who="{{ who }}">
+          data-who="{{ who }}"
+          data-thinking-0="{{ t('pg.chat.thinking', 'Thinking…') }}"
+          data-thinking-1="{{ t('pg.chat.stage1', 'Searching the forum archive…') }}"
+          data-thinking-2="{{ t('pg.chat.stage2', 'Reading the topics found…') }}"
+          data-thinking-3="{{ t('pg.chat.stage3', 'Composing the answer…') }}">
       {% include "_csrf.html" %}
       <label class="visually-hidden" for="chat-input">{{ t("f.message", "Message") }}</label>
       {#- D2 — `ask` (app.py: chat_page) префилить чернетку МІЖ тегами; сама
