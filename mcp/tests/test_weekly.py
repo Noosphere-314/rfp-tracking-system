@@ -208,3 +208,35 @@ def test_discovery_context_includes_tracked_forums(monkeypatch):
     weekly.generate({"kind": "discovery"})
     syn_call = holder["client"].messages.calls[-1]
     assert "optimism (https://gov.optimism.io)" in syn_call["messages"][0]["content"]
+
+
+def test_discovery_context_carries_the_denylist(monkeypatch):
+    """Свідомо викинуті форуми (Lido) не з'являються у списку відстежуваних
+    САМЕ ТОМУ, що їх видалили — без окремого рядка звіт пропонував би їх
+    щотижня. Перший живий звіт 2026-08-28 так і зробив."""
+    holder, _ = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5",
+                          "weekly_forum_denylist": "lido, foo"}),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block("## r")], "end_turn")],
+    )
+    weekly.generate({"kind": "discovery"})
+    context = holder["client"].messages.calls[-1]["messages"][0]["content"]
+    assert "Deliberately rejected" in context
+    assert "lido, foo" in context
+
+
+def test_grants_context_has_no_forum_lists(monkeypatch):
+    """Списки форумів — суто discovery-секція «Forums worth adding»; у
+    grants вони були б витраченими токенами."""
+    holder, _ = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block("## r")], "end_turn")],
+    )
+    weekly.generate({"kind": "grants"})
+    context = holder["client"].messages.calls[-1]["messages"][0]["content"]
+    assert "Deliberately rejected" not in context
+    assert "Tracked forums" not in context

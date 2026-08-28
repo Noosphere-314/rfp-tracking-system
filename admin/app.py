@@ -1595,6 +1595,15 @@ SETTING_META = {
                 "affects the text inside generated briefs, not the dashboard UI language.",
         "reco": "'en' unless the team reading the briefs prefers another language.",
     },
+    "weekly_forum_denylist": {
+        "group": "ai", "label": "Weekly report: never suggest these forums", "type": "text",
+        "help": "Comma-separated names the Monday discovery report must never propose "
+                "in its \"Forums worth adding\" section. A forum that was deliberately "
+                "dropped is absent from the tracked list for that very reason, so "
+                "without this the report keeps re-suggesting it every week.",
+        "reco": "'lido' — removed from the system on purpose in August 2026. Add any "
+                "other ecosystem the team has decided against.",
+    },
     # З'являється рядком у `settings` після міграції 009 (kbmcp-сторона,
     # паралельна робота) — до того просто не рендериться (SETTING_META з
     # ключем без відповідного рядка в БД нікому не заважає).

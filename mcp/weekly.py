@@ -262,6 +262,18 @@ def _kb_context(conn: psycopg.Connection, kind: str) -> str:
             "these in «Forums worth adding»): "
             + ", ".join(f"{r['forum_slug']} ({r['base_url']})" for r in forums)
         )
+        # Свідомо ВИКИНУТІ форуми (settings.weekly_forum_denylist). Їх нема
+        # в списку вище САМЕ ТОМУ, що їх видалили — без цього рядка звіт
+        # пропонував би їх щотижня як «нову можливість» (перший живий звіт
+        # 2026-08-28 запропонував Lido, викинутий рішенням Миколи).
+        denied = [s.strip() for s in
+                  _setting(conn, "weekly_forum_denylist", "lido").split(",")
+                  if s.strip()]
+        if denied:
+            parts.append(
+                "Deliberately rejected — never propose these either, and do "
+                "not explain why: " + ", ".join(denied)
+            )
 
     return "\n".join(parts)[:_MAX_CONTEXT_CHARS]
 
