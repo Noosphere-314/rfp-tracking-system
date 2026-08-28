@@ -1,0 +1,208 @@
+"""Тести weekly.py (POST /weekly-report — щотижневі звіти, 2026-08-28).
+
+Стратегія та сама, що й у test_briefing.py: без Postgres і без мережі —
+weekly._db підмінюється fakedb.make_db, anthropic — fakeanthropic.install,
+kbtools.search_impl — monkeypatch'ем (він ходить у СВОЄ з'єднання повз
+weekly._db, тож роутер fakedb його не бачить).
+
+Фокус: порядок guard-ів (токен → kind → ідемпотентність → ключ), обидва
+LLM-кроки (веб-провал НЕ валить звіт; провал синтезу → 502), INSERT у
+kb.briefs (префікс title = ідемпотентний ключ), ігнорування кривого
+model-override.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+# Env — ДО імпорту weekly: DATABASE_URL читається на рівні модуля (той
+# самий стиль, що й briefing.py/kbtools.py).
+os.environ.setdefault("DATABASE_URL", "postgresql://x:x@127.0.0.1:1/x")
+os.environ.setdefault("ANTHROPIC_API_KEY", "")
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+
+import kbtools  # noqa: E402
+import weekly  # noqa: E402
+from fakeanthropic import FakeResponse, install as install_fake_anthropic, text_block  # noqa: E402
+from fakedb import make_db  # noqa: E402
+
+
+def _router(recent=None, settings=None, topics=None, forums=None, inserted_id=77):
+    """Роутер fakedb під запити weekly.py. settings — dict key→value."""
+    settings = settings or {}
+
+    def settings_rows(params):
+        key = params[0]
+        return [{"value": settings[key]}] if key in settings else []
+
+    return [
+        ("WHERE title LIKE", recent or []),
+        ("SELECT value FROM settings", settings_rows),
+        ("bumped_at > now()", topics or []),
+        ("FROM kb.forums", forums or []),
+        ("INSERT INTO kb.briefs", [{"id": inserted_id}]),
+    ]
+
+
+def _wire(monkeypatch, router, responses, api_key="test-key", token="tok"):
+    """Стандартний монтаж: env, _db, search_impl, anthropic. Повертає
+    (holder, calls) — client.messages.calls і список SQL-викликів."""
+    if token:
+        monkeypatch.setenv("KB_MCP_TOKEN", token)
+    else:
+        monkeypatch.delenv("KB_MCP_TOKEN", raising=False)
+    monkeypatch.setattr(weekly, "ANTHROPIC_API_KEY", api_key)
+    db_factory, calls = make_db(router)
+    monkeypatch.setattr(weekly, "_db", db_factory)
+    monkeypatch.setattr(kbtools, "search_impl",
+                        lambda query, limit=8, **kw: {"hits": [], "topic_hits": []})
+    holder = install_fake_anthropic(monkeypatch, responses)
+    return holder, calls
+
+
+# ── guard-и, по порядку ─────────────────────────────────────────────
+
+
+def test_missing_token_fails_closed(monkeypatch):
+    _wire(monkeypatch, _router(), [], token=None)
+    result, status = weekly.generate({"kind": "grants"})
+    assert status == 403
+    assert not result["ok"]
+
+
+def test_unknown_kind_is_422(monkeypatch):
+    _wire(monkeypatch, _router(), [])
+    result, status = weekly.generate({"kind": "monthly"})
+    assert status == 422
+    assert "kind" in result["error"]
+
+
+def test_recent_report_short_circuits_without_llm(monkeypatch):
+    # responses=[] — будь-який виклик fake-клієнта впав би AssertionError,
+    # тож зелений тест і є доказом, що LLM не чіпали.
+    _wire(monkeypatch,
+          _router(recent=[{"id": 55, "title": "Weekly grants & RFPs — 2026-08-27"}]),
+          [])
+    result, status = weekly.generate({"kind": "grants"})
+    assert status == 200
+    assert result["skipped"] is True
+    assert result["brief_id"] == 55
+
+
+def test_force_bypasses_the_recent_guard(monkeypatch):
+    holder, _ = _wire(
+        monkeypatch,
+        _router(recent=[{"id": 55, "title": "Weekly grants & RFPs — 2026-08-27"}]),
+        [FakeResponse([text_block("web findings")], "end_turn"),
+         FakeResponse([text_block("## report")], "end_turn")],
+    )
+    result, status = weekly.generate({"kind": "grants", "force": True})
+    assert status == 200
+    assert result["skipped"] is False
+
+
+def test_missing_api_key_is_503_no_stub_tier(monkeypatch):
+    _wire(monkeypatch, _router(), [], api_key="")
+    result, status = weekly.generate({"kind": "grants"})
+    assert status == 503
+    assert not result["ok"]
+
+
+# ── happy path і деградації ─────────────────────────────────────────
+
+
+def test_happy_path_inserts_brief_and_returns_summary(monkeypatch):
+    holder, calls = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5", "brief_language": "uk"},
+                topics=[{"title": "RFP: audits", "forum_slug": "optimism",
+                         "url": "https://gov.optimism.io/t/1"}]),
+        [FakeResponse([text_block("Fresh grants found: X")], "end_turn",
+                      tokens_in=100, tokens_out=50),
+         FakeResponse([text_block("## New this week\n- X grant")], "end_turn",
+                      tokens_in=200, tokens_out=80)],
+    )
+    result, status = weekly.generate({"kind": "grants"})
+    assert status == 200
+    assert result["ok"] and result["skipped"] is False
+    assert result["brief_id"] == 77
+    assert result["title"].startswith("Weekly grants & RFPs — ")
+    assert result["summary"].startswith("## New this week")
+
+    insert = next((sql, p) for sql, p in calls if "INSERT INTO kb.briefs" in sql)
+    assert insert[1][0].startswith("Weekly grants & RFPs — ")   # title-префікс
+    assert insert[1][2] == "claude-opus-5"
+    assert insert[1][3] == 300 and insert[1][4] == 130          # суми токенів
+
+    web_call, syn_call = holder["client"].messages.calls
+    assert web_call["tools"][0]["type"] == "web_search_20260209"
+    assert "tools" not in syn_call
+    # Мова звіту — з settings.brief_language.
+    assert "Ukrainian" in syn_call["system"][0]["text"]
+
+
+def test_web_failure_still_produces_a_report(monkeypatch):
+    holder, calls = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [RuntimeError("web search down"),
+         FakeResponse([text_block("## report without web")], "end_turn")],
+    )
+    result, status = weekly.generate({"kind": "discovery"})
+    assert status == 200
+    assert result["ok"]
+    # Синтез отримав чесну позначку замість вигаданих findings.
+    syn_call = holder["client"].messages.calls[-1]
+    assert "web research unavailable" in syn_call["messages"][0]["content"]
+
+
+def test_synthesis_failure_is_502(monkeypatch):
+    _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [FakeResponse([text_block("web ok")], "end_turn"),
+         RuntimeError("api down")],
+    )
+    result, status = weekly.generate({"kind": "grants"})
+    assert status == 502
+    assert not result["ok"]
+
+
+def test_invalid_model_override_falls_back_to_setting(monkeypatch):
+    holder, _ = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block("## r")], "end_turn")],
+    )
+    result, status = weekly.generate({"kind": "grants", "model": "gpt-6; DROP TABLE"})
+    assert status == 200
+    assert holder["client"].messages.calls[0]["model"] == "claude-opus-5"
+
+
+def test_valid_model_override_wins(monkeypatch):
+    holder, _ = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block("## r")], "end_turn")],
+    )
+    weekly.generate({"kind": "grants", "model": "claude-sonnet-5"})
+    assert holder["client"].messages.calls[0]["model"] == "claude-sonnet-5"
+
+
+def test_discovery_context_includes_tracked_forums(monkeypatch):
+    holder, _ = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"},
+                forums=[{"forum_slug": "optimism",
+                         "base_url": "https://gov.optimism.io"}]),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block("## r")], "end_turn")],
+    )
+    weekly.generate({"kind": "discovery"})
+    syn_call = holder["client"].messages.calls[-1]
+    assert "optimism (https://gov.optimism.io)" in syn_call["messages"][0]["content"]

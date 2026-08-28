@@ -240,6 +240,27 @@ async def chat_brief_route(request: Request) -> JSONResponse:
     return JSONResponse(result, status_code=status)
 
 
+@mcp.custom_route("/weekly-report", methods=["POST"])
+async def weekly_report_route(request: Request) -> JSONResponse:
+    """HTTP entry for the n8n Monday cron (rfp-weekly workflow): generates one
+    of the two weekly reports (kind: grants | discovery) and saves it to
+    kb.briefs — Pasha's goals #2-3 (2026-08-28). Same fail-closed
+    KB_MCP_TOKEN contract as /chat (see chat.answer's docstring): the Bearer
+    middleware only covers this path when a token is configured,
+    weekly.generate guards the unset case itself."""
+    from starlette.concurrency import run_in_threadpool
+
+    import weekly
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=422)
+
+    result, status = await run_in_threadpool(weekly.generate, payload)
+    return JSONResponse(result, status_code=status)
+
+
 @mcp.custom_route("/keywords-advice", methods=["POST"])
 async def keywords_advice_route(_request: Request) -> JSONResponse:
     """HTTP entry for the admin dashboard's "suggest keyword changes" button.

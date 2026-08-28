@@ -1,0 +1,199 @@
+{
+  "name": "rfp-weekly",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "wk-cron-1",
+      "name": "Weekly Mon 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://kbmcp:8000/weekly-report",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.RFP_KB_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ kind: 'grants' }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "wk-http-grants",
+      "name": "Weekly grants report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "onError=continue (same contract as rfp-main's KB briefing pack call): a kbmcp outage on the grants leg must not stop the discovery leg from running below."
+    },
+    {
+      "parameters": {
+        "chatId": "-1004424509619",
+        "text": "={{ $json.ok ? ($json.skipped ? ('Щотижневий звіт уже створено раніше: ' + $json.title + '\\nhttps://rfpfetch.online/briefs/' + $json.brief_id) : ('Щотижневий звіт: ' + $json.title + '\\n\\n' + $json.summary + '\\n\\nПовний звіт: https://rfpfetch.online/briefs/' + $json.brief_id)) : ('Щотижневий звіт (гранти й RFP) не згенерувався: ' + ($json.error || 'помилка — див. n8n executions')) }}",
+        "additionalFields": {}
+      },
+      "id": "wk-tg-grants",
+      "name": "Announce grants",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        440,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "BknL5zHv5PjAaBh1",
+          "name": "Telegram account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://kbmcp:8000/weekly-report",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.RFP_KB_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ kind: 'discovery' }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "wk-http-discovery",
+      "name": "Weekly discovery report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Sequential by design (one LLM job at a time + Telegram flood limits) — runs only after the grants leg's announce step, never in parallel with it. onError=continue so a discovery-side failure still reaches Telegram/error-workflow reporting instead of aborting silently."
+    },
+    {
+      "parameters": {
+        "chatId": "-1004424509619",
+        "text": "={{ $json.ok ? ($json.skipped ? ('Щотижневий звіт уже створено раніше: ' + $json.title + '\\nhttps://rfpfetch.online/briefs/' + $json.brief_id) : ('Щотижневий звіт: ' + $json.title + '\\n\\n' + $json.summary + '\\n\\nПовний звіт: https://rfpfetch.online/briefs/' + $json.brief_id)) : ('Щотижневий звіт (нові чейни й сигнали) не згенерувався: ' + ($json.error || 'помилка — див. n8n executions')) }}",
+        "additionalFields": {}
+      },
+      "id": "wk-tg-discovery",
+      "name": "Announce discovery",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "BknL5zHv5PjAaBh1",
+          "name": "Telegram account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Weekly Mon 09:00": {
+      "main": [
+        [
+          {
+            "node": "Weekly grants report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly grants report": {
+      "main": [
+        [
+          {
+            "node": "Announce grants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Announce grants": {
+      "main": [
+        [
+          {
+            "node": "Weekly discovery report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly discovery report": {
+      "main": [
+        [
+          {
+            "node": "Announce discovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "laFwaTnkdoxiNplM"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "active": false,
+  "id": "rfpweekly0000001"
+}
