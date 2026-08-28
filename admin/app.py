@@ -2703,9 +2703,10 @@ CHAT_SCOPE_MAX_FORUMS = 12
 
 # Значення каналу чату — той самий алфавіт, що й kb.chat_messages.channel
 # (migrations/006_kb_chat.sql). Визначено тут (а не поруч із /chats нижче,
-# де він жив раніше), бо save_chat_report (розділ D нижче) теж валідує
-# канал, розпарсений з архівного ключа "channel:session" — обидва
-# споживачі мають бачити той самий список.
+# де він жив раніше), бо й save_chat_report (розділ D нижче), і chat_page
+# (розділ AI-чату вище — визначає, чи ?hist=<key> веде на ЖИВУ web-розмову
+# чи read-only архів) валідують канал, розпарсений з ключа "channel:session"
+# — усі споживачі мають бачити той самий список.
 CHAT_CHANNEL_OPTIONS = ("web", "telegram")
 
 
@@ -2732,16 +2733,29 @@ def _parse_chat_history_key(key: str) -> tuple[str, str] | None:
 @app.get("/chat", response_class=HTMLResponse)
 def chat_page(request: Request, error: str = "", ask: str = "", hist: str = ""):
     """AI-чат над базою знань (розділ 4.9, задача #30; редизайн 2026-08-11 —
-    постійна панель історії СПРАВА замість колишньої шухляди-по-URL).
+    постійна панель історії СПРАВА замість колишньої шухляди-по-URL; задача
+    «Продовжувані розмови» 2026-08-28 — розмову визначає URL, а не cookie:
+    раніше БУДЬ-яка чужа/минула web-розмова була назавжди read-only, тепер
+    архівною лишається лише telegram, бо дашборд ФІЗИЧНО не може відповісти
+    telegram-юзеру).
 
     `hist` лишається станом у URL (інваріант «кожна фіча працює без JS»):
     порожній — жива розмова цього браузера (сторінка = композер + список
-    повідомлень), непорожній — та сама сторінка показує ОДНУ архівну
-    розмову read-only, з композером прихованим і банером зверху («Archived
-    conversation» + «Back to current chat»). Колишня семантика "hist=1"
-    (окремий «список розмов» усередині шухляди) зникла разом із шухлядою:
-    список тепер завжди видно в .chat-side праворуч, тож "1" просто
-    ігнорується — сторінка поводиться як голий /chat.
+    повідомлень, під cookie sid, розділ _chat_key). Непорожній парситься
+    _parse_chat_history_key на (channel, session):
+      - channel == "web" — ТЕЖ жива розмова, лише під ІНШИМ session, ніж
+        cookie sid цього браузера: композер лишається видимим, форма несе
+        hidden `session` = `continue_key` (chat.html), звідки POST
+        /chat/send нижче читає його назад і дописує повідомлення саме в
+        ЦЮ розмову, а не заводить нову під cookie sid.
+      - channel == "telegram", або ключ узагалі не парситься (ручне
+        підроблення URL) — старий режим: read-only архів, композер
+        прихований, банер зверху («Archived conversation» + «Back to
+        current chat»).
+    Колишня семантика "hist=1" (окремий «список розмов» усередині шухляди)
+    зникла разом із шухлядою: список тепер завжди видно в .chat-side
+    праворуч, тож "1" просто ігнорується — сторінка поводиться як голий
+    /chat.
 
     `ask` (розділ D2) лише ПРЕФІЛИТЬ композер на сервері — жодного
     автосабміту: людина сама вирішує, надсилати питання чи спершу
@@ -2753,7 +2767,17 @@ def chat_page(request: Request, error: str = "", ask: str = "", hist: str = ""):
     session_key = f"web:{_chat_key(request)}"
     ask = ask[:4000]
     hist_key = hist if hist and hist != "1" else ""
-    archived = bool(hist_key)
+
+    # continue_key — сирий session (БЕЗ "web:") продовжуваної ЧУЖОЇ/минулої
+    # web-розмови, іде в шаблон для hidden-поля композера — звідти POST
+    # /chat/send читає його назад як Form("session"). Порожній в решті
+    # випадків: жива сесія цього браузера і так пише під власним cookie sid
+    # без потреби у явному session-полі.
+    parsed_hist = _parse_chat_history_key(hist_key) if hist_key else None
+    continue_key = parsed_hist[1] if parsed_hist and parsed_hist[0] == "web" else ""
+    # Read-only архів лишається лише для telegram і непарсабельних ключів —
+    # web-розмова за ЧУЖИМ ключем (continue_key непорожній) тепер ЖИВА.
+    archived = bool(hist_key) and not continue_key
 
     with db() as conn:
         if archived:
@@ -2766,10 +2790,15 @@ def chat_page(request: Request, error: str = "", ask: str = "", hist: str = ""):
             ).fetchall()
             forum_groups: list[dict] = []
         else:
+            # Жива розмова: або cookie-сесія цього браузера (continue_key
+            # порожній, hist_key теж), або продовжувана web-розмова за
+            # ключем із URL (continue_key непорожній, read_key == hist_key
+            # == "web:<session>") — той самий SELECT, лише інший ключ.
+            read_key = hist_key if continue_key else session_key
             messages = conn.execute(
                 "SELECT id, role, who, content, tier, model, created_at "
                 "FROM kb.chat_messages WHERE session_key = %s ORDER BY id LIMIT 200",
-                (session_key,),
+                (read_key,),
             ).fetchall()
             forum_rows = conn.execute(
                 "SELECT forum_slug, kind FROM kb.forums WHERE enabled ORDER BY kind, forum_slug"
@@ -2796,14 +2825,18 @@ def chat_page(request: Request, error: str = "", ask: str = "", hist: str = ""):
     for s in hist_sessions:
         s["hist_href"] = "/chat?hist=" + quote(s["session_key"], safe="")
         s["view_href"] = "/chats/view?key=" + quote(s["session_key"], safe="")
-        s["is_active"] = s["session_key"] == session_key
+        # ВІДКРИТА розмова — hist_key, якщо є (архівна чи продовжувана),
+        # інакше cookie-сесія цього браузера: та сама умова, що й read_key
+        # вище, тож підсвічення завжди вказує саме на те, що зараз видно.
+        s["is_active"] = s["session_key"] == (hist_key or session_key)
 
     # Останній рядок — user: відповідь, можливо, ще генерується (POST
     # /chat/send блокується до 300 с — той самий таймаут, що й у /brief) в
     # ІНШІЙ вкладці чи запиті, який саме зараз обробляється. Рядок-натяк, а
     # не спінер із поллінгом — автополінг заборонений (app.js, розділ 0):
-    # він тихо продовжував би сесію без участі людини. Лише для живої
-    # розмови: у read-only режимі композера, який міг би це запустити, нема.
+    # він тихо продовжував би сесію без участі людини. Не для read-only
+    # архіву (там композера, який міг би це запустити, нема) — але тепер
+    # показується і для продовжуваної web-розмови: вона теж жива.
     thinking = (not archived) and bool(messages) and messages[-1]["role"] == "user"
 
     return templates.TemplateResponse(
@@ -2818,6 +2851,7 @@ def chat_page(request: Request, error: str = "", ask: str = "", hist: str = ""):
             "ask": ask,
             "archived": archived,
             "hist_key": hist_key,
+            "continue_key": continue_key,
             "hist_sessions": hist_sessions,
             "forum_groups": forum_groups,
         },
@@ -2830,6 +2864,7 @@ def send_chat_message(
     message: str = Form(...),
     web: str = Form(""),
     forums: list[str] = Form(default=[]),
+    session: str = Form(""),
 ):
     """Одне повідомлення → один запит до kbmcp.
 
@@ -2840,6 +2875,23 @@ def send_chat_message(
     generate_brief — там немає JS-гілки, і фрагмент у URL прийнятний
     компроміс): тут є куди показати причину, і ковтати її означало б
     видавати порожню відповідь замість пояснення.
+
+    `session` (задача «Продовжувані розмови» 2026-08-28): hidden-поле
+    композера, непорожнє лише коли форма відкрита з ПРОДОВЖУВАНОЇ web-
+    розмови (chat_page: `continue_key`, ?hist=web:<session>) — тоді
+    повідомлення пишеться в ТУ розмову, а не в нову під cookie sid цього
+    браузера. Валідація тут ЖОРСТКА (400), на відміну від м'якого
+    відкидання `forums` нижче: невалідний/чужий session означає, що
+    розмову ГЕНУЇННО не можна продовжити — тихе ігнорування замишляло б
+    повідомлення в НОВУ (не ту) розмову, і людина цього не помітила б.
+    Перевіряється: без ':' (той самий контракт, що й у самого session_key —
+    рівно один префікс "channel:"), довжина ≤ 64, і "web:<session>" реально
+    ІСНУЄ в kb.chat_messages (інакше це або підроблений POST, або сесія,
+    якої вже стерли/не було). Успішний `session` також зсуває PRG-редірект
+    (no-JS шлях) із голого /chat на /chat?hist=web:<session> — і при
+    успіху, і при ПОМИЛЦІ (fail() нижче): без JS людина мусить лишитися в
+    тій самій продовженій розмові, а не втратити її з очей на порожньому
+    /chat.
 
     `web` (розділ C — тумблер веб-пошуку в composer chat.html): checkbox
     `name="web" value="1"`, тож непозначений чекбокс браузер узагалі НЕ
@@ -2864,14 +2916,41 @@ def send_chat_message(
     # (контракт /chat забороняє ':' у session_key саме для того, щоб веб не
     # міг адресувати telegram-сесії). Префікс додається лише при ЧИТАННІ
     # kb.chat_messages у chat_page — там ключ уже збережений неймспейснутим.
+    # За замовчуванням — cookie-сесія цього браузера; валідований `session`
+    # нижче перекриває її на продовжувану розмову.
     session_key = _chat_key(request)
     who = auth.session_who(request)
     is_fetch = request.headers.get("X-Requested-With") == "fetch"
 
+    # Куди веде PRG-редірект (no-JS) при ПОМИЛЦІ чи УСПІХУ: "" — голий
+    # /chat (дефолт), "web:<session>" — ПІСЛЯ успішної валідації `session`
+    # нижче, щоб і невдача (порожнє повідомлення, недоступний kbmcp) не
+    # викидала людину з продовженої розмови на дефолтну сесію.
+    redirect_hist = ""
+
     def fail(err: str, status_code: int = 400):
         if is_fetch:
             return JSONResponse({"ok": False, "error": err}, status_code=status_code)
-        return RedirectResponse(f"/chat?{urlencode({'error': err})}", status_code=303)
+        params = {"error": err}
+        if redirect_hist:
+            params["hist"] = redirect_hist
+        return RedirectResponse(f"/chat?{urlencode(params)}", status_code=303)
+
+    if session:
+        # Жорсткий 400, не м'яке відкидання (як для forums нижче) — хибний
+        # session означав би мовчазне замишлення повідомлення в НОВУ
+        # розмову замість продовження старої, і людина цього не помітила б.
+        if ":" in session or len(session) > 64:
+            return fail("This conversation cannot be continued", 400)
+        with db() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM kb.chat_messages WHERE session_key = %s LIMIT 1",
+                (f"web:{session}",),
+            ).fetchone()
+        if not exists:
+            return fail("This conversation cannot be continued", 400)
+        session_key = session
+        redirect_hist = f"web:{session}"
 
     text = message.strip()
     if not text:
@@ -2907,6 +2986,8 @@ def send_chat_message(
                 "model": payload.get("model"),
             }
         )
+    if redirect_hist:
+        return RedirectResponse(f"/chat?{urlencode({'hist': redirect_hist})}", status_code=303)
     return RedirectResponse("/chat", status_code=303)
 
 
@@ -2922,21 +3003,30 @@ def save_chat_message_as_brief(request: Request, message_id: int = Form(...)):
     кнопка на /items чи нода n8n — і потрапляє в спільний список /briefs,
     архівується й завантажується тим самим механізмом.
 
-    Guard — рівно два, обидва обов'язкові:
-      1. role == 'assistant' і tier == 'llm': кнопка в chat.html рендериться
-         лише під такими бульбашками, але сама форма шле голий message_id —
-         без цієї перевірки підміна id в DevTools дала б зберегти чиєсь
-         питання (role='user') чи keyword-рівня відповідь без жодної LLM-
-         синтези за нею.
-      2. session_key рядка == сесія ЦЬОГО браузера ('web:' + sid, той самий
-         неймспейс, що читає chat_page): без цього підбір послідовних id дав
-         би зберегти чужу відповідь — телеграмну чи іншого члена команди.
+    Guard — рівно один: role == 'assistant' і tier == 'llm'. Кнопка в
+    chat.html рендериться лише під такими бульбашками, але сама форма шле
+    голий message_id — без цієї перевірки підміна id в DevTools дала б
+    зберегти чиєсь питання (role='user') чи keyword-рівня відповідь без
+    жодної LLM-синтези за нею.
+
+    Колишній guard 2 (session_key рядка == сесія ЦЬОГО браузера) прибрано
+    задачею «Продовжувані розмови» 2026-08-28: дашборд — команда на одному
+    спільному паролі («Chat history (archive)» нижче), уся kb.chat_messages
+    і так уже читається будь-ким без розмежування «своя/чужа» сесія (/chats,
+    /chat?hist=<key>), а /chat/save-report (сусідній хендлер, «Create Brief»
+    з ЦІЛОЇ розмови) вже дозволяв перетворити на бріф будь-яку розмову,
+    телеграмну включно. Той guard захищав мутацію, що не приховувала нічого,
+    чого й так не видно поруч — і водночас ламав «Save as brief» усередині
+    ПРОДОВЖЕНОЇ (не своєї) web-розмови. Замість нього — легка defensive-
+    перевірка, що session_key рядка взагалі має вигляд "channel:session"
+    (_parse_chat_history_key, той самий парсер, що й у /chat?hist= і
+    /chat/save-report): kbmcp завжди пише саме такий формат, тож на
+    практиці це пропускає БУДЬ-яке реальне повідомлення, що пройшло guard 1
+    — це лише страховка від пошкодженого рядка, а не розмежування доступу.
     Обидва провали віддають однаковий 404 «message not found», а не окремі
     403/400: розрізняти для викликача немає сенсу — жодна з причин не є тим,
     що людина виправляє повторним кліком.
     """
-    session_key = f"web:{_chat_key(request)}"
-
     with db() as conn:
         row = conn.execute(
             "SELECT session_key, role, tier, model, content FROM kb.chat_messages "
@@ -2947,19 +3037,21 @@ def save_chat_message_as_brief(request: Request, message_id: int = Form(...)):
             not row
             or row["role"] != "assistant"
             or row["tier"] != "llm"
-            or row["session_key"] != session_key
+            or not _parse_chat_history_key(row["session_key"])
         ):
             raise HTTPException(404, "message not found")
 
-        # Заголовок бріфа — з питання людини, що передувало цій відповіді
-        # (той самий session_key, менший id, роль user): «Chat answer» —
-        # чесний фолбек для найпершого рядка сесії, де попереднього
-        # повідомлення просто не існує.
+        # Заголовок бріфа — з питання людини, що передувало цій відповіді, у
+        # ТІЙ САМІЙ розмові, що й сам рядок (row["session_key"] — а НЕ сесія
+        # браузера, що зараз тисне кнопку: вони більше не обов'язково
+        # збігаються після видалення guard 2 вище). «Chat answer» — чесний
+        # фолбек для найпершого рядка сесії, де попереднього повідомлення
+        # просто не існує.
         preceding = conn.execute(
             "SELECT content FROM kb.chat_messages "
             "WHERE session_key = %s AND id < %s AND role = 'user' "
             "ORDER BY id DESC LIMIT 1",
-            (session_key, message_id),
+            (row["session_key"], message_id),
         ).fetchone()
         title = (preceding["content"][:90] if preceding else "") or "Chat answer"
 

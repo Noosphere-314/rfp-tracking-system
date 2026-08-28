@@ -23,12 +23,27 @@
     словника admin/i18n.py (pg.chat.*).
 
     `hist` (app.py: chat_page) — стан у URL, без JS:
-      "" (дефолт)     — жива розмова цього браузера: композер + список.
-      "<session_key>" — та сама сторінка read-only показує ОДНУ архівну
-                        розмову (banner + «Back to current chat»),
-                        композер прихований. Панель справа лишається.
-    Список розмов праворуч (.chat-side) рендериться ЗАВЖДИ, не лише в
-    архівному режимі — клік по розмові веде на /chat?hist=<key>.
+      "" (дефолт)      — жива розмова цього браузера: композер шле в
+                         session_key поточного браузера (cookie).
+      "web:<sid>"      — КОНКРЕТНА минула веб-розмова, теж ЖИВА (редизайн
+                         2026-08: раніше hist = read-only назавжди, тепер
+                         архів лишився тільки за telegram — людина може
+                         повернутись і дописати в будь-яку свою стару
+                         розмову, не лише в останню). Композер не ховається,
+                         але шле повідомлення НЕ в сесію браузера, а в ЦЮ:
+                         прихований `session` = continue_key (raw sid без
+                         префіксу "web:", composer нижче) підказує /chat/
+                         send, куди саме дописувати.
+      "telegram:<sid>" — read-only (banner + «Back to current chat»,
+                         композер прихований): відповідь, набрана тут,
+                         ніколи не дійде до людини в Telegram, тож
+                         дозволити тут писати — означало б обіцяти дію,
+                         яка мовчки провалиться.
+      невалідний ключ  — так само read-only (той самий банер; порожній
+                         список нижче показує hist_gone).
+    `archived` (app.py) — true лише для двох останніх випадків вище.
+    Список розмов праворуч (.chat-side) рендериться ЗАВЖДИ, незалежно від
+    режиму — клік по розмові веде на /chat?hist=<key>.
 
     Розділ D («звязка чату зі щоденною роботою», що лишився з попередньої
     ітерації):
@@ -68,12 +83,16 @@
 
   <div class="chat-col">
     <div class="chat-col__head">
+      {#- Редизайн /chat 2026-08: archived тепер true лише для telegram:*
+          (і невалідних ключів) — веб-розмови сюди більше не заходять,
+          банер нижче пояснює ПРИЧИНУ read-only (канал), а не факт «це
+          архів». -#}
       {%- if archived %}
       <div class="alert alert--info chat__archived-banner" role="status">
-        <span>{{ t("pg.chat.archived_banner", "Archived conversation") }}</span>
+        <span>{{ t("pg.chat.archived_banner", "Telegram conversation — read-only here; replies would not reach the Telegram user") }}</span>
         <a class="btn btn--sm" href="/chat">{{ t("pg.chat.back_to_current", "Back to current chat") }}</a>
         {#- Задача 5 аудиту 2026-08-11: «Create Brief» видима й у read-only
-            архівному перегляді, поруч із банером — та сама форма
+            telegram-перегляді, поруч із банером — та сама форма
             #save-report-form (нижче, ЗА межами `{% if not archived %}`),
             той самий select моделі, що й у живому композері. Лише коли є
             що синтезувати (та сама умова, що й для живої розмови). -#}
@@ -151,13 +170,14 @@
           {% endif %}
           <span>{{ m.created_at.strftime('%H:%M') if m.created_at else '' }}</span>
           {#- Розділ 2 редизайну: замість видимої кнопки «Save as brief» —
-              маленьке ⋯-меню. Лише на LLM-рівні живої розмови (не stub: там
-              немає справжньої синтези; не archived: kbmcp перевіряє
-              session_key = ЖИВА сесія цього браузера, — save_chat_message_as_brief
-              все одно відмовив би 404-кою на чужу розмову, тож пункт тут не
-              рендериться, щоб не обіцяти дію, яка провалиться). Форма шле
-              лише id рядка kb.chat_messages — app.py перевіряє role/tier/
-              session_key сам, а не довіряє тому, що видно тут. -#}
+              маленьке ⋯-меню. Лише на LLM-рівні НЕ-telegram розмови (не
+              stub: там немає справжньої синтези; не archived — редизайн
+              /chat 2026-08: тепер значить «не telegram», а не «жива сесія
+              цього браузера» — жива розмова й будь-яка продовжена через
+              ?hist=web:<sid> однаково not archived, тож пункт коректно
+              з'являється в обох). Форма шле лише id рядка kb.chat_messages
+              — app.py перевіряє role/tier сам, а не довіряє тому, що видно
+              тут. -#}
           {% if not archived and m.role == 'assistant' and m.tier == 'llm' %}
           <details class="menu chat__msgmenu">
             <summary class="menu__btn" aria-haspopup="true" aria-label="{{ t('act.menu', 'Actions') }}">⋯</summary>
@@ -190,10 +210,13 @@
     </div>
     {%- endif %}
 
-    {#- Композер — прихований цілком у read-only архівному режимі (спец.
-        рішення розділу 1: людина не може дописувати в чужу/минулу
-        розмову). Панель (surface/border/radius): textarea зверху на всю
-        ширину, нижній рядок — [KB-scope] [Web search] [spacer] [Send]. -#}
+    {#- Композер — прихований лише в read-only telegram-режимі (редизайн
+        /chat 2026-08: раніше ховався в БУДЬ-якому архівному перегляді —
+        «людина не може дописувати в чужу/минулу розмову»; тепер минула
+        ВЕБ-розмова теж жива, ховати композер лишилось лише там, де
+        відповідь фізично нікуди не долетить, тобто для Telegram). Панель
+        (surface/border/radius): textarea зверху на всю ширину, нижній
+        рядок — [KB-scope] [Web search] [spacer] [Send]. -#}
     {%- if not archived %}
     <form class="chat__composer" method="post" action="/chat/send"
           data-busy="{{ t('pg.chat.sending', 'Sending…') }}"
@@ -205,6 +228,14 @@
           data-thinking-2="{{ t('pg.chat.stage2', 'Reading the topics found…') }}"
           data-thinking-3="{{ t('pg.chat.stage3', 'Composing the answer…') }}">
       {% include "_csrf.html" %}
+      {#- continue_key (app.py: chat_page) — непорожній лише коли цю
+          сторінку відкрито як ?hist=web:<sid>: raw sid БЕЗ префіксу
+          "web:". Без цього прихованого поля /chat/send дописав би
+          повідомлення в session_key поточного браузера (як у голому
+          /chat), а не в ту розмову, яку людина зараз читає й продовжує.
+          JS-шляху змінювати не треба: app.js будує FormData(form), тож
+          підхоплює це поле автоматично, як і будь-яке інше hidden. -#}
+      {% if continue_key %}<input type="hidden" name="session" value="{{ continue_key }}">{% endif %}
       <label class="visually-hidden" for="chat-input">{{ t("f.message", "Message") }}</label>
       {#- D2 — `ask` (app.py: chat_page) префилить чернетку МІЖ тегами; сама
           сторінка не сабмітить форму сама — жодного autofocus/autosubmit. -#}
@@ -258,11 +289,15 @@
     </form>
     {%- endif %}
     {#- Сама форма звіту (задача 5): ЗАВЖДИ поза композером (HTML забороняє
-        вкладені форми, і архівний перегляд взагалі не рендерить композер) —
-        кнопка(и) вище шлють саме її через form="save-report-form". `key`
-        порожній у живій розмові (save_chat_report: як і раніше, поточна
-        сесія браузера) і рівний hist_key в архівному перегляді
-        (app.py: _parse_chat_history_key розпаковує "channel:session"). -#}
+        вкладені форми, і в telegram-режимі композера тут узагалі нема) —
+        кнопка(и) вище шлють саме її через form="save-report-form". `key` —
+        не те саме, що continue_key вище (той — голий sid для /chat/send,
+        цей — повний "channel:session" для save_chat_report): порожній у
+        голому /chat без ?hist= (поточна сесія браузера), і рівний
+        hist_key щойно сторінку відкрито через ?hist= — байдуже, жива це
+        продовжена веб-розмова чи read-only telegram, синтезувати звіт
+        можна з обох (app.py: _parse_chat_history_key розпаковує
+        "channel:session"). -#}
     {%- if messages %}
     <form id="save-report-form" method="post" action="/chat/save-report" hidden
           data-busy="{{ t('pg.chat.report_busy', 'Synthesizing report…') }}">

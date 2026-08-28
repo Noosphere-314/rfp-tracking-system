@@ -215,10 +215,15 @@ def test_chat_page_renders_history_panel_without_hist_param(client, monkeypatch)
     assert 'action="/chat/send"' in html
 
 
-def test_chat_hist_key_shows_read_only_archived_conversation_without_composer(client, monkeypatch):
-    """(в) ?hist=<session_key>: read-only перегляд ОДНІЄЇ архівної розмови —
-    банер «Archived conversation» + «Back to current chat», композер
-    (action="/chat/send") відсутній цілком."""
+def test_chat_hist_telegram_key_shows_read_only_archived_conversation_without_composer(
+    client, monkeypatch
+):
+    """(в) ?hist=telegram:<session>: read-only перегляд ОДНІЄЇ архівної
+    розмови — банер «Archived conversation» + «Back to current chat»,
+    композер (action="/chat/send") відсутній цілком. Задача «Продовжувані
+    розмови» 2026-08-28 звузила read-only режим до telegram (дашборд
+    фізично не може відповісти telegram-юзеру) — web-ключі тепер живі,
+    див. test_chat_hist_web_key_shows_live_continuable_conversation нижче."""
     _login(client)
     now = datetime.now(timezone.utc)
     _fake_db(
@@ -228,23 +233,43 @@ def test_chat_hist_key_shows_read_only_archived_conversation_without_composer(cl
              "tier": None, "model": None, "created_at": now},
         ],
     )
-    response = client.get("/chat", params={"hist": "web:other-sid"})
+    response = client.get("/chat", params={"hist": "telegram:123"})
     assert response.status_code == 200
     html = response.text
     assert "an old question" in html
-    assert "Archived conversation" in html
+    assert "read-only" in html  # pg.chat.archived_banner
     assert "Back to current chat" in html
     assert 'action="/chat/send"' not in html
 
 
-def test_chat_hist_key_reads_archived_session_by_the_given_key(client, monkeypatch):
+def test_chat_hist_telegram_key_reads_archived_session_by_the_given_key(client, monkeypatch):
     sink: list = []
     _login(client)
     _fake_db(monkeypatch, rows=[], sink=sink)
-    client.get("/chat", params={"hist": "web:other-sid"})
+    client.get("/chat", params={"hist": "telegram:123"})
     sql, params = sink[0]
     assert "kb.chat_messages" in sql
-    assert params == ("web:other-sid",)
+    assert params == ("telegram:123",)
+
+
+def test_chat_hist_web_key_shows_live_continuable_conversation(client, monkeypatch):
+    """Задача «Продовжувані розмови» 2026-08-28: ?hist=web:<session> для
+    ІСНУЮЧОЇ web-розмови більше НЕ архів — композер видимий, форма несе
+    hidden `session` = сирий ключ із URL (chat_page: continue_key), і
+    жодного банера «Archived conversation»."""
+    _login(client)
+    sink: list = []
+    _fake_db(monkeypatch, rows=[], sink=sink)
+    response = client.get("/chat", params={"hist": "web:aaaa1111"})
+    assert response.status_code == 200
+    html = response.text
+    assert 'action="/chat/send"' in html
+    assert '<input type="hidden" name="session" value="aaaa1111">' in html
+    assert "Archived conversation" not in html
+    # Читає ту ЖЕ розмову з URL, LIMIT-200-гілка (не LIMIT-300 архівна).
+    sql, params = sink[0]
+    assert "kb.chat_messages" in sql
+    assert params == ("web:aaaa1111",)
 
 
 def test_chat_hist_equals_1_is_no_longer_a_separate_mode(client, monkeypatch):
@@ -426,6 +451,97 @@ def test_chat_send_rejects_message_over_4000_chars(client):
     )
     assert response.status_code == 400
     assert "4000" in response.json()["error"]
+
+
+# ── POST /chat/send: продовжувані розмови (`session`, задача 2026-08-28) ──
+
+
+def test_chat_send_continues_existing_web_session(client, monkeypatch):
+    """session=<sid> де "web:<sid>" існує в kb.chat_messages: бекенд отримує
+    СИРИЙ session_key == <sid> (не cookie-сесію браузера), а без fetch-
+    заголовка PRG-редірект веде на /chat?hist=web%3A<sid>, а не на голий
+    /chat — людина лишається в продовженій розмові."""
+    _login(client)
+    sid = "existing-web-session"
+    seen = {}
+
+    def fake_backend(payload):
+        seen.update(payload)
+        return {"ok": True, "reply_md": "ok", "tier": "llm", "model": None}
+
+    monkeypatch.setattr(admin_app, "_chat_backend", fake_backend)
+    sink: list = []
+    _fake_db(monkeypatch, rows=[{"exists": 1}], sink=sink)  # web:<sid> знайдено
+
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "session": sid, "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/chat?hist=web%3A{sid}"
+    assert seen["session_key"] == sid
+    sql, params = sink[0]
+    assert "kb.chat_messages" in sql
+    assert params == (f"web:{sid}",)
+
+
+def test_chat_send_rejects_session_that_does_not_exist(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch, rows=[])  # web:<session> не знайдено
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "session": "no-such-session", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]
+
+
+def test_chat_send_rejects_session_containing_colon(client):
+    """':' у session порушив би контракт session_key ("channel:session" —
+    рівно один префікс) — жорсткий 400 ДО будь-якого звернення до БД."""
+    _login(client)
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "session": "web:evil", "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 400
+    assert response.json()["ok"] is False
+
+
+def test_chat_send_rejects_session_over_64_chars(client):
+    _login(client)
+    response = client.post(
+        "/chat/send",
+        data={"message": "hello", "session": "x" * 65, "csrf": _csrf(client)},
+        headers={**SAME_ORIGIN, "X-Requested-With": "fetch"},
+    )
+    assert response.status_code == 400
+
+
+def test_chat_send_empty_message_with_valid_session_redirects_back_to_it(client, monkeypatch):
+    """fail()-редірект теж несе hist=web:<session>, коли session вже
+    валідований — форма-невдача (тут: порожнє повідомлення) не має скидати
+    людину на голий /chat і губити продовжену розмову з очей."""
+    _login(client)
+    sid = "existing-web-session"
+    _fake_db(monkeypatch, rows=[{"exists": 1}])
+    response = client.post(
+        "/chat/send",
+        data={"message": "   ", "session": sid, "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert location.startswith("/chat?")
+    assert f"hist=web%3A{sid}" in location
+    assert "error=" in location
 
 
 # ── POST /chat/send: тумблер веб-пошуку (розділ C) ───────────────────
@@ -937,21 +1053,58 @@ def test_save_chat_message_as_brief_falls_back_to_chat_answer_title(client, monk
     assert insert_params[0] == "Chat answer"
 
 
-def test_save_chat_message_as_brief_rejects_another_sessions_message(client, monkeypatch):
-    """Guard 2 (розділ B docstring): session_key рядка ≠ сесія браузера —
-    ID-перебір не має давати доступ до чужих (телеграм чи іншого члена
-    команди) відповідей."""
+def test_save_chat_message_as_brief_succeeds_for_a_different_web_session(client, monkeypatch):
+    """Задача «Продовжувані розмови» 2026-08-28 прибрала колишній guard 2
+    (session_key рядка == сесія цього браузера): дашборд — спільний пароль,
+    уся історія й так читається будь-ким (/chats, /chat?hist=<key>), і
+    /chat/save-report уже дозволяв бріф із будь-якої розмови. Тепер і
+    «Save as brief» на окремій бульбашці працює так само для ЧУЖОЇ сесії —
+    інакше воно ламало б себе в кожній продовженій (не своїй) розмові."""
     _login(client)
+    sink: list = []
     _fake_db(
         monkeypatch,
         rows=[{
             "session_key": "web:someone-elses-sid", "role": "assistant", "tier": "llm",
-            "model": "claude-x", "content": "not yours",
+            "model": "claude-x", "content": "not yours but still saveable",
         }],
+        sink=sink,
+        extra_rows={
+            1: [{"content": "someone else's preceding question"}],
+            2: [{"id": 99}],
+        },
     )
     response = client.post(
         "/chat/save-brief",
         data={"message_id": "7", "csrf": _csrf(client)},
+        headers=SAME_ORIGIN,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/briefs/99"
+    # Попередню репліку шукає в СЕСІЇ РЯДКА (row.session_key), не в сесії
+    # браузера, що натиснув кнопку — інакше чужа сесія ніколи не знайшла б
+    # своє ж попереднє питання для заголовка бріфа.
+    preceding_sql, preceding_params = sink[1]
+    assert preceding_params == ("web:someone-elses-sid", 7)
+
+
+def test_save_chat_message_as_brief_rejects_malformed_session_key(client, monkeypatch):
+    """Defensive-шар, що замінив guard 2: session_key рядка взагалі не має
+    вигляду "channel:session" (пошкоджений запис) — 404, а не сліпе довір'я
+    значенню з БД. kbmcp завжди пише валідний формат, тож на практиці цей
+    guard не блокує жодне реальне повідомлення — лише страховка."""
+    _login(client)
+    _fake_db(
+        monkeypatch,
+        rows=[{
+            "session_key": "not-a-valid-key", "role": "assistant", "tier": "llm",
+            "model": "claude-x", "content": "weird row",
+        }],
+    )
+    response = client.post(
+        "/chat/save-brief",
+        data={"message_id": "5", "csrf": _csrf(client)},
         headers=SAME_ORIGIN,
         follow_redirects=False,
     )
