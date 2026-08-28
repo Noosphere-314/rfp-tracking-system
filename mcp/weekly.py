@@ -221,16 +221,44 @@ def _plain_text(md: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def _headline(bullet: str) -> str:
+    """Перше речення пункту — воно й несе назву програми та екосистему;
+    решта пункту це обґрунтування, яке в дайджест не влізе. Ріжемо по «. »,
+    а не по N символах: обрізок посеред слова — те, за що дайджест і
+    переробляли."""
+    head, sep, _ = bullet.partition(". ")
+    return (head + ".") if sep else bullet
+
+
 def _fallback_digest(report_md: str, limit: int = 500) -> str:
     """Коли маркера немає (модель зігнорувала правило) або коли дайджест
     треба для вже збереженого звіту (гілка skipped: у kb.briefs лежить сам
-    звіт, без дайджесту). Ріжемо ПО РЯДКАХ, не посеред речення."""
+    звіт, без дайджесту).
+
+    Спершу — ПУНКТИ СПИСКУ: у цих звітах саме вони несуть конкретику, а
+    перші рядки тексту це вступне застереження «тиждень тонкий» (перша
+    жива перевірка 2026-08-28 віддала в Telegram саме його). Якщо пунктів
+    нема — падаємо на послідовні рядки, теж по межах рядка.
+    """
     text = _plain_text(report_md)
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+
+    bullets: list[str] = []
+    total = 0
+    for line in lines:
+        if not line.startswith("- "):
+            continue
+        head = _headline(line)
+        if total + len(head) > limit:
+            break
+        bullets.append(head)
+        total += len(head) + 1
+    if len(bullets) >= 2:
+        return "\n".join(bullets)
+
     out: list[str] = []
     total = 0
-    for line in (ln.strip() for ln in text.split("\n")):
-        if not line:
-            continue
+    for line in lines:
         if total + len(line) > limit:
             break
         out.append(line)

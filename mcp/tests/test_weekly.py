@@ -274,15 +274,34 @@ def test_plain_text_keeps_underscores_in_urls():
     assert "a_b_c" in out
 
 
+def test_fallback_digest_prefers_bullets_over_the_intro_caveat():
+    """Перша жива перевірка 2026-08-28 віддала в Telegram вступне
+    «тиждень тонкий» замість конкретики — резерв тепер бере пункти."""
+    report = (
+        "## New this week\n"
+        "Honest framing: this is a thin week, coverage is incomplete.\n"
+        "- **ENS SPP3 Marketplace RFP** — ENS DAO. Budget undisclosed, and "
+        "the thread may be a shortlist rather than an open call.\n"
+        "- **Arbitrum Security Program** — Arbitrum DAO. Size unverified, "
+        "live as a Snapshot proposal this week.\n"
+    )
+    digest = weekly._fallback_digest(report)
+    assert digest.startswith("- ENS SPP3 Marketplace RFP — ENS DAO.")
+    assert "Arbitrum Security Program" in digest
+    assert "Honest framing" not in digest
+    # Обрізано по межі речення, а не посеред слова.
+    assert "Budget undisclosed" not in digest
+
+
 def test_fallback_digest_cuts_on_line_boundaries():
     """Без маркера дайджест ріжеться ПО РЯДКАХ — механічний зріз на N
     символів рвав речення посеред слова (та сама причина, чому summary
     більше не report[:400])."""
-    report = "## Head\n" + "\n".join(f"- item number {i}" for i in range(60))
+    report = "## Head\n" + "\n".join(
+        f"Paragraph number {i} without any bullet marker." for i in range(60))
     digest = weekly._fallback_digest(report, limit=100)
     assert len(digest) <= 120
-    assert not digest.endswith("ite")
-    assert digest.split("\n")[-1].startswith("- item number")
+    assert digest.split("\n")[-1].endswith(".")
 
 
 def test_synthesis_without_the_marker_falls_back(monkeypatch):
