@@ -104,6 +104,17 @@ _WEB_SYSTEM = (
     "useful, say exactly: NONE."
 )
 
+# Рендерер брифів у дашборді (admin.app.md_lite) знає ЛИШЕ `##`/`###` —
+# `# ` лишається на екрані сирою решіткою (побачив на першому живому звіті
+# 2026-08-28). Плюс заголовок першого рівня однаково дублював би title
+# сторінки, який дашборд малює сам.
+_FORMAT_RULE = (
+    "Never open with a top-level \"# \" title: the dashboard prints the "
+    "report title itself, and its renderer only understands \"##\" and "
+    "\"###\" headers — a \"# \" line shows up as a literal hash. Start "
+    "directly with the first \"##\" section."
+)
+
 # Синтез. Мова підставляється з settings.brief_language (той самий ключ, що
 # читає briefing.make_brief — звіти й брифи мають говорити однією мовою).
 _REPORT_SYSTEMS = {
@@ -261,7 +272,7 @@ def _synthesize(
 ) -> tuple[str, int, int]:
     system = _REPORT_SYSTEMS[kind].format(
         language=_LANG_NAMES.get(language, language)
-    )
+    ) + "\n" + _FORMAT_RULE
     user = (
         f"Today is {today}.\n\n"
         f"=== Web findings ===\n{web or '(web research unavailable this week)'}\n\n"

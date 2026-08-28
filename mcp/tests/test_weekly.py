@@ -142,6 +142,8 @@ def test_happy_path_inserts_brief_and_returns_summary(monkeypatch):
     assert "tools" not in syn_call
     # Мова звіту — з settings.brief_language.
     assert "Ukrainian" in syn_call["system"][0]["text"]
+    # Правило формату (md_lite не знає "# ") доклеєне до кожного system.
+    assert "only understands" in syn_call["system"][0]["text"]
 
 
 def test_web_failure_still_produces_a_report(monkeypatch):
