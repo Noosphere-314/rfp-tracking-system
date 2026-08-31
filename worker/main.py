@@ -140,8 +140,16 @@ def cmd_verify(_args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         problems.append(str(exc))
 
-    if not config.slack_webhook_url:
-        problems.append("SLACK_WEBHOOK_URL is unset — worker alerts go nowhere")
+    # Кожен алерт завжди лягає рядком у alerts (міграція 016) і видимий на
+    # /runs, тож «нікуди не йдуть» тут уже неправда — правда лише про пуш.
+    # Перевіряємо саме Telegram: Slack-вебхук лишився для сумісності й ніколи
+    # не був налаштований, а попередження про нього щодеплою привчало
+    # пропускати весь блок.
+    if not (config.alert_telegram_token and config.alert_telegram_chat_id):
+        problems.append(
+            "ALERT_TELEGRAM_TOKEN/ALERT_TELEGRAM_CHAT_ID unset — alerts reach "
+            "the database and /runs, but nobody gets a push"
+        )
     if not config.healthchecks_url:
         problems.append("HEALTHCHECKS_URL is unset — no dead-man's switch")
     if not config.snapshot_api_key:
