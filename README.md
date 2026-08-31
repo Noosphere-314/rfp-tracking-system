@@ -124,7 +124,14 @@ Open the dashboards:
 - **n8n editor** — <http://localhost:5678>
 - **KB health** — <http://localhost:8765/health>
 
-In local development, `docker-compose.override.yml` is applied automatically:
+For local development, create the override once (it is gitignored so it can
+never reach the server, where plain `docker compose up` would auto-load it):
+
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml
+```
+
+With it in place `docker compose up` applies it automatically:
 deliveries go to a **mock pipeline** inside the admin service, so the full
 `pending → done` cycle works with no Pipedrive, no Claude, and no n8n credentials.
 
@@ -403,7 +410,7 @@ workflows as JSON, and copies off-box.
 
 ```
 docker-compose.yml           postgres · n8n · caddy(prod) · worker · admin · kbmcp
-docker-compose.override.yml  local dev: mock delivery, HTTP n8n, exposed ports
+docker-compose.override.yml.example  local dev template: mock delivery, HTTP n8n, exposed ports
 migrations/                  001 schema · 002 n8n grants · 003 seed · 004 kb · 005 briefs
 worker/                      fetchers, dedup, delivery state machine, KB crawler, CLI
   ├── fetchers/              discourse · snapshot · rss · rest_aggregator · defillama · github

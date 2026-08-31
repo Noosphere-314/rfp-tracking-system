@@ -177,4 +177,6 @@ jobs:
           docker compose -f docker-compose.yml --profile prod config >/dev/null
           echo "production compose OK"
       - name: Dev config is valid
-        run: docker compose config >/dev/null
+        run: |
+          cp docker-compose.override.yml.example docker-compose.override.yml
+          docker compose config >/dev/null

@@ -1,3 +1,8 @@
+# Local development overrides — TEMPLATE (decision #25, 2026-08-31).
+# Copy once on a dev machine:  cp docker-compose.override.yml.example docker-compose.override.yml
+# The real override is gitignored: it must never reach the server, where a
+# plain `docker compose up -d` would auto-load it and silently switch
+# deliveries to the mock and n8n to the old local image tag.
 # Local development overrides — auto-loaded by plain `docker compose up`.
 # Production must run `docker compose -f docker-compose.yml --profile prod up -d`
 # so this file is skipped (see docs/Deployment-Plan.md Stage 1).

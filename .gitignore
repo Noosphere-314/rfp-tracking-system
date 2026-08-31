@@ -21,3 +21,4 @@ n8n/*.credentials.json
 
 *.sql.gz
 *.log
+docker-compose.override.yml
