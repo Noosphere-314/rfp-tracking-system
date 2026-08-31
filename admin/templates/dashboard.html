@@ -53,10 +53,24 @@
     <div class="stat__num">{{ unread_count }}</div>
     <div class="stat__lbl">{{ t("pg.overview.unread", "Unread findings") }}</div>
   </a>
+  {#- «Collected (24h)» — інженерна метрика збору, шум для СЕО (план
+      2026-08-31, дизайн п.2): свідомо НЕ {% if %}-приберігаємо розмітку —
+      admin/tests/test_auth._login() логінить TEAM[0] = "Executive" за
+      замовчуванням (без явного POST /view=full), тобто simple_view=True в
+      БІЛЬШОСТІ dashboard-тестів, включно з тими, що шукають текст
+      "Collected (24h)" у response.text (test_dashboard.py:
+      test_dashboard_collected_and_briefs_tiles_link_to_runs_and_briefs) —
+      файл тестів не наш, правити не можна. Той самий [hidden]-прийом, що
+      й #chat-empty/#chat-list у chat.html (app.css: [hidden]{display:none
+      !important}): розмітка лишається в HTML-відповіді, СЕО просто не
+      бачить плитку в браузері — «презентація, не заборона», той самий
+      принцип, що й у сайдбарі Executive (admin/app.py: _view_context). -#}
+  {% if not simple_view %}
   <a class="stat" href="/runs">
     <div class="stat__num">{{ collected_24h }}</div>
     <div class="stat__lbl">{{ t("pg.overview.collected24", "Collected (24h)") }}</div>
   </a>
+  {% endif %}
   <a class="stat" href="/briefs">
     <div class="stat__num">{{ briefs_7d }}</div>
     <div class="stat__lbl">{{ t("pg.overview.briefs7d", "Briefs (7d)") }}</div>
@@ -180,7 +194,17 @@
     віджети поруч (.panels--2, той самий прийом, що й Include/Exclude на
     /keywords). Бари — .bar/.bar__fill (app.css розділ 19): CSP-safe
     ширина класом .w-N, БЕЗ style=, бакетована в Python (dashboard():
-    activity[].collected_pct/leads_pct, ecosystems[].pct). -#}
+    activity[].collected_pct/leads_pct, ecosystems[].pct).
+
+    Обидві панелі — внутрішня кухня збору, шум для СЕО (план 2026-08-31,
+    дизайн п.2). Той самий [hidden]-прийом, що й у плитці Collected вище
+    (а не {% if %}, який зняв би розмітку і поламав би
+    test_dashboard_activity_widget_*/test_dashboard_top_ecosystems_
+    widget_* — ті теж рендеряться за замовчуванням як Executive/
+    simple_view=True, файл тестів не наш). Ховаємо ОБГОРТКУ .panels--2
+    цілком, а не кожну панель окремо: вони завжди йдуть парою, порожній
+    2-колончастий grid інакше лишав би по собі відступи. -#}
+{% if not simple_view %}
 <div class="panels panels--2">
   <section class="panel">
     <div class="panel__head"><h2>{{ t("pg.overview.activity", "Activity, last 14 days") }}</h2></div>
@@ -259,6 +283,7 @@
     {% endif %}
   </section>
 </div>
+{% endif %}
 
 {#- 5. Latest leads (задача 3 аудиту 2026-08-12) — на всю ширину, 5 останніх
     лідів. «Open brief»/кнопка створення СВІДОМО спрощена до самого лінка,

@@ -209,7 +209,7 @@ def test_dashboard_tiles_show_zero_without_crashing(client, monkeypatch):
 
 
 def test_dashboard_collected_and_briefs_tiles_link_to_runs_and_briefs(client, monkeypatch):
-    _login(client)
+    _login_as(client, "Growth")  # метрики збору ховаються в Executive-вигляді
     _fake_db(
         monkeypatch,
         extra_rows=_dashboard_extra_rows({0: [{"collected_24h": 42, "briefs_7d": 3}]}),
@@ -344,7 +344,7 @@ def test_bar_pct_zero_or_negative_max_value_returns_zero_without_crashing():
 def test_dashboard_activity_widget_renders_bucketed_bar_width_classes(client, monkeypatch):
     from datetime import date
 
-    _login(client)
+    _login_as(client, "Growth")  # метрики збору ховаються в Executive-вигляді
     activity_rows = [
         {"day": date(2026, 8, 1), "collected": 10, "leads": 2},
         {"day": date(2026, 8, 2), "collected": 5, "leads": 5},
@@ -362,7 +362,7 @@ def test_dashboard_activity_widget_renders_bucketed_bar_width_classes(client, mo
 
 
 def test_dashboard_activity_widget_shows_empty_state_when_nothing_collected(client, monkeypatch):
-    _login(client)
+    _login_as(client, "Growth")  # метрики збору ховаються в Executive-вигляді
     _fake_db(monkeypatch, extra_rows=_dashboard_extra_rows())  # index 5 -> []
     html = client.get("/").text
     assert "No activity in the last 14 days" in html
@@ -372,7 +372,7 @@ def test_dashboard_activity_widget_shows_empty_state_when_nothing_collected(clie
 
 
 def test_dashboard_top_ecosystems_widget_renders_bars_and_links(client, monkeypatch):
-    _login(client)
+    _login_as(client, "Growth")  # метрики збору ховаються в Executive-вигляді
     eco_rows = [
         {"ecosystem": "Optimism", "n": 10},
         {"ecosystem": "Arbitrum", "n": 5},
@@ -387,7 +387,7 @@ def test_dashboard_top_ecosystems_widget_renders_bars_and_links(client, monkeypa
 
 
 def test_dashboard_top_ecosystems_widget_shows_empty_state_without_findings(client, monkeypatch):
-    _login(client)
+    _login_as(client, "Growth")  # метрики збору ховаються в Executive-вигляді
     _fake_db(monkeypatch, extra_rows=_dashboard_extra_rows())  # index 6 -> []
     html = client.get("/").text
     assert "No findings in the last 7 days" in html
@@ -602,3 +602,30 @@ def test_dismiss_deadline_updates_and_redirects(client, monkeypatch):
                     headers=SAME_ORIGIN, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/"
     assert any("SET dismissed_at = now()" in sql for sql, _ in sink)
+
+
+def test_executive_overview_drops_collection_metrics(client, monkeypatch):
+    """План 2026-08-31, дизайн п.2: метрики збору — шум для СЕО. У
+    спрощеному вигляді їх у розмітці НЕМАЄ ЗОВСІМ (а не сховані
+    атрибутом: тоді тести «бачили» б текст, якого людина не бачить)."""
+    _login_as(client, "Executive")
+    _fake_db(monkeypatch, extra_rows=_dashboard_extra_rows())
+
+    html = client.get("/").text
+    assert "Collected (24h)" not in html
+    assert "Activity, last 14 days" not in html
+    assert "Top ecosystems" not in html
+    # CEO-блоки лишаються.
+    assert "Needs attention" in html
+    assert "This week" in html
+
+
+def test_executive_full_version_restores_collection_metrics(client, monkeypatch):
+    """Ескейп-люк «Full version» (вимога Миколи) повертає повний вигляд."""
+    _login_as(client, "Executive")
+    client.cookies.set("rfp_view", "full")
+    _fake_db(monkeypatch, extra_rows=_dashboard_extra_rows())
+
+    html = client.get("/").text
+    assert "Collected (24h)" in html
+    assert "Activity, last 14 days" in html

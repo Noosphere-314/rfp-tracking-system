@@ -652,7 +652,12 @@ form.inline,.inline{display:inline}
   background:var(--brand-grad); color:var(--brand-ink); border-color:transparent;
 }
 .chat__text{margin:0; white-space:pre-wrap; word-break:break-word}
-.chat__text a{color:inherit; text-decoration:underline}
+/* overflow-wrap:anywhere явно — навіть без пробілів (сирий URL із форуму)
+   лінк не має розпирати бульбашку на вузькому мобільному екрані (мобільний
+   прохід ≤480px, план 2026-08-31, дизайн п.2); word-break:break-word вище
+   вже рятує звичайний текст, але для <a> дублюємо явно, а не покладаємось
+   лише на успадкування. */
+.chat__text a{color:inherit; text-decoration:underline; overflow-wrap:anywhere}
 
 .chat__meta{
   display:flex; gap:var(--sp-2); align-items:center; margin-top:var(--sp-1);
@@ -786,6 +791,20 @@ form.inline,.inline{display:inline}
   #chat-side-toggle:checked ~ .chat-side__scrim{
     display:block; position:fixed; inset:0; z-index:30; background:rgb(0 0 0/.55);
   }
+}
+
+/* Мобільний прохід /chat ≤480px (план 2026-08-31, дизайн п.2). У живому
+   прев'ю (375px і 320px) знайдено РЕАЛЬНЕ горизонтальне переповнення:
+   .chat-col__head і .chat__archived-banner (банер read-only
+   Telegram-перегляду — текст попередження + «Back to current chat» +
+   select моделі + «Create Brief») ідуть в один незгортний ряд ЗАРАЗ (без
+   flex-wrap, на відміну від .chat__composer-row, у якого wrap уже є) —
+   на вузькому екрані ряд вилазить за .content--full{overflow:hidden} і
+   кнопка «History» (єдиний спосіб відкрити панель історії на мобільному!)
+   мовчки зникає за межею екрана. wrap повертає її на власний рядок. */
+@media (max-width:480px){
+  .chat-col__head{flex-wrap:wrap; row-gap:var(--sp-2)}
+  .chat__archived-banner{flex-wrap:wrap; row-gap:var(--sp-2)}
 }
 
 /* ─────────────  15. Findings: рівні фільтри (задача 1 аудиту)  ───────── */
