@@ -508,6 +508,9 @@ mutations = APIRouter(dependencies=[Depends(auth.csrf_guard)])
 # обов'язковий, див. розділ 1.7 специфікації.
 
 
+_BRIEF_MAGIC_RE = re.compile(r"/briefs/(\d+)")
+
+
 @app.middleware("http")
 async def session_guard(request: Request, call_next):
     path = request.url.path
@@ -534,6 +537,19 @@ async def session_guard(request: Request, call_next):
     # 3. Сесія
     live, had_cookie = auth.session_live(request)
     if not live:
+        # Magic-лінк на КАНОНІЧНОМУ шляху бріфа: перше TG-повідомлення
+        # 2026-08-31 пішло з /briefs/{id}?t=… (воркфлоу оновили до /share/
+        # пізніше), і такі лінки живуть у групі тижнями — без сесії їх
+        # веде на share-вигляд, а НЕ на логін-стіну. Лише редірект:
+        # валідність токена перевіряє сам share_brief_page (404 на кривий).
+        # Залогінені сюди не потрапляють — вони бачать повний /briefs/{id}.
+        m = _BRIEF_MAGIC_RE.fullmatch(path)
+        token = request.query_params.get("t", "")
+        if m and token:
+            return RedirectResponse(
+                f"/share/briefs/{m.group(1)}?{urlencode({'t': token})}",
+                status_code=303,
+            )
         return auth.login_redirect(request, "expired" if had_cookie else "")
 
     response = await call_next(request)

@@ -59,7 +59,7 @@
     {
       "parameters": {
         "chatId": "-1004424509619",
-        "text": "={{ $json.ok ? ('Weekly report: ' + $json.title + '\\n\\n' + $json.summary + '\\n\\nFull report: https://rfpfetch.online/briefs/' + $json.brief_id + ($json.share_token ? '?t=' + $json.share_token : '')) : ('Weekly grants & RFPs report could not be generated: ' + ($json.error || 'see the n8n executions log')) }}",
+        "text": "={{ $json.ok ? ('Weekly report: ' + $json.title + '\\n\\n' + $json.summary + '\\n\\nFull report: https://rfpfetch.online/share/briefs/' + $json.brief_id + ($json.share_token ? '?t=' + $json.share_token : '')) : ('Weekly grants & RFPs report could not be generated: ' + ($json.error || 'see the n8n executions log')) }}",
         "additionalFields": {}
       },
       "id": "wk-tg-grants",
@@ -118,7 +118,7 @@
     {
       "parameters": {
         "chatId": "-1004424509619",
-        "text": "={{ $json.ok ? ('Weekly report: ' + $json.title + '\\n\\n' + $json.summary + '\\n\\nFull report: https://rfpfetch.online/briefs/' + $json.brief_id + ($json.share_token ? '?t=' + $json.share_token : '')) : ('Weekly discovery report could not be generated: ' + ($json.error || 'see the n8n executions log')) }}",
+        "text": "={{ $json.ok ? ('Weekly report: ' + $json.title + '\\n\\n' + $json.summary + '\\n\\nFull report: https://rfpfetch.online/share/briefs/' + $json.brief_id + ($json.share_token ? '?t=' + $json.share_token : '')) : ('Weekly discovery report could not be generated: ' + ($json.error || 'see the n8n executions log')) }}",
         "additionalFields": {}
       },
       "id": "wk-tg-discovery",

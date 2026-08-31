@@ -245,3 +245,20 @@ def test_share_brief_fails_closed_without_the_secret(client, monkeypatch):
     monkeypatch.delenv("KB_MCP_TOKEN", raising=False)
     _fake_db(monkeypatch, rows=[_BRIEF_ROW])
     assert client.get(f"/share/briefs/7?t={_share_token(7, secret='')}").status_code == 404
+
+
+def test_unauthenticated_briefs_link_with_token_redirects_to_share(client, monkeypatch):
+    """Перше TG-повідомлення 2026-08-31 пішло з /briefs/{id}?t=… (воркфлоу
+    оновили до /share/ пізніше) — старий лінк без сесії веде на
+    share-вигляд, а не на логін-стіну."""
+    client.cookies.clear()
+    r = client.get("/briefs/11?t=123.abc", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/share/briefs/11?t=123.abc"
+
+
+def test_unauthenticated_briefs_link_without_token_still_hits_login(client):
+    client.cookies.clear()
+    r = client.get("/briefs/11", follow_redirects=False)
+    assert r.status_code == 303
+    assert "/login" in r.headers["location"]
