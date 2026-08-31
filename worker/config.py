@@ -80,6 +80,11 @@ class Config:
 
     healthchecks_url: str = field(default_factory=lambda: _env("HEALTHCHECKS_URL"))
     slack_webhook_url: str = field(default_factory=lambda: _env("SLACK_WEBHOOK_URL"))
+    # Алерти в Telegram-БОТ приватно (рішення 2026-08-31, НЕ в групу).
+    # Токен — той самий, що в tgbot (sendMessage не конфліктує з правилом
+    # «один полер на токен»: полінг getUpdates лишається лише за tgbot).
+    alert_telegram_token: str = field(default_factory=lambda: _env("ALERT_TELEGRAM_TOKEN"))
+    alert_telegram_chat_id: str = field(default_factory=lambda: _env("ALERT_TELEGRAM_CHAT_ID"))
 
     def validate(self) -> None:
         missing = [

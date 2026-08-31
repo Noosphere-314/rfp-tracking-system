@@ -2365,12 +2365,20 @@ def _render_runs(
         modes = conn.execute(
             "SELECT DISTINCT mode FROM worker_runs ORDER BY mode"
         ).fetchall()
+        # Алерти воркера (міграція 016, 2026-08-31): та сама стрічка, що
+        # летить пушем у приватний Telegram-бот — але БЕЗ дедупу: тут повна
+        # історія, тихне лише пуш (див. worker/alerts.py).
+        alerts = conn.execute(
+            "SELECT level, message, created_at FROM alerts "
+            "WHERE created_at > now() - interval '7 days' "
+            "ORDER BY created_at DESC LIMIT 30"
+        ).fetchall()
     return templates.TemplateResponse(
         request,
         "runs.html",
         {
             "nav": "runs", "runs": rows, "mode": mode, "limit": limit, "modes": modes,
-            "errors": errors, "test_results": test_results,
+            "errors": errors, "test_results": test_results, "alerts": alerts,
         },
     )
 

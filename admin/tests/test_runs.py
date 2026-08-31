@@ -251,3 +251,31 @@ def test_test_all_sources_reports_timeout_without_crashing(client, monkeypatch):
 # test_every_post_route_is_csrf_covered у test_auth.py вже ітерує app.routes
 # і ловить будь-який новий POST на роутері `mutations` без
 # Depends(csrf_guard) — той самий аргумент, що й у test_items.py.
+
+
+# ── Стрічка алертів воркера (міграція 016, 2026-08-31) ────────────────────
+
+
+def test_runs_page_renders_worker_alerts(client, monkeypatch):
+    """/runs — та сама стрічка, що летить пушем у приватний TG-бот, але
+    БЕЗ дедупу: повна історія за 7 днів. Індекс 2 — третій execute
+    рендера (0: worker_runs, 1: modes, 2: alerts)."""
+    import datetime
+
+    _login(client)
+    _fake_db(monkeypatch, extra_rows={2: [{
+        "level": "warning",
+        "message": "Filecoin community discussions: GITHUB_TOKEN missing",
+        "created_at": datetime.datetime(2026, 8, 31, 14, 0),
+    }]})
+
+    html = client.get("/runs").text
+    assert "Worker alerts (7 days)" in html
+    assert "Filecoin community discussions" in html
+    assert 'class="badge b-warn"' in html
+
+
+def test_runs_page_hides_alerts_panel_when_empty(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch)
+    assert "Worker alerts" not in client.get("/runs").text

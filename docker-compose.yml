@@ -102,6 +102,12 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://n8n:5678/webhook/rfp-item}
+      # Алерти воркера → приватний Telegram (2026-08-31, НЕ в групу): токен
+      # той самий, що в tgbot — sendMessage не конфліктує з правилом «один
+      # полер на токен» (getUpdates лишається лише за tgbot). Порожній
+      # ALERT_TELEGRAM_CHAT_ID = пуш тихо вимкнений, у БД пишеться завжди.
+      ALERT_TELEGRAM_TOKEN: ${CHAT_TELEGRAM_TOKEN:-}
+      ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
     command: ["loop"]
     volumes:
       - ./migrations:/app/migrations:ro

@@ -77,6 +77,27 @@
     рендериться напряму з POST-хендлера, той самий прийом, що й
     /keywords/advice: PRG тут свідомо зламаний, результат — ефемерна
     відповідь живого тест-фетчу, а не стан, що зберігається). -#}
+{#- Алерти воркера (міграція 016, 2026-08-31): ті самі повідомлення, що
+    йдуть пушем у приватний Telegram-бот, — тут ПОВНА історія за 7 днів
+    (пуш дедуплікується по тексту, стрічка — ні). До цього алерти жили
+    лише в docker logs і Slack-вебхуку, якого ніколи не існувало. -#}
+{% if alerts %}
+<section class="panel">
+  <div class="panel__head"><h2>{{ t("pg.runs.alerts_h", "Worker alerts (7 days)") }}</h2></div>
+  <ul class="issues">
+    {% for a in alerts %}
+    <li class="issue">
+      <span class="issue__text">
+        <span class="badge {{ 'b-bad' if a.level == 'error' else ('b-warn' if a.level == 'warning' else 'b-neutral') }}">{{ a.level }}</span>
+        {{ a.message }}
+      </span>
+      <span class="muted">{{ a.created_at.strftime("%m-%d %H:%M") if a.created_at else "" }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 {% if test_results is not none %}
 <section class="panel">
   <div class="panel__head"><h2>{{ t("pg.runs.test_results_h", "Source test results") }}</h2></div>
