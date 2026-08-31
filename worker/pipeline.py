@@ -76,6 +76,22 @@ def _watermark(row: dict[str, Any] | None, seed: bool) -> datetime:
     return last - WATERMARK_OVERLAP
 
 
+def _watermark_marker(item: items_mod.Item, now: datetime) -> datetime | None:
+    """Мітка часу айтема для водяного знака — або None, якщо їй не можна вірити.
+
+    Дата з МАЙБУТНЬОГО отруює водяний знак назавжди. DAOstar мапить ts на
+    closeDate (дедлайн пулу, тобто дата попереду): один пул із 2028-09-30
+    підняв last_item_at у 2028 рік, і відтоді КОЖЕН реальний пул відсікався
+    як «застарий». Найгірше — мовчки: перевірка темних джерел шукає
+    last_item_at у минулому, тож джерело з датою в майбутньому не потрапляє
+    в алерт узагалі (виправлено там же і в міграції 017).
+    """
+    marker = item.watermark_ts or item.ts
+    if marker is None or marker > now:
+        return None
+    return marker
+
+
 def _record(
     conn: psycopg.Connection,
     item: items_mod.Item,
@@ -143,6 +159,7 @@ def _fetch_source(
 
     to_deliver: list[items_mod.Item] = []
     newest_ts: datetime | None = None
+    now = _now()
     prequalified = bool(source.config.get("prequalified"))
 
     for raw in fetcher(source, client, since):
@@ -155,7 +172,7 @@ def _fetch_source(
             ecosystem=source.ecosystem,
             lane=source.lane,
         )
-        marker = item.watermark_ts or item.ts
+        marker = _watermark_marker(item, now)
         if marker and (newest_ts is None or marker > newest_ts):
             newest_ts = marker
 
@@ -180,6 +197,10 @@ def _fetch_source(
         UPDATE sources
            SET last_success_at = now(),
                consecutive_failures = 0,
+               -- Добір відбувся (навіть якщо нічого не знайшов) — більше не
+               -- повторюємо. Провал сюди не доходить: там _record_failure,
+               -- тож backfilled_at лишається порожнім і добір буде ще раз.
+               backfilled_at = COALESCE(backfilled_at, now()),
                last_item_at = CASE
                    WHEN %s::timestamptz IS NULL THEN last_item_at
                    ELSE GREATEST(COALESCE(last_item_at, %s::timestamptz), %s::timestamptz)
@@ -193,30 +214,119 @@ def _fetch_source(
     return stats
 
 
+# Скільки джерел перелічити поіменно; решта згортається в "…and N more",
+# щоб «12 source(s)» зі списком на 10 не читалось як повний список.
+DARK_LISTED = 10
+
+# Тихі джерела не є аварією, тож дайджест про них — раз на стільки днів.
+QUIET_DIGEST_DAYS = 7
+# За цим префіксом шукаємо в alerts, коли дайджест виходив востаннє.
+QUIET_PREFIX = "quiet sources: "
+
+
+def _dark_sort_key(row: dict[str, Any]) -> tuple[bool, float, str]:
+    """Джерела, які не дали нічого НІКОЛИ, — першими; далі від найдавнішого."""
+    ts = row["last_item_at"]
+    return (ts is not None, ts.timestamp() if ts else 0.0, row["name"])
+
+
+def _source_lines(rows: list[dict[str, Any]]) -> list[str]:
+    """Список джерел у детермінованому порядку, з чесним хвостом.
+
+    Порядок тут, а не в SQL, бо саме готовий рядок є ключем дедупу в
+    alerts._store — той порівнює message ПОБУКВЕНО. `ORDER BY last_item_at
+    NULLS FIRST` не задає порядок серед джерел із порожнім last_item_at:
+    Postgres повертав ті самі вісім щоразу інакше, рядок виходив новий, і
+    дедуп його пропускав — 31.08.2026 той самий алерт прилетів у бот о
+    17:24 і о 18:26.
+    """
+    ordered = sorted(rows, key=_dark_sort_key)
+    lines = [f"• {d['name']} ({d['ecosystem']})" for d in ordered[:DARK_LISTED]]
+    if len(ordered) > DARK_LISTED:
+        lines.append(f"…and {len(ordered) - DARK_LISTED} more")
+    return lines
+
+
+def _dead_message(rows: list[dict[str, Any]]) -> str:
+    return (
+        f"{len(rows)} source(s) returned NOTHING on a full-history sweep — "
+        "the endpoint likely moved or the category was renamed:\n"
+        + "\n".join(_source_lines(rows))
+    )
+
+
+def _quiet_message(rows: list[dict[str, Any]], days: int) -> str:
+    return (
+        f"{QUIET_PREFIX}{len(rows)} source(s) still fetch fine but have "
+        f"published nothing new for {days}+ days:\n"
+        + "\n".join(_source_lines(rows))
+    )
+
+
+def _quiet_digest_due(conn: psycopg.Connection) -> bool:
+    """Чи виходив дайджест тихих джерел за останні QUIET_DIGEST_DAYS."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM alerts WHERE message LIKE %s "
+            "AND created_at > now() - make_interval(days => %s) LIMIT 1",
+            (QUIET_PREFIX + "%", QUIET_DIGEST_DAYS),
+        ).fetchone()
+        is None
+    )
+
+
 def _check_dark_sources(conn: psycopg.Connection) -> None:
-    """A3: a source that has gone quiet looks identical to one that is broken."""
+    """A3: a source that has gone quiet looks identical to one that is broken.
+
+    Насправді — не зовсім, і 31.08.2026 ця різниця коштувала довіри до
+    алерту. Вісім джерел у списку виглядали як аварія, а перевірка наживо
+    показала: всі вісім віддають 200 і реальний контент, просто в тихій
+    grants-категорії найновіша тема буває піврічної давнини. Алерт, який
+    щогодини кричить правду, на яку нема чого відповісти, вимикають — і
+    разом із ним перестають бачити справжні аварії.
+
+    Тому два різні сигнали:
+
+    МЕРТВЕ (щогодини, warning) — добір по всій історії вже відбувся і не
+    приніс НІЧОГО, або водяний знак стоїть у майбутньому. На це є що
+    робити: лізти й дивитись, куди переїхав ендпойнт.
+
+    ТИХЕ (раз на тиждень, info) — джерело приносило айтеми, останній
+    давніший за source_dark_days. Це нормальний стан гранту, який
+    оголошують раз на квартал; знати корисно, будити щогодини — ні.
+    """
     row = conn.execute(
         "SELECT value FROM settings WHERE key = 'source_dark_days'"
     ).fetchone()
     days = int(row["value"]) if row else 14
 
-    dark = conn.execute(
+    dead = conn.execute(
         """
         SELECT name, ecosystem, last_item_at FROM sources
          WHERE enabled AND NOT quarantined
-           AND (last_item_at IS NULL OR last_item_at < now() - make_interval(days => %s))
-           AND created_at < now() - make_interval(days => %s)
-         ORDER BY last_item_at NULLS FIRST
-        """,
-        (days, days),
+           -- Поки добору не було, «нічого немає» ще нічого не означає.
+           AND backfilled_at IS NOT NULL
+           AND (last_item_at IS NULL OR last_item_at > now())
+         ORDER BY name
+        """
     ).fetchall()
+    if dead:
+        alert(_dead_message(dead))
 
-    if dark:
-        alert(
-            f"{len(dark)} source(s) have produced nothing for {days}+ days — "
-            "check whether the endpoint moved or the category was renamed:\n"
-            + "\n".join(f"• {d['name']} ({d['ecosystem']})" for d in dark[:10])
-        )
+    quiet = conn.execute(
+        """
+        SELECT name, ecosystem, last_item_at FROM sources
+         WHERE enabled AND NOT quarantined
+           -- Дата в майбутньому сюди не потрапляє: вона більша за now(),
+           -- отже й за now() - N днів. Такі джерела бере запит вище.
+           AND last_item_at IS NOT NULL
+           AND last_item_at < now() - make_interval(days => %s)
+         ORDER BY last_item_at
+        """,
+        (days,),
+    ).fetchall()
+    if quiet and _quiet_digest_due(conn):
+        alert(_quiet_message(quiet, days), level="info")
 
 
 def _prune_items_log(conn: psycopg.Connection) -> None:
@@ -286,12 +396,25 @@ def _run_once_locked(conn: psycopg.Connection, *, seed: bool = False) -> dict[st
                 time.sleep(config.source_stagger_seconds)
 
             row = conn.execute(
-                "SELECT last_item_at, last_success_at FROM sources WHERE id = %s",
+                "SELECT last_item_at, last_success_at, backfilled_at "
+                "FROM sources WHERE id = %s",
                 (source.id,),
             ).fetchone()
 
+            # Джерело, увімкнене ПІСЛЯ первинного засіву, історії не має і в
+            # звичайному режимі набрати її не може: _watermark() падає на
+            # last_success_at, а той оновлюється щопрогону навіть на нулі
+            # айтемів, тож вікно назавжди ~72 години. Один прогін у
+            # seed-режимі це розмикає. A2 не порушено: seed пише статус
+            # "seeded" — історія для дедупу є, в CRM не йде НІЧОГО.
+            backfill = row is not None and row["backfilled_at"] is None
+            if backfill and not seed:
+                log.info("backfilling %s: no history yet, seeding once", source.name)
+
             try:
-                stats = _fetch_source(conn, client, source, row, keywords, seed)
+                stats = _fetch_source(
+                    conn, client, source, row, keywords, seed or backfill
+                )
             except SourceBlocked as exc:
                 failures.append(f"{source.name}: BLOCKED — {exc}")
                 _record_failure(conn, source.id)
