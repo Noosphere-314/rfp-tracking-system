@@ -36,9 +36,13 @@ n8n-імпорту, що плодить дублікати воркфлоу.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 import os
 import re
+import time
 from datetime import date
 
 import psycopg
@@ -153,8 +157,9 @@ _REPORT_SYSTEMS = {
         "## Forums worth adding — compare against the tracked-forums list "
         "in the context; for each untracked ecosystem worth following, "
         "give the governance forum URL, note whether it looks like a "
-        "Discourse instance, and remind that it can be added on the "
-        "dashboard via Sources → Detect type → Discover categories. Never "
+        "Discourse instance, and end the item with a ready-to-click line "
+        "\"Add: https://rfpfetch.online/sources?url=<forum URL>\" (the "
+        "dashboard pre-fills the add-source form from that link). Never "
         "propose a forum that is already tracked.\n"
         "## Sources — numbered bare URLs.\n"
         "Grounding rules: use ONLY the web findings and the archive "
@@ -162,6 +167,22 @@ _REPORT_SYSTEMS = {
         "\"(unverified)\". If the week is thin, say so honestly."
     ),
 }
+
+# Машинний блок дедлайнів — ЛИШЕ для grants-звіту: модель і так знаходить
+# вікна подачі, тепер віддає їх структуровано; ми складаємо в kb.deadlines
+# (міграція 015) для «Closing soon» на Overview і пінгів за 3 дні.
+# Тільки ПІДТВЕРДЖЕНІ дати: (unverified) у таблицю дедлайнів не потрапляє —
+# пінг «за 3 дні» по вигаданій даті гірший за відсутність пінга.
+_DEADLINES_MARK = "---DEADLINES---"
+_DEADLINES_RULE = (
+    "Finally, after the Telegram digest, output a line containing exactly "
+    + _DEADLINES_MARK + " and then a JSON array (nothing else after it) of "
+    "the CONFIRMED submission deadlines mentioned in the report: "
+    '[{"title": "...", "ecosystem": "...", "deadline": "YYYY-MM-DD", '
+    '"url": "..."}]. Only include items whose deadline date you verified in '
+    "the findings — never guessed or (unverified) ones. Output [] when "
+    "there are none."
+)
 
 _KB_QUERIES = {
     "grants": (
@@ -383,6 +404,8 @@ def _synthesize(
     system = (_REPORT_SYSTEMS[kind].format(
         language=_LANG_NAMES.get(language, language)
     ) + "\n" + _FORMAT_RULE + "\n" + _TELEGRAM_RULE)
+    if kind == "grants":
+        system += "\n" + _DEADLINES_RULE
     user = (
         f"Today is {today}.\n\n"
         f"=== Web findings ===\n{web or '(web research unavailable this week)'}\n\n"
@@ -397,14 +420,96 @@ def _synthesize(
     raw = "\n".join(b.text for b in response.content if b.type == "text").strip()
     if not raw:
         raise RuntimeError("synthesis returned no text")
-    # Дайджест для Telegram відрізається ТУТ і в kb.briefs не потрапляє —
-    # у бріфі він був би дублем власного ж змісту.
+    # Службові блоки відрізаються ТУТ і в kb.briefs не потрапляють: дайджест
+    # був би дублем власного змісту бріфа, а JSON дедлайнів — сміттям у
+    # тексті. Ріжемо СПОЧАТКУ дедлайни (вони останні за правилом, але
+    # partition по кожному маркеру окремо тримається, навіть якщо модель
+    # переплутає порядок).
+    raw, _, deadlines_json = raw.partition(_DEADLINES_MARK)
     report, _, digest = raw.partition(_TELEGRAM_MARK)
     report = report.strip()
     digest = _plain_text(digest)[:900] or _fallback_digest(report)
-    return (report, digest,
+    return (report, digest, _parse_deadlines(deadlines_json),
             getattr(response.usage, "input_tokens", 0) or 0,
             getattr(response.usage, "output_tokens", 0) or 0)
+
+
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _parse_deadlines(block: str) -> list[dict]:
+    """JSON-блок від моделі → чисті рядки для kb.deadlines. Ніколи не кидає:
+    дедлайни — бонус до звіту, а не його умова; крива відповідь моделі не
+    має валити вже синтезований звіт."""
+    block = block.strip()
+    if not block:
+        return []
+    # Модель інколи загортає JSON у ```-огорожу — знімаємо.
+    block = re.sub(r"^```(?:json)?\s*|\s*```$", "", block)
+    try:
+        items = json.loads(block)
+    except ValueError:
+        log.warning("weekly: deadlines block is not valid JSON — dropped")
+        return []
+    if not isinstance(items, list):
+        return []
+    rows: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        title = str(it.get("title") or "").strip()[:300]
+        deadline = str(it.get("deadline") or "").strip()
+        if not title or not _DATE_RE.fullmatch(deadline):
+            continue
+        rows.append({
+            "title": title,
+            "ecosystem": str(it.get("ecosystem") or "").strip()[:80],
+            "deadline": deadline,
+            "url": str(it.get("url") or "").strip()[:500],
+        })
+    return rows
+
+
+def _store_deadlines(conn, rows: list[dict]) -> int:
+    """Upsert у kb.deadlines по (title, deadline) — той самий звітний рядок
+    наступного тижня не плодить дублікат, а нове вікно тієї ж програми —
+    легітимний новий рядок. dismissed_at НЕ чіпаємо: «прибрав з очей»
+    людина, і повторна згадка у звіті не має повертати рядок на Overview."""
+    for r in rows:
+        conn.execute(
+            """
+            INSERT INTO kb.deadlines (title, ecosystem, deadline, url)
+            VALUES (%(title)s, %(ecosystem)s, %(deadline)s, %(url)s)
+            ON CONFLICT (title, deadline) DO UPDATE
+                SET ecosystem = EXCLUDED.ecosystem, url = EXCLUDED.url
+            """,
+            r,
+        )
+    return len(rows)
+
+
+# TTL magic-лінка: тиждень — рівно каденція звітів; давніший лінк у групі
+# і так перекритий свіжішим повідомленням.
+_SHARE_TTL_SECONDS = 7 * 24 * 3600
+
+
+def share_token(brief_id: int) -> str:
+    """Підписаний токен read-only перегляду ОДНОГО бріфа без логіну
+    (magic-лінк у Telegram — UX п.2 плану 2026-08-31).
+
+    Ключ — KB_MCP_TOKEN: він уже є і в kbmcp (тут), і в admin (env
+    KB_MCP_TOKEN у compose), тож окремого спільного секрету не треба.
+    Формат: "<expiry_unix>.<hmac_sha256(brief_id|expiry)[:32]>" — stdlib,
+    без itsdangerous (його немає в образі kbmcp). Порожній KB_MCP_TOKEN →
+    порожній токен (fail-closed: без секрета лінк не підписати, а generate
+    без токена і так не працює)."""
+    secret = os.environ.get("KB_MCP_TOKEN", "")
+    if not secret:
+        return ""
+    expiry = int(time.time()) + _SHARE_TTL_SECONDS
+    sig = hmac.new(secret.encode(), f"{brief_id}|{expiry}".encode(),
+                   hashlib.sha256).hexdigest()[:32]
+    return f"{expiry}.{sig}"
 
 
 def generate(payload: dict) -> tuple[dict, int]:
@@ -439,7 +544,8 @@ def generate(payload: dict) -> tuple[dict, int]:
                 # а не саме лише «звіт уже є» з голим посиланням.
                 return {"ok": True, "skipped": True,
                         "brief_id": recent["id"], "title": recent["title"],
-                        "summary": _fallback_digest(recent["brief_md"])}, 200
+                        "summary": _fallback_digest(recent["brief_md"]),
+                        "share_token": share_token(recent["id"])}, 200
 
         if not ANTHROPIC_API_KEY:
             # Без stub-тира свідомо (див. докстрінг модуля): звалище сирих
@@ -461,7 +567,7 @@ def generate(payload: dict) -> tuple[dict, int]:
 
     web, web_in, web_out = _web_findings(client, model, kind, today)
     try:
-        report, digest, syn_in, syn_out = _synthesize(
+        report, digest, deadlines, syn_in, syn_out = _synthesize(
             client, model, kind, language, today, web, kb_context)
     except Exception:  # noqa: BLE001 — n8n покаже чесний текст у Telegram
         log.exception("weekly %s: synthesis failed", kind)
@@ -470,6 +576,8 @@ def generate(payload: dict) -> tuple[dict, int]:
 
     title = f"{_TITLE_PREFIX[kind]} — {today}"
     with _db() as conn:
+        if deadlines:
+            _store_deadlines(conn, deadlines)
         row = conn.execute(
             """
             INSERT INTO kb.briefs (item_uid, ecosystem, title, brief_md, tier,
@@ -484,4 +592,5 @@ def generate(payload: dict) -> tuple[dict, int]:
     log.info("weekly %s: brief %s, %s in / %s out tokens",
              kind, row["id"], web_in + syn_in, web_out + syn_out)
     return {"ok": True, "skipped": False, "brief_id": row["id"],
-            "title": title, "summary": digest}, 200
+            "title": title, "summary": digest,
+            "share_token": share_token(row["id"])}, 200

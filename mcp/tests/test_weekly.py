@@ -382,3 +382,92 @@ def test_guard_and_title_share_one_date(monkeypatch):
     guard = next(p for sql, p in calls if "WHERE title = " in sql)
     insert = next(p for sql, p in calls if "INSERT INTO kb.briefs" in sql)
     assert guard[0] == insert[0]
+
+
+# ── дедлайни (міграція 015) і share-токени ──────────────────────────
+
+
+def test_parse_deadlines_validates_and_survives_garbage():
+    """Ніколи не кидає: крива відповідь моделі не валить готовий звіт."""
+    assert weekly._parse_deadlines("") == []
+    assert weekly._parse_deadlines("not json at all") == []
+    assert weekly._parse_deadlines('{"a": 1}') == []
+    rows = weekly._parse_deadlines(
+        '```json\n[{"title": "ENS SPP3", "ecosystem": "ENS", '
+        '"deadline": "2026-09-15", "url": "https://x"}, '
+        '{"title": "no date one", "deadline": "soon"}, '
+        '{"title": "", "deadline": "2026-09-20"}]\n```'
+    )
+    assert rows == [{"title": "ENS SPP3", "ecosystem": "ENS",
+                     "deadline": "2026-09-15", "url": "https://x"}]
+
+
+def test_grants_run_stores_deadlines_and_strips_the_block(monkeypatch):
+    holder, calls = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block(
+             "## New this week\n- ENS SPP3. detail\n"
+             "---TELEGRAM---\n- ENS SPP3, closes Sep 15\n"
+             "---DEADLINES---\n"
+             '[{"title": "ENS SPP3", "ecosystem": "ENS", '
+             '"deadline": "2026-09-15", "url": "https://x"}]')],
+             "end_turn")],
+    )
+    result, status = weekly.generate({"kind": "grants"})
+    assert status == 200 and result["ok"]
+    stored = [p for sql, p in calls if "INSERT INTO kb.deadlines" in sql]
+    assert stored == [{"title": "ENS SPP3", "ecosystem": "ENS",
+                       "deadline": "2026-09-15", "url": "https://x"}]
+    brief_insert = next(p for sql, p in calls if "INSERT INTO kb.briefs" in sql)
+    assert "---DEADLINES---" not in brief_insert[1]
+    assert "ENS SPP3, closes" not in brief_insert[1]
+    # Правило дедлайнів доклеєне лише для grants.
+    assert "---DEADLINES---" in holder["client"].messages.calls[-1]["system"][0]["text"]
+
+
+def test_discovery_prompt_has_no_deadlines_rule(monkeypatch):
+    holder, _ = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block("## r\n- a. b\n- c. d")], "end_turn")],
+    )
+    weekly.generate({"kind": "discovery"})
+    system = holder["client"].messages.calls[-1]["system"][0]["text"]
+    assert "---DEADLINES---" not in system
+    # Зате discovery несе готовий Add-лінк на /sources.
+    assert "https://rfpfetch.online/sources?url=" in system
+
+
+def test_share_token_roundtrip_and_fail_closed(monkeypatch):
+    monkeypatch.setenv("KB_MCP_TOKEN", "sekret")
+    tok = weekly.share_token(42)
+    expiry_s, _, sig = tok.partition(".")
+    import hashlib, hmac as hmac_mod, time as time_mod
+    assert int(expiry_s) > time_mod.time() + 6 * 24 * 3600
+    expected = hmac_mod.new(b"sekret", f"42|{expiry_s}".encode(),
+                            hashlib.sha256).hexdigest()[:32]
+    assert sig == expected
+    # Fail-closed: без секрета токена немає.
+    monkeypatch.delenv("KB_MCP_TOKEN")
+    assert weekly.share_token(42) == ""
+
+
+def test_responses_carry_the_share_token(monkeypatch):
+    _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block("## r\n- a. b\n- c. d")], "end_turn")],
+    )
+    result, _ = weekly.generate({"kind": "grants"})
+    assert result["share_token"].count(".") == 1
+
+    _wire(monkeypatch,
+          _router(recent=[{"id": 55, "title": f"Weekly grants & RFPs — {TODAY}",
+                           "brief_md": "## New this week\n- Something"}]),
+          [])
+    result, _ = weekly.generate({"kind": "grants"})
+    assert result["skipped"] and result["share_token"]
