@@ -65,7 +65,12 @@ signer = TimestampSigner(SESSION_SECRET, salt="rfp-admin-session-v1")
 # одного маршруту. `/logout` і `/logout/all` НЕ публічні — логаут
 # неавторизованого не має сенсу і дає зайвий вектор.
 PUBLIC_EXACT = {"/login", "/healthz", "/favicon.ico", "/mock/webhook"}
-PUBLIC_PREFIX = ("/assets/",)
+# /share/ — magic-лінки read-only перегляду ОДНОГО бріфа без логіну (UX-план
+# 2026-08-31 п.2: СЕО тисне лінк у Telegram і читає звіт без стіни пароля).
+# Автентифікація там — HMAC-токен у query (app.py: share_brief_page,
+# перевірка з KB_MCP_TOKEN, TTL 7 діб), а не сесія; префікс навмисно вузький
+# і БЕЗ жодних мутацій під ним — самі GET-рендери документа.
+PUBLIC_PREFIX = ("/assets/", "/share/")
 
 # Rolling re-sign не має воскрешати cookie, яку щойно видалив хендлер логауту:
 # middleware виставляє Set-Cookie ПІСЛЯ хендлера, і браузер застосував би

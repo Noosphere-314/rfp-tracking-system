@@ -1,0 +1,43 @@
+<!doctype html>
+{#- Read-only перегляд бріфа за magic-лінком (app.py: share_brief_page) —
+    СВІДОМО не extends base.html: людина без сесії не має бачити сайдбар,
+    що весь веде на логін-стіну, ані кнопок archive/delete. Чистий документ
+    у тій самій темі (.brief-doc — той самий клас, що й у brief.html, тож
+    типографіка «бріф як документ» спільна для обох виглядів).
+    brief_md — вихід LLM, недовірений: рендер ЛИШЕ через md_lite (escape-first,
+    див. коментар у brief.html). Мова — EN-дефолти t(): magic-лінк живе поза
+    сесією, cookie мови тут може не бути. -#}
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{{ brief.title }} · RFP Tracker</title>
+  <link rel="stylesheet" href="/assets/app.css?v={{ asset_v | default(0) }}">
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+</head>
+<body class="share-page">
+  <main class="share">
+    <header class="share__head">
+      <a class="brand share__brand" href="/">
+        <img class="brand__mark" src="/assets/logo-mark.svg" alt="" width="30" height="22">
+        <span class="brand__name">RFP Tracker</span>
+      </a>
+      <h1 class="share__title">{{ brief.title }}</h1>
+      <p class="share__meta">
+        <span class="badge b-neutral">{{ brief.ecosystem }}</span>
+        {% if brief.model %}<span class="badge b-info">{{ brief.model }}</span>{% endif %}
+        <span>{{ brief.created_at.strftime("%Y-%m-%d %H:%M") if brief.created_at else "" }}</span>
+      </p>
+    </header>
+
+    <div class="prose brief-doc">{{ brief.brief_md | md_lite }}</div>
+
+    <footer class="share__foot">
+      <p class="muted">{{ t("pg.share.foot",
+        "Read-only view from a shared link. Sign in for the full dashboard:") }}
+        <a href="/briefs/{{ brief.id }}">rfpfetch.online</a></p>
+    </footer>
+  </main>
+</body>
+</html>

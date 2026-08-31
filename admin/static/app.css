@@ -946,3 +946,105 @@ dialog.confirm::backdrop{background:rgb(0 0 0/.55)}
   padding:var(--sp-3) var(--sp-4); border-top:1px solid var(--line-soft);
   background:var(--surface-2); border-radius:0 0 var(--r-lg) var(--r-lg);
 }
+
+/* ──────  22. Бріф як документ, не як рядок адмінки (фіча 2026-08-31)  ──── */
+/* brief.html: тижневі AI-звіти («Weekly grants & RFPs — …», «Weekly
+   discovery — …») тепер саме тут читає СЕО — за посиланням із Telegram,
+   часто з телефону. Ціль розділу: типографіка читання (колонка ~72ch,
+   17px/1.65, ієрархія заголовків), а не адмін-щільність решти дашборда.
+
+   .brief-head__title — заголовок бріфа ВСЕРЕДИНІ .panel__head (розмітка й
+   базові flex/gap/border-bottom — розділ 9, БЕЗ ЗМІН тут). flex:1 1 100% —
+   стандартний трюк «примусовий перенос рядка всередині flex-wrap»: заголовок
+   займає весь рядок сам, бейджі екосистеми/tier/model/tokens + дата, що
+   йдуть за ним у розмітці, автоматично переносяться на другий рядок —
+   «мета-стрічка під заголовком» без жодного додаткового <div>-обгортки. */
+.brief-head__title{
+  flex:1 1 100%; margin:0 0 var(--sp-1);
+  font-size:var(--fs-2xl); font-weight:700; line-height:var(--lh-tight);
+}
+
+/* .brief-doc — ДРУГИЙ клас на тому самому елементі, що й .prose (розділ 12:
+   `class="prose brief-doc"` у brief.html). .prose лишається незайманим — його
+   й далі рендерить keywords.html (advice_md), тому базові розміри там мають
+   не зрушити. .brief-doc лише додає/перевизначає те, що властиво САМЕ
+   довгому документу: ширину колонки, розмір і lh «під читання» (17/1.65 —
+   трохи більші за .prose 16/1.7, читання довгого тексту, а не короткої
+   поради), заголовки з відступом зверху, перенос довгих URL і таблиці. */
+.brief-doc{
+  max-width:72ch; margin:0 auto; font-size:17px; line-height:1.65;
+}
+.brief-doc h3{margin:var(--sp-6) 0 var(--sp-2); font-size:var(--fs-xl); font-weight:700}
+.brief-doc h3:first-child{margin-top:0}
+.brief-doc p,.brief-doc ul{margin:0 0 var(--sp-4)}
+.brief-doc li+li{margin-top:var(--sp-1)}
+/* Sources-розділи тижневих звітів рясніють довгими forum-URL — без цього
+   правила один такий рядок ламає .brief-doc на 72ch у горизонтальний скрол
+   усієї сторінки на телефоні (anywhere, не break-word: розриває і посеред
+   довгого сегмента без дефісів/слешів, а не лише на «природних» межах). */
+.brief-doc a{overflow-wrap:anywhere}
+/* `md_lite` (admin/app.py) сьогодні НЕ вміє таблиці — сирий `<table>` у
+   тексті LLM після escape-first проходу назавжди лишається текстом, тегом
+   стати не може (розділ 4.8/4.9, той самий принцип, що й hl()/linkify()).
+   Правило нижче — свідомий заділ «на випадок»: якщо рендерер колись
+   навчиться таблицям (deadline-таблиці в бріфах — цілком очікувана вимога),
+   він вставить ГОЛИЙ `<table>` прямо в потік .brief-doc (без обгортки —
+   .tablewrap розділу 7 сюди не дотягнеться, бо html_parts у md_lite плоский
+   список рядків, не дерево). `display:block; overflow-x:auto` на самій
+   `<table>` — CSS-заміна .tablewrap там, де обгортки в розмітці немає. */
+.brief-doc table{
+  display:block; overflow-x:auto; -webkit-overflow-scrolling:touch;
+  max-width:100%; border-collapse:collapse; font-size:var(--fs-sm);
+  border:1px solid var(--line); border-radius:var(--r-md);
+}
+.brief-doc th,.brief-doc td{
+  padding:6px 10px; text-align:left; vertical-align:top;
+  border-bottom:1px solid var(--line-soft);
+}
+.brief-doc th{color:var(--text-dim); font-weight:600; white-space:nowrap}
+.brief-doc tbody tr:last-child td{border-bottom:0}
+
+/* Друк («Save as PDF», app.js data-print): розділ 13 вище вже ховає
+   сайдбар/topbar/controls/badges і скидає .content/.prose до повної ширини
+   й чорного тексту на білому — .brief-head__title/.brief-doc успадковують
+   колір від body{color:#000} звідти без жодних додаткових правил. Єдине,
+   що варто явно доскинути ТУТ — max-width:72ch у звичайному режимі не
+   повинен пережити роздрук вузькою колонкою посеред аркуша A4 (той самий
+   намір, що й .prose{max-width:none} у розділі 13, лише для нового класу). */
+@media print{
+  .brief-doc{max-width:none}
+}
+
+/* Мобільний прохід специфічно під /briefs/{id} (задача з фічі 2026-08-31):
+   .brief-panel — той самий <article class="panel …">, лише з додатковим
+   класом для сторінкового скоупу — свідомо НЕ чіпаємо .content/.panel__body
+   напряму (розділи 2/9): ті самі класи стоять на кожній іншій сторінці
+   дашборда, зменшення падінгів там — поза межами цієї фічі. 480px, не 640
+   (розділ 6 вище вже покриває планшет/розкладку сайдбара) — це вужчий,
+   телефонний брейкпоінт. Текст тіла — 16px, не менше (вимога: readable body
+   лишається ≥16px на будь-якій ширині). */
+@media (max-width:480px){
+  .brief-panel .panel__head{padding:var(--sp-3)}
+  .brief-panel .panel__body{padding:var(--sp-3)}
+  .brief-head__title{font-size:var(--fs-xl)}
+  .brief-doc{font-size:16px; line-height:1.6}
+}
+
+/* ─────────────  23. Share-перегляд бріфа (magic-лінк, /share/)  ───────────
+   Той самий .brief-doc (розділ 22) несе типографіку; тут лише каркас
+   сторінки БЕЗ сайдбара: вузька колонка документа по центру, шапка з
+   маркою і футер-запрошення увійти. Жодних дій — read-only за задумом. */
+
+.share-page{background:var(--bg)}
+.share{max-width:760px; margin:0 auto; padding:var(--sp-5) var(--sp-4) var(--sp-6)}
+.share__brand{padding:0; margin-bottom:var(--sp-5); display:inline-flex}
+.share__head{margin-bottom:var(--sp-5)}
+.share__title{font-size:var(--fs-2xl); line-height:var(--lh-tight); margin:0 0 var(--sp-2)}
+.share__meta{display:flex; flex-wrap:wrap; gap:var(--sp-2); align-items:center;
+  color:var(--text-dim); font-size:var(--fs-sm)}
+.share__foot{margin-top:var(--sp-6); padding-top:var(--sp-4);
+  border-top:1px solid var(--line)}
+@media (max-width:480px){
+  .share{padding:var(--sp-4) var(--sp-3) var(--sp-5)}
+  .share__title{font-size:var(--fs-xl)}
+}

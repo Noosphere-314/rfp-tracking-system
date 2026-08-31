@@ -20,10 +20,12 @@ Pipedrive, Claude і n8n. Публічно цей маршрут закрити�
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urlencode, urljoin, urlparse
@@ -167,9 +169,48 @@ def _leads_badge_context(request: Request) -> dict:
     return {"leads_24h": leads_24h, "unread_count": unread_count}
 
 
+# Executive «спрощений вигляд» (запит Миколи 2026-08-31). Спільний пароль на
+# весь дашборд означає відсутність справжніх ролей (auth.py, розділ «Хто саме
+# входить») — тому цей cookie НЕ входить у підписану сесію, як і rfp_lang в
+# admin/i18n.py: вибір «простий/повний» вигляд сайдбару — преференція
+# перегляду, а не автентифікація, і перевидавати підписаний сесійний cookie
+# заради косметики не варто (той самий аргумент, що й у i18n.py docstring).
+VIEW_COOKIE = "rfp_view"
+
+
+def _view_context(request: Request) -> dict:
+    """Той самий механізм, що й _leads_badge_context/auth.template_context/
+    i18n.template_context вище: сайдбар (base.html) рендериться на КОЖНІЙ
+    сторінці, тож «хто дивиться» і «який вигляд обрав» рахуються раз тут, а
+    не в кожному хендлері.
+
+    simple_view: щойно Executive заходить у кабінет — сайдбар показує лише
+    групу Work (Огляд/Знахідки/Бріфи/База знань/AI-чат), без Налаштувань,
+    Системи й зовнішнього n8n. VIEW_COOKIE == "full" — явний вихід із цього
+    режиму кнопкою «Full version» (маршрут POST /view нижче); будь-яке інше
+    значення (відсутнє, стерте, сміття) означає «спрощений».
+
+    show_view_toggle: кнопка-перемикач в base.html видима ЛИШЕ Executive —
+    для решти підрозділів нав і так повний, перемикати нічого.
+
+    БЕЗПЕКА: це презентація, не авторизація. Приховані пункти меню — не
+    заборонені сторінки: прямий URL (наприклад /sources) відкривається
+    достоту так само, як і людині з повним сайдбаром, — спільний пароль не
+    дає системі справжніх ролей, аби на щось таке спиратися.
+    """
+    who = auth.session_who(request)
+    is_exec = who == "Executive"
+    return {
+        "simple_view": is_exec and request.cookies.get(VIEW_COOKIE) != "full",
+        "show_view_toggle": is_exec,
+    }
+
+
 templates = Jinja2Templates(
     directory=Path(__file__).parent / "templates",
-    context_processors=[auth.template_context, i18n.template_context, _leads_badge_context],
+    context_processors=[
+        auth.template_context, i18n.template_context, _leads_badge_context, _view_context,
+    ],
 )
 # /assets/, а не /static/: каддівський catch-all віддає адміну все, що не
 # /webhook/*, /form/*, /form-waiting-room/*. Якщо HTML n8n-форми колись
@@ -608,6 +649,35 @@ def switch_lang(request: Request, lang: str = Form(...), next: str = Form("/")):
     return response
 
 
+@app.post("/view", dependencies=[Depends(auth.csrf_guard)])
+def switch_view(request: Request, view: str = Form(""), next: str = Form("/")):
+    """Перемикач «Simple view» ⇄ «Full version» у сайдбарі Executive — той
+    самий трюк, що й /lang вище: окрема НЕ сесійна cookie (VIEW_COOKIE), бо
+    це преференція перегляду, а не авторизація (див. _view_context).
+
+    Кнопка в base.html навмисно ОДНА: submit-кнопка несе `value="full"`, коли
+    зараз показано спрощений сайдбар, і порожній рядок, коли зараз показано
+    повний, — тобто саме той стан, У ЯКИЙ людина хоче перейти. Будь-яке
+    значення, відмінне від "full" (порожнє, сміття від чужого клієнта),
+    трактується як «стерти cookie» — cookie й так лише презентаційна, гіршого
+    за «сайдбар знову спрощений» тут статися не може.
+    """
+    response = RedirectResponse(auth.safe_next(next), status_code=303)
+    if view == "full":
+        response.set_cookie(
+            VIEW_COOKIE,
+            "full",
+            max_age=365 * 24 * 3600,
+            path="/",
+            httponly=False,
+            secure=request.url.scheme == "https",
+            samesite="lax",
+        )
+    else:
+        response.delete_cookie(VIEW_COOKIE, path="/")
+    return response
+
+
 @app.get("/session/ping")
 def session_ping():
     """204, no-op — кнопка «Залишитись» у банері таймера. Окремий keepalive не
@@ -803,6 +873,22 @@ def dashboard(request: Request):
     # відносно МАКСИМУМУ у своєму власному 14-денному ряду — інакше один
     # рідкісний сплеск лідів робив би решту днів невидимо тонкими смужками.
     # `or 1` — не ділити на нуль, коли весь період порожній (усі бари w-0).
+        # «Closing soon» (дедлайн-трекер, план 2026-08-31 п.2): відкриті
+        # дедлайни в найближчі 14 днів. Джерело рядків — щотижневий
+        # grants-звіт (kb.deadlines, міграція 015); dismissed приховані
+        # НАЗАВЖДИ — «прибрав з очей» це рішення людини, повторна згадка
+        # у звіті його не скасовує (upsert не чіпає dismissed_at).
+        closing_deadlines = conn.execute(
+            """
+            SELECT id, title, ecosystem, deadline, url,
+                   (deadline - current_date) AS days_left
+              FROM kb.deadlines
+             WHERE dismissed_at IS NULL
+               AND deadline BETWEEN current_date AND current_date + 14
+             ORDER BY deadline, id LIMIT 8
+            """
+        ).fetchall()
+
     max_collected = max((r["collected"] for r in activity_rows), default=0) or 1
     max_leads = max((r["leads"] for r in activity_rows), default=0) or 1
     activity = [
@@ -848,6 +934,7 @@ def dashboard(request: Request):
             "activity_has_data": activity_has_data,
             "ecosystems": ecosystems,
             "latest_leads": latest_leads,
+            "closing_deadlines": closing_deadlines,
             "stub_classifier": bool(
                 last_verdict and last_verdict["prompt_version"] == "stub-no-llm"
             ),
@@ -924,8 +1011,17 @@ def _render_sources(
 
 
 @app.get("/sources", response_class=HTMLResponse)
-def sources_page(request: Request, message: str = "", error: str = ""):
-    return _render_sources(request, message=message, error=error)
+def sources_page(request: Request, message: str = "", error: str = "", url: str = ""):
+    """`url` — префіл форми додавання (план 2026-08-31, функц. п.4): лінки
+    «Add: /sources?url=…» з discovery-звіту ведуть одразу на заповнене поле —
+    людині лишається Detect type → Discover → Test and save. Обрізання і
+    м'яка перевірка схеми — захист від сміття в query, не від людини:
+    невалідне значення просто не префілиться."""
+    url = url.strip()[:500]
+    if url and not url.startswith(("http://", "https://")):
+        url = ""
+    return _render_sources(request, message=message, error=error,
+                           form={"url": url} if url else None)
 
 
 @mutations.post("/sources/{source_id}/toggle")
@@ -2000,6 +2096,16 @@ def items_page(
             """,
             (*params, page * 50),
         ).fetchall()
+        # Порожній стан «живий» (план 2026-08-31, дизайн п.3): замість голої
+        # таблиці — час останнього збору. Один дешевий SELECT max() по
+        # індексованій колонці; воркер ходить щогодини, тож «останній збір
+        # о HH:MM» відповідає на головне питання «система взагалі жива?».
+        # `or {}` — фейкові курсори тестів віддають None на порожньому
+        # наборі, хоч реальний SELECT max() завжди повертає рядок.
+        last_run_at = (conn.execute(
+            "SELECT max(started_at) AS t FROM worker_runs WHERE mode = 'run'"
+        ).fetchone() or {}).get("t")
+
         ecosystem_options = conn.execute(
             "SELECT DISTINCT ecosystem FROM sources ORDER BY ecosystem"
         ).fetchall()
@@ -2026,6 +2132,7 @@ def items_page(
             "ecosystem_options": [r["ecosystem"] for r in ecosystem_options],
             "filters_active": filters_active,
             "qs_no_page": qs_no_page,
+            "last_run_at": last_run_at,
         },
     )
 
@@ -2559,6 +2666,70 @@ def view_brief(request: Request, brief_id: int):
     return templates.TemplateResponse(
         request, "brief.html", {"nav": "briefs", "brief": brief}
     )
+
+
+def _share_token_valid(brief_id: int, token: str) -> bool:
+    """Перевірка magic-токена з Telegram-лінка (видає mcp/weekly.share_token:
+    "<expiry_unix>.<hmac_sha256(brief_id|expiry)[:32]>").
+
+    Ключ — KB_MCP_TOKEN: він уже є в env ОБОХ сервісів (kbmcp підписує,
+    admin перевіряє), окремий спільний секрет не потрібен. Fail-closed:
+    без токена в env перевірка завжди хибна — magic-лінки просто не
+    працюють, а не працюють БЕЗ підпису. compare_digest — проти таймінгу,
+    як і скрізь у auth.py."""
+    secret = os.environ.get("KB_MCP_TOKEN", "")
+    if not secret or token.count(".") != 1:
+        return False
+    expiry_s, _, sig = token.partition(".")
+    if not expiry_s.isdigit() or int(expiry_s) < time.time():
+        return False
+    expected = hmac.new(secret.encode(), f"{brief_id}|{expiry_s}".encode(),
+                        hashlib.sha256).hexdigest()[:32]
+    return hmac.compare_digest(sig, expected)
+
+
+@app.get("/share/briefs/{brief_id}", response_class=HTMLResponse)
+def share_brief_page(request: Request, brief_id: int, t: str = ""):
+    """Read-only перегляд ОДНОГО бріфа за magic-лінком, БЕЗ сесії (UX-план
+    2026-08-31 п.2). Шлях під /share/ — публічним префіксом auth.PUBLIC_PREFIX,
+    тож middleware його не чіпає: автентифікація тут — сам підписаний токен.
+
+    Свій шаблон (share_brief.html), а не brief.html: без сайдбара і дій —
+    людина без сесії не має бачити навігацію, що вся веде на логін-стіну,
+    ані кнопок archive/delete, які все одно відіб'ються CSRF-ом. Чистий
+    документ + пропозиція увійти для повної версії."""
+    if not _share_token_valid(brief_id, t):
+        # 404, не 403: не підтверджуємо існування бріфа тому, хто підбирає id.
+        raise HTTPException(404, "not found")
+    with db() as conn:
+        brief = conn.execute(
+            "SELECT * FROM kb.briefs WHERE id = %s", (brief_id,)
+        ).fetchone()
+    if not brief:
+        raise HTTPException(404, "not found")
+    response = templates.TemplateResponse(
+        request, "share_brief.html", {"brief": brief}
+    )
+    # PUBLIC-шляхи виходять із middleware до кроку no-store — ставимо самі:
+    # лінк живе в груповому чаті, кешувати відповідь поза браузером не можна.
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@mutations.post("/deadlines/{deadline_id}/dismiss")
+def dismiss_deadline(deadline_id: int):
+    """«Прибрати з очей» рядок Closing soon (подали заявку / нерелевантно):
+    рядок лишається в kb.deadlines для історії, а upsert зі щотижневого
+    звіту свідомо не чіпає dismissed_at — повторна згадка програми у звіті
+    не повертає її на Overview."""
+    with db() as conn:
+        conn.execute(
+            "UPDATE kb.deadlines SET dismissed_at = now() "
+            "WHERE id = %s AND dismissed_at IS NULL",
+            (deadline_id,),
+        )
+        conn.commit()
+    return RedirectResponse("/", status_code=303)
 
 
 @mutations.post("/briefs/{brief_id}/archive")

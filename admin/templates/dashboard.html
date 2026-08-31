@@ -112,6 +112,39 @@
   {% endif %}
 </section>
 
+{#- 2б. Closing soon (дедлайн-трекер, план 2026-08-31 п.2): відкриті
+    дедлайни грантів у найближчі 14 днів із kb.deadlines (їх наповнює
+    щотижневий grants-звіт). Панель зникає повністю, коли рядків нема —
+    порожній стан тут не потрібен: відсутність дедлайнів не є проблемою.
+    ≤3 днів — warn-бейдж: саме цей поріг пінгує щоденний digest у Telegram. -#}
+{% if closing_deadlines %}
+<section class="panel">
+  <div class="panel__head">
+    <h2>{{ t("pg.overview.closing", "Closing soon") }}</h2>
+  </div>
+  <ul class="issues">
+    {% for d in closing_deadlines %}
+    <li class="issue">
+      <span class="issue__text">
+        <span class="badge {{ 'b-warn' if d.days_left <= 3 else 'b-neutral' }}">
+          {%- if d.days_left == 0 %}{{ t("pg.overview.today", "today") }}
+          {%- else %}{{ d.days_left }}{{ t("pg.overview.days_suffix", "d") }}{% endif %}</span>
+        {% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener">{{ d.title }}</a>
+        {%- else %}{{ d.title }}{% endif %}
+        {% if d.ecosystem %}<span class="muted">· {{ d.ecosystem }}</span>{% endif %}
+        <span class="muted">· {{ d.deadline.strftime("%b %d") }}</span>
+      </span>
+      <form method="post" action="/deadlines/{{ d.id }}/dismiss">
+        {% include "_csrf.html" %}
+        <button class="btn btn--sm" type="submit"
+                title="{{ t('act.dismiss.title', 'Hide: applied or not relevant') }}">{{ t("act.dismiss", "Dismiss") }}</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 {#- 3. This week (розділ 3 задачі 6): міні-воронка, кожне число — лінк на
     відповідний фільтр Findings. Усі чотири числа рахують той самий базовий
     зріз (first_seen > 7 днів, app.py: funnel), тож те, що людина побачить

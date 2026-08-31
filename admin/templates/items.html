@@ -357,6 +357,14 @@
                 {{ t("msg.and", "and") }}
                 <a href="/sources">{{ t("msg.check_sources", "source health") }}</a>.
                 {% endif %}
+                {#- «Система жива?» — головне питання порожньої таблиці
+                    (план 2026-08-31, дизайн п.3): час останнього збору +
+                    нагадування про щогодинний цикл, а не голе «порожньо». -#}
+                {% if last_run_at %}
+                <br><span class="muted">{{ t("msg.last_run", "Last collection run:") }}
+                {{ last_run_at.strftime("%H:%M") }} ·
+                {{ t("msg.runs_hourly", "the worker checks all sources about once an hour.") }}</span>
+                {% endif %}
               </div>
             </div>
           </td>

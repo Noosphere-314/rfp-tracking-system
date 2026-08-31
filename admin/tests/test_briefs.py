@@ -185,3 +185,63 @@ def test_download_brief_404_when_missing(client, monkeypatch):
     _fake_db(monkeypatch, rows=[])
     response = client.get("/briefs/999/download")
     assert response.status_code == 404
+
+
+# ── /share/briefs/{id}: magic-лінк read-only перегляду (2026-08-31) ───────
+
+
+def _share_token(brief_id: int, secret: str = "share-secret", offset: int = 3600) -> str:
+    import hashlib
+    import hmac as hmac_mod
+    import time as time_mod
+
+    expiry = int(time_mod.time()) + offset
+    sig = hmac_mod.new(secret.encode(), f"{brief_id}|{expiry}".encode(),
+                       hashlib.sha256).hexdigest()[:32]
+    return f"{expiry}.{sig}"
+
+
+_BRIEF_ROW = {
+    "id": 7, "item_uid": None, "ecosystem": "EVM",
+    "title": "Weekly grants & RFPs — 2026-08-31",
+    "brief_md": "## New this week\n- Something concrete",
+    "tier": "llm", "model": "claude-opus-5", "tokens_in": 1, "tokens_out": 1,
+    "created_at": None, "archived_at": None,
+}
+
+
+def test_share_brief_opens_without_a_session(client, monkeypatch):
+    """Головний сенс magic-лінка: СЕО тисне лінк із Telegram і читає звіт
+    БЕЗ логін-стіни — /share/ у auth.PUBLIC_PREFIX, автентифікація = HMAC."""
+    monkeypatch.setenv("KB_MCP_TOKEN", "share-secret")
+    _fake_db(monkeypatch, rows=[_BRIEF_ROW])
+
+    r = client.get(f"/share/briefs/7?t={_share_token(7)}")
+    assert r.status_code == 200
+    assert "Something concrete" in r.text
+    # Документ, не адмінка: без сайдбара і без дій життєвого циклу.
+    assert "sidebar" not in r.text
+    assert "/briefs/7/delete" not in r.text
+    assert r.headers["cache-control"] == "private, no-store"
+
+
+def test_share_brief_rejects_bad_expired_and_foreign_tokens(client, monkeypatch):
+    monkeypatch.setenv("KB_MCP_TOKEN", "share-secret")
+    _fake_db(monkeypatch, rows=[_BRIEF_ROW])
+
+    assert client.get("/share/briefs/7").status_code == 404
+    assert client.get("/share/briefs/7?t=garbage").status_code == 404
+    # Прострочений.
+    assert client.get(f"/share/briefs/7?t={_share_token(7, offset=-10)}").status_code == 404
+    # Підпис від ІНШОГО brief_id.
+    assert client.get(f"/share/briefs/7?t={_share_token(8)}").status_code == 404
+    # Чужий секрет.
+    assert client.get(f"/share/briefs/7?t={_share_token(7, secret='wrong')}").status_code == 404
+
+
+def test_share_brief_fails_closed_without_the_secret(client, monkeypatch):
+    """Порожній KB_MCP_TOKEN → жоден токен не валідний (інакше hmac з
+    порожнім ключем був би ПІДРОБЛЮВАНИМ будь-ким, хто знає формат)."""
+    monkeypatch.delenv("KB_MCP_TOKEN", raising=False)
+    _fake_db(monkeypatch, rows=[_BRIEF_ROW])
+    assert client.get(f"/share/briefs/7?t={_share_token(7, secret='')}").status_code == 404

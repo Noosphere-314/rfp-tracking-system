@@ -18,6 +18,12 @@
       ("work", t("nav.group.work", "Work")),
       ("cfg",  t("nav.group.cfg",  "Configuration")),
       ("sys",  t("nav.group.sys",  "System"))] -%}
+{#- Executive «спрощений вигляд» (admin/app.py: _view_context) — лише Work.
+    Приховування, не заборона: пряма URL на /sources відкривається так само,
+    бо спільний пароль не дає системі справжніх ролей (див. коментар там). -#}
+{%- if simple_view -%}
+  {%- set nav_groups = nav_groups[:1] -%}
+{%- endif -%}
 {#- Джерело правди для навігації — NAV в app.py (розділ 2.3). Список нижче
     вмикається лише доти, доки app.py його не передає. -#}
 {%- set nav_labels = {
@@ -77,7 +83,7 @@
            {% if it.id == 'items' and unread_count %}<span class="badge b-info" title="{{ t('nav.unread.title', 'Unread potential leads and review-band findings') }}">{{ unread_count }}</span>{% endif %}</a>
       {% endfor %}
     {% endfor %}
-    {% if N8N_URL %}
+    {% if N8N_URL and not simple_view %}
     <p class="nav__group">{{ t("nav.group.ext", "External") }}</p>
     <a class="nav__item nav__item--ext" href="{{ N8N_URL }}" target="_blank"
        rel="noopener noreferrer" aria-label="{{ t('nav.n8n.aria', 'n8n, opens in a new tab') }}">
@@ -86,6 +92,21 @@
   </nav>
 
   <div class="sidebar__foot">
+    {#- Ескейп-люк Executive (admin/app.py: _view_context/POST /view). Форма,
+        а не посилання — та сама причина, що й у langbar нижче: GET браузер
+        може префетчити, а тут це зміна того, що людина бачить у сайдбарі.
+        Кнопка лише для Executive: іншим підрозділам і так показано повний
+        нав, перемикати нічого. -#}
+    {% if show_view_toggle %}
+    <form method="post" action="/view">{% include "_csrf.html" %}
+      <input type="hidden" name="next" value="{{ request.url.path }}">
+      <button class="btn btn--ghost btn--block" type="submit" name="view"
+              value="{{ 'full' if simple_view else '' }}">
+        {{ t("nav.full_version", "Full version") if simple_view else t("nav.simple_view", "Simple view") }}
+      </button>
+    </form>
+    {% endif %}
+
     {#- Перемикач мови: EN — дефолт, UA за явним вибором. Форма, а не посилання:
         зміна преференції користувача не має відбуватися по GET, який браузер
         може префетчити. -#}

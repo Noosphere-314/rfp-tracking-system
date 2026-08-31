@@ -407,11 +407,12 @@ def test_items_page_nav_badge_shows_unread_count_next_to_findings(client, monkey
     бейдж живе в base.html і рендериться на кожній. З 2026-08-11 бейдж —
     НЕПРОЧИТАНІ (unread_count, .b-info), а не ліди за 24 год."""
     _login(client)
-    # Третій виклик execute() у цьому рендері (0: items, 1: ecosystem
-    # options, 2: контекст-процесор бейджа NAV) — той самий порядок, що
-    # й guard-коментар у _leads_badge_context описує.
+    # Четвертий виклик execute() у цьому рендері (0: items, 1: last_run_at
+    # для «живого» порожнього стану (2026-08-31), 2: ecosystem options,
+    # 3: контекст-процесор бейджа NAV) — той самий порядок, що й
+    # guard-коментар у _leads_badge_context описує.
     _fake_db(monkeypatch, rows=[],
-             extra_rows={2: [{"leads_24h": 3, "unread_count": 7}]})
+             extra_rows={3: [{"leads_24h": 3, "unread_count": 7}]})
 
     html = client.get("/items").text
     assert 'class="badge b-info"' in html

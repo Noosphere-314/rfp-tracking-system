@@ -50,6 +50,10 @@ UK: dict[str, str] = {
     # раніше рахував ліди за 24 год (nav.leads_24h.title), тепер —
     # непрочитані серед «потенційно цікавого» (leads24 ∪ review24).
     "nav.unread.title": "Непрочитані потенційні ліди та знахідки в смузі перегляду",
+    # Ескейп-люк «спрощеного вигляду» Executive (admin/app.py: _view_context,
+    # POST /view) — кнопка в сайдбарі перемикає між скороченим і повним нав.
+    "nav.full_version": "Повна версія",
+    "nav.simple_view": "Спрощений вигляд",
     "app.skip": "До вмісту",
     "app.menu": "Меню",
     "app.controls": "Керування",
@@ -121,6 +125,11 @@ UK: dict[str, str] = {
     # Задача 6 аудиту 2026-08-11 — «Needs attention» на Overview: посилання
     # на сторінку дії в кожному рядку проблеми.
     "act.review": "Переглянути →",
+    # Порожній стан Findings «система жива» (план 2026-08-31, дизайн п.3).
+    "msg.last_run": "Останній збір:",
+    "msg.runs_hourly": "воркер обходить джерела приблизно раз на годину.",
+    # Футер read-only share-перегляду бріфа (magic-лінк).
+    "pg.share.foot": "Перегляд за спільним посиланням, лише читання. Повний дашборд — після входу:",
     # ── статуси айтемів (значення в URL лишаються англійськими) ─────
     "st.pending": "у черзі",
     "st.done": "оброблено",
@@ -285,6 +294,12 @@ UK: dict[str, str] = {
     "pg.overview.collected24": "Зібрано (24 год)",
     "pg.overview.briefs7d": "Бріфи (7 днів)",
     "pg.overview.attention": "Потребує уваги",
+    # Дедлайн-трекер (план 2026-08-31 п.2): панель Closing soon на Overview.
+    "pg.overview.closing": "Дедлайни близько",
+    "pg.overview.today": "сьогодні",
+    "pg.overview.days_suffix": "д",
+    "act.dismiss": "Прибрати",
+    "act.dismiss.title": "Сховати: подали заявку або нерелевантно",
     "pg.overview.all_normal": "Усе працює нормально",
     "pg.overview.all_normal_hint": "Зараз нічого не потребує твоєї уваги.",
     "pg.overview.week": "Цей тиждень",

@@ -464,3 +464,20 @@ def test_discourse_without_categories_gets_a_human_error(client, monkeypatch):
     assert response.status_code == 400
     assert "Discover categories" in response.text
     assert "ValueError" not in response.text
+
+
+# ── ?url= префіл із discovery-звіту (2026-08-31, функц. п.4) ──────────────
+
+
+def test_sources_prefills_url_from_query(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch)
+    html = client.get("/sources?url=https://forum.new.dao/").text
+    assert 'value="https://forum.new.dao/"' in html
+
+
+def test_sources_ignores_a_non_http_prefill(client, monkeypatch):
+    _login(client)
+    _fake_db(monkeypatch)
+    html = client.get("/sources?url=javascript:alert(1)").text
+    assert "javascript:alert" not in html

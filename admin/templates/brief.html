@@ -56,9 +56,18 @@
 {% endblock %}
 
 {% block data %}
-<article class="panel">
+{#- «Читається як документ» (фіча 2026-08-31): бріф — не рядок адмін-таблиці,
+    а самостійний артефакт, який СЕО відкриває з посилання в Telegram, часто
+    з телефону. .brief-panel/.brief-head__title/.brief-doc — нові класи, стилі
+    в app.css (розділ 22, самий кінець файлу). .panel/.panel__head/.panel__body/
+    .panel__foot і всі class="badge …" — БЕЗ ЗМІН, лише переставлені: заголовок
+    бріфа (раніше видний тільки в topbar__sub) тепер і тут, екосистема з <h2>
+    стала бейджем поруч із tier/model — одна «мета-стрічка» під заголовком
+    замість «назва екосистеми виглядає як H2 сторінки». -#}
+<article class="panel brief-panel">
   <div class="panel__head">
-    <h2 class="panel__title">{{ brief.ecosystem }}</h2>
+    <h2 class="brief-head__title">{{ brief.title }}</h2>
+    <span class="badge">{{ brief.ecosystem }}</span>
     <span class="badge {{ 'b-on' if brief.tier == 'llm' else 'b-neutral' }}">{{ TIER_UA.get(brief.tier, brief.tier) }}</span>
     {% if brief.model %}<span class="badge b-info">{{ brief.model }}</span>{% endif %}
     {% if brief.tokens_in %}
@@ -69,7 +78,11 @@
     <span class="muted">{{ brief.created_at.strftime('%Y-%m-%d %H:%M') if brief.created_at else '—' }}</span>
   </div>
   <div class="panel__body">
-    <div class="prose" id="brief-body">{{ brief.brief_md | md_lite }}</div>
+    {#- .prose лишається (спільний з keywords.html, розділ 12 app.css — базові
+        розміри шрифту/абзаців); .brief-doc — другий клас на ТОМУ САМОМУ
+        елементі, додає лише те, що властиво довгому документу: колонка
+        ~72ch, ієрархія заголовків, перенос довгих URL Sources, таблиці. -#}
+    <div class="prose brief-doc" id="brief-body">{{ brief.brief_md | md_lite }}</div>
   </div>
   {% if brief.item_uid %}
   <div class="panel__foot">
