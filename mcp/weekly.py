@@ -279,13 +279,23 @@ def _setting(conn: psycopg.Connection, key: str, default: str) -> str:
     return row["value"] if row else default
 
 
-def _recent(conn: psycopg.Connection, kind: str) -> dict | None:
-    """Звіт цього виду за останні 3 доби, якщо є — ідемпотентний guard."""
+def _recent(conn: psycopg.Connection, kind: str, today: str) -> dict | None:
+    """Звіт цього виду ЗА СЬОГОДНІ, якщо є — ідемпотентний guard.
+
+    Ключ — ПОВНИЙ заголовок із датою, а не вікно «останні N діб». Перша
+    версія брала 3 доби і 2026-08-31 обпеклась: звіти, згенеровані вручну
+    в п'ятницю 28-го, були «свіжішими за 3 доби», тож понеділковий крон
+    (виконання 1156, 06:00 UTC) НЕ згенерував нічого — команда отримала в
+    Telegram п'ятничні звіти під виглядом понеділкових. Вікно ширше за
+    добу в принципі несумісне з тижневою каденцією: будь-який ручний
+    прогін напередодні глушив би плановий. Ризик, заради якого guard і
+    існує (подвійний постріл крону, повторний імпорт воркфлоу), живе в
+    межах хвилин — доба покриває його з величезним запасом.
+    """
     return conn.execute(
         "SELECT id, title, brief_md FROM kb.briefs "
-        "WHERE title LIKE %s AND created_at > now() - interval '3 days' "
-        "ORDER BY id DESC LIMIT 1",
-        (_TITLE_PREFIX[kind] + " — %",),
+        "WHERE title = %s ORDER BY id DESC LIMIT 1",
+        (f"{_TITLE_PREFIX[kind]} — {today}",),
     ).fetchone()
 
 
@@ -416,10 +426,14 @@ def generate(payload: dict) -> tuple[dict, int]:
                 "error": f"kind must be one of: {', '.join(KINDS)}"}, 422
 
     force = bool(payload.get("force"))
+    # Дата рахується ОДИН раз на виклик: ідемпотентний guard і заголовок
+    # мусять бачити той самий день, інакше прогін через опівніч перевірив
+    # би вчорашній ключ, а записав сьогоднішній.
+    today = date.today().isoformat()
 
     with _db() as conn:
         if not force:
-            recent = _recent(conn, kind)
+            recent = _recent(conn, kind, today)
             if recent:
                 # Дайджест і тут — щоб повторний прогін ніс у Telegram суть,
                 # а не саме лише «звіт уже є» з голим посиланням.
@@ -444,7 +458,6 @@ def generate(payload: dict) -> tuple[dict, int]:
     import anthropic  # ліниво, як briefing.py — stub-деплоям SDK не потрібен
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    today = date.today().isoformat()
 
     web, web_in, web_out = _web_findings(client, model, kind, today)
     try:

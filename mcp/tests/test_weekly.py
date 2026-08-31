@@ -29,6 +29,13 @@ import weekly  # noqa: E402
 from fakeanthropic import FakeResponse, install as install_fake_anthropic, text_block  # noqa: E402
 from fakedb import make_db  # noqa: E402
 
+# Guard тепер зіставляє ПОВНИЙ заголовок із сьогоднішньою датою
+# (2026-08-31: вікно «3 доби» глушило понеділковий крон через п'ятничний
+# ручний прогін) — тож фікстури мусять нести саме сьогоднішній день.
+from datetime import date  # noqa: E402
+
+TODAY = date.today().isoformat()
+
 
 def _router(recent=None, settings=None, topics=None, forums=None, inserted_id=77):
     """Роутер fakedb під запити weekly.py. settings — dict key→value."""
@@ -39,7 +46,7 @@ def _router(recent=None, settings=None, topics=None, forums=None, inserted_id=77
         return [{"value": settings[key]}] if key in settings else []
 
     return [
-        ("WHERE title LIKE", recent or []),
+        ("WHERE title = ", recent or []),
         ("SELECT value FROM settings", settings_rows),
         ("bumped_at > now()", topics or []),
         ("FROM kb.forums", forums or []),
@@ -84,7 +91,7 @@ def test_recent_report_short_circuits_without_llm(monkeypatch):
     # responses=[] — будь-який виклик fake-клієнта впав би AssertionError,
     # тож зелений тест і є доказом, що LLM не чіпали.
     _wire(monkeypatch,
-          _router(recent=[{"id": 55, "title": "Weekly grants & RFPs — 2026-08-27",
+          _router(recent=[{"id": 55, "title": f"Weekly grants & RFPs — {TODAY}",
                            "brief_md": "## New this week\n- Something"}]),
           [])
     result, status = weekly.generate({"kind": "grants"})
@@ -98,7 +105,7 @@ def test_recent_report_short_circuits_without_llm(monkeypatch):
 def test_force_bypasses_the_recent_guard(monkeypatch):
     holder, _ = _wire(
         monkeypatch,
-        _router(recent=[{"id": 55, "title": "Weekly grants & RFPs — 2026-08-27",
+        _router(recent=[{"id": 55, "title": f"Weekly grants & RFPs — {TODAY}",
                            "brief_md": "## New this week\n- Something"}]),
         [FakeResponse([text_block("web findings")], "end_turn"),
          FakeResponse([text_block("## report")], "end_turn")],
@@ -328,3 +335,50 @@ def test_telegram_rule_reaches_the_prompt(monkeypatch):
     system = holder["client"].messages.calls[-1]["system"][0]["text"]
     assert "---TELEGRAM---" in system
     assert "600 characters" in system
+
+
+def test_guard_ignores_a_report_from_an_earlier_day(monkeypatch):
+    """Регресія 2026-08-31: понеділковий крон НЕ згенерував нічого, бо
+    п'ятничні звіти потрапляли у вікно «3 доби», і команда отримала в
+    Telegram п'ятничні звіти під виглядом понеділкових. Ключ — точний
+    заголовок за сьогодні, тож учорашній звіт більше не глушить прогін."""
+    db_factory, calls = make_db([
+        # Реальний SQL тепер фільтрує за title = сьогоднішній; фейк віддає
+        # порожньо саме тому, що збігу за сьогодні немає.
+        ("WHERE title = ", []),
+        ("SELECT value FROM settings", lambda p: [{"value": "claude-opus-5"}]
+         if p[0] == "brief_model" else []),
+        ("INSERT INTO kb.briefs", [{"id": 91}]),
+    ])
+    monkeypatch.setenv("KB_MCP_TOKEN", "tok")
+    monkeypatch.setattr(weekly, "ANTHROPIC_API_KEY", "k")
+    monkeypatch.setattr(weekly, "_db", db_factory)
+    monkeypatch.setattr(kbtools, "search_impl",
+                        lambda query, limit=8, **kw: {"hits": []})
+    install_fake_anthropic(monkeypatch, [
+        FakeResponse([text_block("web")], "end_turn"),
+        FakeResponse([text_block("## r\n- item one. detail\n- item two. detail")],
+                     "end_turn"),
+    ])
+
+    result, status = weekly.generate({"kind": "grants"})
+    assert status == 200 and result["skipped"] is False
+    assert result["brief_id"] == 91
+    # Guard шукав саме сьогоднішній заголовок.
+    guard = next(p for sql, p in calls if "WHERE title = " in sql)
+    assert guard[0] == f"Weekly grants & RFPs — {TODAY}"
+
+
+def test_guard_and_title_share_one_date(monkeypatch):
+    """Дата рахується один раз: інакше прогін через опівніч перевірив би
+    вчорашній ключ, а записав сьогоднішній — і зробив би два звіти."""
+    holder, calls = _wire(
+        monkeypatch,
+        _router(settings={"brief_model": "claude-opus-5"}),
+        [FakeResponse([text_block("web")], "end_turn"),
+         FakeResponse([text_block("## r\n- a. b\n- c. d")], "end_turn")],
+    )
+    weekly.generate({"kind": "discovery"})
+    guard = next(p for sql, p in calls if "WHERE title = " in sql)
+    insert = next(p for sql, p in calls if "INSERT INTO kb.briefs" in sql)
+    assert guard[0] == insert[0]
