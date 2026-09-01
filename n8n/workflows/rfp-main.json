@@ -230,7 +230,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-sonnet-5',\\n  thinking: { type: 'disabled' },\n  max_tokens: 400,\n  messages: [{ role: 'user', content: 'Write a 2-sentence sales lead description for this opportunity. State deadline/budget ONLY if literally present in the text, otherwise say \\'not stated\\'.\\n\\n' + $('Unwrap payload').first().json.title + '\\n' + ($('Unwrap payload').first().json.body || '').slice(0, 6000) }]\n}) }}",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-sonnet-5',\n  thinking: { type: 'disabled' },\n  max_tokens: 400,\n  messages: [{ role: 'user', content: 'Write a 2-sentence sales lead description for this opportunity. State deadline/budget ONLY if literally present in the text, otherwise say \\'not stated\\'.\\n\\n' + $('Unwrap payload').first().json.title + '\\n' + ($('Unwrap payload').first().json.body || '').slice(0, 6000) }]\n}) }}",
         "options": {}
       },
       "id": "http-enrich",

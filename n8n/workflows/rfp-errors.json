@@ -42,7 +42,7 @@
     {
       "parameters": {
         "chatId": "8325998119",
-        "text": "={{ '🚨 n8n workflow failed: ' + $json.workflow.name + '\\nNode: ' + ($json.execution.lastNodeExecuted || '?') + '\\nError: ' + ($json.execution.error.message || 'unknown') + '\\nExecution: ' + $json.execution.url }}",
+        "text": "={{ '🚨 n8n workflow failed: ' + $('Error Trigger').first().json.workflow.name + '\\nNode: ' + ($('Error Trigger').first().json.execution.lastNodeExecuted || '?') + '\\nError: ' + ($('Error Trigger').first().json.execution.error?.message || 'unknown') + '\\nExecution: ' + $('Error Trigger').first().json.execution.url }}",
         "additionalFields": {}
       },
       "id": "tg-2115745582",
@@ -66,7 +66,7 @@
     {
       "parameters": {
         "chatId": "-1004424509619",
-        "text": "={{ '🚨 n8n workflow failed: ' + $json.workflow.name + '\\nNode: ' + ($json.execution.lastNodeExecuted || '?') + '\\nError: ' + ($json.execution.error.message || 'unknown') + '\\nExecution: ' + $json.execution.url }}",
+        "text": "={{ '🚨 n8n workflow failed: ' + $('Error Trigger').first().json.workflow.name + '\\nNode: ' + ($('Error Trigger').first().json.execution.lastNodeExecuted || '?') + '\\nError: ' + ($('Error Trigger').first().json.execution.error?.message || 'unknown') + '\\nExecution: ' + $('Error Trigger').first().json.execution.url }}",
         "additionalFields": {}
       },
       "id": "tg-fail-group-v1",
@@ -96,26 +96,14 @@
             "node": "Slack: pipeline failure",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "Telegram: pipeline failure": {
-      "main": [
-        [
-          {
-            "node": "Telegram: збій (група)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Slack: pipeline failure": {
-      "main": [
-        [
+          },
           {
             "node": "Telegram: pipeline failure",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram: збій (група)",
             "type": "main",
             "index": 0
           }
