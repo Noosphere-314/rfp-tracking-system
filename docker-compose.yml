@@ -1,9 +1,22 @@
 # Project name comes from the directory (top-level `name:` needs Compose ≥2.3,
 # and the local machine runs 2.2.3).
+
+# Ротація логів — потрібна КОЖНОМУ сервісу (знайдено 2026-10-19 при чистці
+# диска). json-file за замовчуванням росте БЕЗ МЕЖІ: лог Caddy за 6 тижнів
+# аптайму набрав 808 МБ — він пише рядок на кожен HTTP-запит, а стирає його
+# лише перестворення контейнера. 10 МБ × 3 файли = стеля 30 МБ на сервіс:
+# вистачає, щоб побачити вчорашню проблему, і не з'їдає диск за місяці.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -28,6 +41,7 @@ services:
     # override pins 1.45.1 until Docker Desktop is updated).
     image: n8nio/n8n:2.32.7
     restart: unless-stopped
+    logging: *logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,6 +83,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *logging
     # Prod-only: local dev runs without TLS/domain (docker-compose.override.yml).
     # On the server: docker compose -f docker-compose.yml --profile prod up -d
     profiles: ["prod"]
@@ -94,6 +109,7 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     restart: unless-stopped
+    logging: *logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -117,6 +133,7 @@ services:
       context: .
       dockerfile: mcp/Dockerfile
     restart: unless-stopped
+    logging: *logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -144,6 +161,7 @@ services:
       context: .
       dockerfile: admin/Dockerfile
     restart: unless-stopped
+    logging: *logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -185,6 +203,7 @@ services:
       context: .
       dockerfile: tgbot/Dockerfile
     restart: unless-stopped
+    logging: *logging
     depends_on:
       kbmcp:
         condition: service_healthy
